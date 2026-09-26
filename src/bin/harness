@@ -1,0 +1,2573 @@
+#!/usr/bin/env python3
+"""harness — generate the AI development harness from one config, and block drift.
+
+Values live in `harness.toml` and project facts in `.ai/project/`. Everything else
+is generated from them, so there is exactly one place to change any given value.
+Generated files are never edited by hand: `render` overwrites them and `check`
+blocks commits that drift.
+
+When a new file becomes generated, add it to plan() — that function is the single
+place recording which config key reaches which file.
+
+Requires python3 3.11 or newer (tomllib).
+"""
+import argparse
+import datetime
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # 3.11 미만
+    sys.exit("python3 3.11 이상이 필요하다 (tomllib 없음). 현재: %s" % sys.version.split()[0])
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent                      # 하네스 리포 루트 또는 대상 리포의 .harness/
+TEMPLATES = ROOT / "templates"
+# 대상 리포로 복사되는 기본 설정. 리포 루트의 harness.toml 은 언제나 **그 리포 자신의** 설정이다 —
+# 하네스 소스 리포도 예외가 아니라서, 기본값을 루트에 두면 소스 리포가 자기 설정을 가질 자리가 없다.
+DEFAULT_CONFIG = TEMPLATES / "harness.toml"
+
+BANNER_SH = (
+    "# 이 파일은 harness.toml 에서 생성된다. 직접 고치지 않는다 —\n"
+    "# 값은 harness.toml 이 갖고, `harness render` 가 이 파일을 다시 만든다.\n"
+)
+
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 설정
+# ─────────────────────────────────────────────────────────────────────────────
+
+def load(target: Path) -> dict:
+    p = target / "harness.toml"
+    if not p.is_file():
+        die("error: no config found\n  --> %s\n\nhelp: run `harness install` in this repository to create one" % p)
+    with p.open("rb") as f:
+        try:
+            return tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            die("error: could not parse config\n  --> %s\n\n  %s" % (p, e))
+
+
+# 에이전트가 판단 근거로 읽는 기준 문서. 설정에서 빠져도 늘 보호한다 — 목록에서 지우는 것만으로
+# 근거가 고쳐질 수 있으면 보호가 아니다. `.ai/project/` 전체가 아닌 이유: 명령·스택·환경은
+# 프로젝트 사실이 바뀌면 docs-writer 가 고친다(`.ai/templates/docs-writer.md`).
+BASE_PROTECTED = [".ai/project/scope.md", ".ai/project/architecture.md",
+                  ".ai/project/glossary.md", ".ai/project/testing.md", ".ai/project/roles/",
+                  ".ai/project/workflows/"]
+# 역할별로 이 프로젝트가 더하는 지시(소유 파일). render 가 그 역할의 에이전트 정의 끝에 붙인다 —
+# 역할 계약(`.ai/templates/`)은 관리 파일이라 여기서 고치면 다음 갱신이 덮는다.
+ROLE_NOTES = ".ai/project/roles"
+# 절차에 이 프로젝트가 더하는 지시(소유 파일). render 가 생성된 절차 끝에 붙인다.
+WORKFLOW_NOTES = ".ai/project/workflows"
+# 리뷰 회차 상한·반복 지적 상한이 가질 수 있는 가장 큰 값. 그 이상은 사람에게 넘길 시점을 놓친다.
+REVIEW_LIMIT = 20
+# 보호 경로 하나: 리포 기준 상대 경로. 파일, `dir/`, `dir/**`. 절대 경로·`..`·공백은 받지 않는다.
+PROTECTED_PATH = re.compile(r"(?!/)(?!.*(^|/)\.\.(/|$))[\w.-]+(/[\w.-]+)*(/|/\*\*)?")
+
+
+# 프로젝트 명령. 명령 탭이 쓰는 값이고, 규칙 문서 3장과 검증 스크립트가 여기서 나온다 —
+# 같은 명령을 문서와 스크립트에 두 번 적지 않는다.
+COMMAND_KEYS = [("build", "빌드"), ("test", "테스트 전체"), ("test_single", "단일 테스트"),
+                ("format_check", "코드 검사"), ("format_fix", "코드 자동 수정")]
+VERIFY_SCRIPT = "script/harness-verify.sh"
+VERIFY_UNSET = 3                                   # 검증 스크립트의 "아직 명령을 정하지 않았다"
+# 옛 방식 — 사람이 손으로 쓰던 검증 스크립트와 명령 문서. 새로 깔지 않지만, 있으면 존중한다.
+LEGACY_VERIFY = "script/verify-project.sh"
+LEGACY_VERIFY_TEMPLATE = "verify-project: not filled in yet"   # 채우지 않은 원형의 마지막 줄
+LEGACY_COMMANDS = ".ai/project/commands.md"
+
+
+# 실행 지표. 리포 밖(홈 아래)에 남아 커밋되지 않는다. 기록은 script/metric.py, 집계는 `harness metrics`.
+METRICS_DEFAULTS = {"dir": "$HOME/.harness/{project}/metrics", "retention_days": 30, "max_file_mb": 10,
+                    "max_total_mb": 100, "stale_after_hours": 6, "capture_logs": "errors"}
+
+
+def metrics_cfg(cfg: dict) -> dict:
+    """[metrics] 에 프로젝트 이름을 채운 것. dir 이 "off" 면 기록하지 않는다."""
+    m = dict(cfg["metrics"])
+    m["dir"] = m["dir"].replace("{project}", cfg["project"]["name"])
+    return m
+
+
+def QUIET_ENV() -> dict:
+    """점검(doctor)이 검증을 돌릴 때의 환경 — 실행 지표를 남기지 않는다. 열 때마다 실행이 쌓이지 않게."""
+    return dict(os.environ, HARNESS_METRICS="off")
+
+
+def legacy_verify(target) -> bool:
+    """손으로 쓴 검증 스크립트가 있는가. 채우지 않은 원형은 없는 것과 같다."""
+    f = target / LEGACY_VERIFY if target else None
+    return bool(f and f.is_file() and LEGACY_VERIFY_TEMPLATE not in f.read_text(encoding="utf-8"))
+
+
+def verify_steps(cfg: dict) -> list:
+    """검증이 도는 순서. 계층 의존 검사가 먼저다 — 싸고, 위반이면 어차피 설계를 고쳐야 한다."""
+    c = cfg["commands"]
+    return ([(x["name"], x["run"]) for x in cfg["verify"]["checks"]]
+            + [(label, c[k]) for k, label in (("format_check", "코드 검사"), ("test", "테스트")) if c.get(k)])
+
+
+def verify_script(cfg: dict) -> str:
+    steps = verify_steps(cfg)
+    body = "".join("step %s %s\n" % (shlex.quote(n), shlex.quote(r)) for n, r in steps) + 'echo "verify: ok"\n' if steps else (
+        'echo "verify: not set up — harness.toml has no [commands] or [verify] checks yet" >&2\n'
+        'echo "help: harness set commands.test \\"<test command>\\"   (or Project Settings → Commands)" >&2\n'
+        "exit %d\n" % VERIFY_UNSET)
+    return ("#!/usr/bin/env bash\n" + BANNER_SH +
+            "# 프로젝트 검증 — harness.toml 의 [verify] 검사, commands.format_check, commands.test 를 차례로 돈다.\n"
+            "# `script/run-lint-test.sh` 가 부른다. 단계마다 이름을 찍고, 실패하면 그 이름으로 멈춘다.\n"
+            "# 종료 코드: 0 통과 · 1 실패 · %d 아직 명령을 정하지 않았다\n"
+            "set -uo pipefail\n"
+            'cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"\n'
+            "# 직접 불러도 단계들이 한 실행 아래에 모이게 자기 한 번을 스팬으로 감싼다\n"
+            '[ "${HARNESS_METRIC_SELF:-}" = harness-verify ] || [ ! -x script/metric.py ] || \\\n'
+            '  exec env HARNESS_METRIC_SELF=harness-verify script/metric.py wrap --name harness-verify --kind script '
+            '--attr script=harness-verify -- "$PWD/script/harness-verify.sh" "$@"\n\n'
+            "# 단계마다 실행 지표를 남긴다(script/metric.py). 기록기가 없으면 그냥 돈다\n"
+            "step() {\n"
+            '  echo "verify: $1"\n'
+            "  if [ -x script/metric.py ]; then\n"
+            '    script/metric.py wrap --name "verify/$1" --kind script --attr script=harness-verify -- bash -c "$2"\n'
+            "  else\n"
+            '    bash -c "$2"\n'
+            '  fi || { echo "verify: FAIL $1" >&2; exit 1; }\n'
+            "}\n\n" % VERIFY_UNSET) + body
+
+
+def commands_doc(cfg: dict, target: Path = None) -> str:
+    """규칙 문서 3장. 명령을 아직 안 정했고 옛 명령 문서가 있으면 그것을 담는다 — 채운 내용을 잃지 않게."""
+    c = cfg["commands"]
+    if not any(c.values()):
+        old = target / LEGACY_COMMANDS if target else None
+        if old and old.is_file():
+            return LEAD_COMMENT.sub("", old.read_text(encoding="utf-8"), count=1).strip()
+        return ("명령이 아직 정해지지 않았다. `harness.toml` 의 `[commands]` 에 적는다. "
+                "여기 없는 명령을 지어내 실행하지 않는다.")
+    cell = lambda x: "`%s`" % x.replace("|", "\\|") if x else "정하지 않음"
+    rows = ["| 작업 | 명령 |", "|---|---|"] + ["| %s | %s |" % (label, cell(c[k])) for k, label in COMMAND_KEYS]
+    rows.append("| 검증 일괄 | `script/run-lint-test.sh` |")
+    steps = verify_steps(cfg)
+    tail = ("\n\n검증(`%s`)은 이 순서로 돈다: %s." % (VERIFY_SCRIPT, " → ".join(n for n, _ in steps))) if steps else ""
+    return "\n".join(rows) + tail
+
+
+def normalize(cfg: dict):
+    """설정을 소비자가 쓸 형태로 채운다. 읽은 직후 한 번만 돈다.
+
+    통합 브랜치는 보호 목록에 **자동으로 들어간다.** 거기로 직접 push 할 수 있으면 승인 게이트가
+    우회되므로 선택지가 아니고, 그렇다면 사람이 두 곳에 같은 이름을 적을 이유도 없다.
+    """
+    cfg["harness"].setdefault("model", "")   # 오케스트레이터 모델 — 옛 설정에는 없다
+    # 프로젝트 명령과 검증 단계 — 옛 설정에는 없다. 비어 있으면 검증이 "아직 정하지 않음" 으로 멈춘다
+    cmds = cfg.setdefault("commands", {})
+    for k, _ in COMMAND_KEYS:
+        cmds.setdefault(k, "")
+    cfg.setdefault("verify", {}).setdefault("checks", [])
+    for k, x in METRICS_DEFAULTS.items():
+        cfg.setdefault("metrics", {}).setdefault(k, x)
+    b = cfg["branches"]
+    if b["base"] not in b["protected"]:
+        b["protected"] = b["protected"] + [b["base"]]
+    # 설정에 절차가 없으면 하네스 기본값을 쓴다. 단계 정의가 생기기 전에 설치한 프로젝트도
+    # 설정을 고치지 않고 그대로 렌더된다.
+    d = cfg["docs"]
+    d["protected"] = BASE_PROTECTED + [x for x in d["protected"] if x not in BASE_PROTECTED]
+    wfs = cfg.setdefault("workflows", {})
+    for name, body in default_workflows().items():
+        wfs.setdefault(name, body)
+    # 단계의 종류 키는 `type` 이다. `kind` 로 적은 옛 설정도 그대로 읽는다
+    for body in wfs.values():
+        for st in body.get("steps") or []:
+            if "type" not in st and "kind" in st:
+                st["type"] = st.pop("kind")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 에이전트 등록부 — 정본은 templates/vendors.toml
+# ─────────────────────────────────────────────────────────────────────────────
+# 벤더마다 다른 것(띄우는 명령·권한 인자·결과 받는 법·어댑터 형식)은 전부 그 파일에 있다.
+# 여기는 그 선언을 읽는 일반 엔진뿐이다 — 벤더 이름으로 분기하지 않는다.
+with (TEMPLATES / "vendors.toml").open("rb") as _f:
+    VENDORS = {v["id"]: v for v in tomllib.load(_f)["vendor"]}
+ORCHESTRATORS = [i for i, v in VENDORS.items() if v.get("launch")]
+RUNNERS = [i for i, v in VENDORS.items() if v.get("headless")]
+# UI·schema 가 보던 모양. 고를 수 있는지는 선언에 명령이 있는지로 정한다
+AGENTS = [{"id": i, "name": v["name"], "exe": v["exe"], "orchestrator": i in ORCHESTRATORS, "runner": i in RUNNERS}
+          for i, v in VENDORS.items()]
+
+
+def expand(argv: list, vals: dict) -> list:
+    """argv 템플릿을 푼다. 원소 전체가 목록 값의 이름이면 그 목록으로 펼치고, 나머지는 문자열 치환이다.
+
+    셸을 거치지 않는다 — 값에 공백이나 따옴표가 있어도 인자 하나로 남는다. 모르는 이름은 막는다."""
+    out = []
+    for a in argv:
+        m = re.fullmatch(r"\{(\w+)\}", a)
+        if m and isinstance(vals.get(m.group(1)), list):
+            out += vals[m.group(1)]
+            continue
+        def sub(x):
+            v = vals.get(x.group(1))
+            if not isinstance(v, str):
+                die("error: templates/vendors.toml uses {%s}, which is not known here" % x.group(1))
+            return v
+        out.append(re.sub(r"\{(\w+)\}", sub, a))
+    return out
+
+
+# 역할 절에 적지 않아도 되는 키. `harness set` 이 처음 정할 때 그 절에 더한다.
+OPTIONAL_ROLE_KEYS = ("model",)
+# 역할의 실행 방식은 그 역할의 어댑터 본문(templates/agents/<역할>.md) frontmatter 가 선언한다.
+#   headless       false 면 CLI 러너를 고를 수 없다(서브에이전트로만). 적지 않으면 true
+#   entry          CLI 러너일 때 부르는 전용 스크립트. 없으면 공용 실행기 `script/run-agent.py <역할>`
+#   distinct_from  이 역할들과 실제 실행 주체가 같으면 안 된다(쉼표로 여럿). invariants.distinct_reviewer 가 켜고 끈다
+RUN_AGENT = "script/run-agent.py"
+
+
+def role_meta(name: str) -> dict:
+    src = TEMPLATES / "agents" / ("%s.md" % name)
+    if not src.is_file():
+        return {}
+    meta = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))[0]
+    return {"headless": meta.get("headless", "true") != "false", "entry": meta.get("entry", ""),
+            "distinct_from": [x.strip() for x in meta.get("distinct_from", "").split(",") if x.strip()]}
+
+
+def role_model(cfg: dict, role: str) -> str:
+    """역할이 실제로 쓰는 모델.
+
+    - 러너가 오케스트레이터와 같은 CLI 면 오케스트레이터 자신이다 — 오케스트레이터 모델(harness.model)만 쓴다.
+      오케스트레이터 설정은 한 곳에만 둔다
+    - 서브에이전트(inproc)는 역할마다 고른다. 비우면 오케스트레이터 모델을 이어받는다
+    - 다른 CLI 는 역할의 모델이고, 비우면 그 CLI 의 기본 모델이다"""
+    r, h = cfg["roles"][role], cfg["harness"]
+    if r["runner"] == h["orchestrator"]:
+        return h.get("model", "")
+    if r["runner"] == "inproc":
+        return r.get("model") or h.get("model", "")
+    return r.get("model", "")
+
+
+def model_args(v: dict, model: str) -> list:
+    return expand(v.get("model", []), {"model": model}) if model else []
+
+
+def headless_argv(cfg: dict, role: str) -> list:
+    """CLI 러너 역할을 한 번 돌리는 argv — 결과 받는 인자와 프롬프트는 실행기가 붙인다."""
+    r = cfg["roles"][role]
+    v = VENDORS[r["runner"]]
+    return expand(v["headless"], {"role": role, "access": v["access"][r["access"]], "model": model_args(v, role_model(cfg, role))})
+
+
+def run_plan(cfg: dict) -> dict:
+    """역할마다 실제로 무엇이 도는지 확정한 표. 셸 스크립트와 UI 는 이것만 읽고 다시 풀지 않는다."""
+    roles = {}
+    for n, r in sorted(cfg["roles"].items()):
+        if r["runner"] == "inproc":
+            roles[n] = {"via": "subagent", "vendor": cfg["harness"]["orchestrator"]}
+        else:
+            roles[n] = {"via": "headless", "vendor": r["runner"], "exe": VENDORS[r["runner"]]["exe"],
+                        "argv": headless_argv(cfg, n), "output": VENDORS[r["runner"]]["output"],
+                        "model": role_model(cfg, n),
+                        "usage_format": VENDORS[r["runner"]].get("usage_format", []),
+                        "usage_parser": VENDORS[r["runner"]].get("usage_parser", ""),
+                        "entry": role_meta(n)["entry"] or "%s %s" % (RUN_AGENT, n)}
+    return {"_generated": "harness.toml 에서 생성된다. 직접 고치지 않는다 — harness render 가 다시 만든다.",
+            "roles": roles, "metrics": metrics_cfg(cfg)}
+
+
+def vendor(cfg: dict, role: str) -> str:
+    """그 역할을 실제로 실행하는 쪽. inproc 은 오케스트레이터다."""
+    r = cfg["roles"][role]["runner"]
+    return cfg["harness"]["orchestrator"] if r == "inproc" else r
+
+
+def validate(cfg: dict):
+    c = cfg["commit"]
+    if c["issue_ref"] not in ("suffix", "prefix"):
+        die("error: commit.issue_ref must be `suffix` or `prefix` (got %r)" % c["issue_ref"])
+    if c["issue_ref"] == "prefix" and not c.get("ticket_key"):
+        die("error: commit.issue_ref = prefix requires commit.ticket_key\n\nhelp: set the ticket prefix your tracker uses\n        harness set commit.ticket_key BD")
+    if not c["tags"]:
+        die("error: commit.tags is empty — at least one tag is required")
+
+    # Jira 는 코드 리뷰를 호스팅하지 않는다. 고르게 두면 리뷰 함수가 없는 어댑터로 루프가 돈다.
+    if cfg["forge"]["review_host"] not in ("gitlab", "github"):
+        die("error: forge.review_host must be gitlab or github (got %r)\n"
+            "\n"
+            "  Jira tracks issues but does not host code review, so it cannot be the\n"
+            "  review host. Track issues there and review somewhere else.\n"
+            "\n"
+            "help: set the two separately\n"
+            "        harness set forge.tracker jira\n"
+            "        harness set forge.review_host <gitlab|github>"
+            % cfg["forge"]["review_host"])
+
+    if cfg["harness"]["orchestrator"] not in ORCHESTRATORS:
+        die("error: harness.orchestrator must be one of %s (got %r)"
+            % (", ".join(ORCHESTRATORS), cfg["harness"]["orchestrator"]))
+    for name, role in cfg["roles"].items():
+        if role["runner"] not in ["inproc"] + RUNNERS:
+            die("error: roles.%s.runner must be one of %s (got %r)"
+                % (name, ", ".join(["inproc"] + RUNNERS), role["runner"]))
+        # 역할이 CLI 로 도는 것을 막아 두었으면(headless: false) 서브에이전트로만 돈다
+        if role["runner"] != "inproc" and not role_meta(name).get("headless", True):
+            die("error: roles.%s.runner = %s, but %s only runs as a subagent of the orchestrator\n\n"
+                "  Its contract declares `headless: false`, so its runner can only be inproc.\n\n"
+                "help: harness set roles.%s.runner inproc" % (name, role["runner"], name, name))
+        if role["access"] not in ("read-only", "write"):
+            die("error: roles.%s.access must be read-only or write (got %r)" % (name, role["access"]))
+
+    bad = [x for x in cfg["docs"]["protected"] if not PROTECTED_PATH.fullmatch(x)]
+    if bad:
+        die("error: docs.protected has a path that is not a repository-relative file or directory: %s\n\n"
+            "help: write it relative to the repository root, like `docs/spec/x.md`, `docs/spec/` or `docs/spec/**`"
+            % ", ".join(repr(x) for x in bad))
+
+    for key in ("max_rounds", "repeat_file_max"):
+        n = cfg["review"][key]
+        if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= REVIEW_LIMIT:
+            die("error: review.%s must be a whole number from 1 to %d (got %r)" % (key, REVIEW_LIMIT, n))
+
+    d = cfg["adr"]["dir"]
+    if not PROTECTED_PATH.fullmatch(d) or d.endswith("**"):
+        die("error: adr.dir must be a repository-relative directory like `docs/adr` (got %r)" % d)
+
+    unknown = sorted(set(cfg["commands"]) - {k for k, _ in COMMAND_KEYS})
+    if unknown:
+        die("error: unknown key(s) in [commands]: %s\n\nhelp: the keys are %s"
+            % (", ".join(unknown), ", ".join(k for k, _ in COMMAND_KEYS)))
+    for k, x in cfg["commands"].items():
+        if not isinstance(x, str) or "\n" in x:
+            die("error: commands.%s must be a one-line command string" % k)
+    checks = cfg["verify"]["checks"]
+    if not isinstance(checks, list):
+        die("error: verify.checks must be a list of { name, run }")
+    for n, x in enumerate(checks, 1):
+        if (not isinstance(x, dict) or set(x) - {"name", "run"}
+                or not all(isinstance(x.get(k), str) and x[k].strip() and "\n" not in x[k] for k in ("name", "run"))):
+            die("error: verify.checks[%d] needs a name and a run command, one line each (got %r)\n\n"
+                "help: a check longer than one line belongs in a script — run = \"script/check-deps.sh\"" % (n, x))
+
+    m = cfg["metrics"]
+    unknown = sorted(set(m) - set(METRICS_DEFAULTS))
+    if unknown:
+        die("error: unknown key(s) in [metrics]: %s\n\nhelp: the keys are %s" % (", ".join(unknown), ", ".join(METRICS_DEFAULTS)))
+    if not isinstance(m["dir"], str) or not m["dir"].strip():
+        die("error: metrics.dir must be a directory path, or \"off\"")
+    for k in ("retention_days", "max_file_mb", "max_total_mb", "stale_after_hours"):
+        if not isinstance(m[k], int) or isinstance(m[k], bool) or m[k] < 1:
+            die("error: metrics.%s must be a whole number of at least 1 (got %r)" % (k, m[k]))
+    if m["max_file_mb"] > m["max_total_mb"]:
+        die("error: metrics.max_file_mb (%d) is larger than metrics.max_total_mb (%d)" % (m["max_file_mb"], m["max_total_mb"]))
+    if m["capture_logs"] not in ("errors", "off"):
+        die("error: metrics.capture_logs must be `errors` or `off` (got %r)" % m["capture_logs"])
+
+    validate_workflows(cfg)
+
+    if cfg.get("invariants", {}).get("distinct_reviewer", True):
+        for rev, dev in distinct_pairs(cfg):
+            if vendor(cfg, dev) == vendor(cfg, rev):
+                die("error: %s and %s run on the same runner (%s)\n"
+                    "\n"
+                    "  A model reviewing its own output walks past the same blind spot twice,\n"
+                    "  so the review adds nothing the implementation did not already assume.\n"
+                    "\n"
+                    "help: give %s a different runner\n"
+                    "        harness set roles.%s.runner <%s>\n"
+                    "\n"
+                    "help: to accept this on purpose, opt out explicitly\n"
+                    "        harness set invariants.distinct_reviewer false"
+                    % (dev, rev, vendor(cfg, rev), rev, rev, "|".join(RUNNERS)))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 파생 — 설정값에서 각 소비자가 쓰는 형태를 만든다
+# ─────────────────────────────────────────────────────────────────────────────
+
+TOOLS_BY_ACCESS = {
+    "read-only": ["Read", "Grep", "Glob"],
+    "write": ["Read", "Write", "Edit", "Grep", "Glob", "Bash"],
+}
+
+
+def tools_of(role: dict) -> list:
+    return role.get("tools") or TOOLS_BY_ACCESS[role["access"]]
+
+
+def distinct_pairs(cfg: dict) -> list:
+    """(역할, 그와 달라야 하는 역할) — 역할 선언의 distinct_from 에서. 설정에 없는 역할은 뺀다."""
+    return [(n, o) for n in sorted(cfg["roles"]) for o in role_meta(n)["distinct_from"] if o in cfg["roles"]]
+
+
+FORGE_CLI = {"gitlab": "glab", "github": "gh", "jira": "jira"}
+
+
+def docs_regex(patterns: list) -> str:
+    """보호 문서 glob 을 가드가 쓰는 정규식 하나로. `docs/x/**` 는 그 아래 전부를 뜻한다."""
+    out = []
+    for g in patterns:
+        g = g.rstrip("*").rstrip("/") + ("/" if g.rstrip("*").endswith("/") or g.endswith("**") else "")
+        out.append(re.escape(g).replace("\\/", "/"))
+    return "|".join(out)
+
+
+def adr_procedure(style: str, tool: str, d: str) -> str:
+    """결정 기록을 만들고 대체하는 절차. **도구가 정하므로 문서에 적어 두지 않는다.**
+
+    도구를 바꿨는데 절차가 그대로면 없는 명령을 지시하게 된다.
+    """
+    if tool == "adr-tools":
+        return (
+            "| 하는 일 | 명령 |\n|---|---|\n"
+            '| 새 결정 만들기 | `adr new "<영문 제목>"` |\n'
+            '| 기존 결정 대체하기 | `adr new -s <기존번호> "<영문 제목>"` |\n'
+            "| 목록 | `adr list` |\n\n"
+            "- **제목은 영어로 준다.** 도구가 제목을 그대로 파일명으로 쓴다.\n"
+            "- **상태를 손으로 고치지 않는다.** 도구가 넣는 값을 그대로 둔다.\n"
+            "- 대체는 한 명령이지만 원자적이지 않다. 중간에 실패하면 새 문서와 기존 문서의 표기가\n"
+            "  어긋난 채 남으므로, 커밋 전에 작업 트리를 확인하고 필요하면 되돌린 뒤 다시 실행한다."
+        )
+    if tool == "adrs":
+        fmt = " --format madr" if style == "madr" else ""
+        return (
+            "| 하는 일 | 명령 |\n|---|---|\n"
+            '| 새 결정 만들기 | `adrs new%s "<영문 제목>"` |\n'
+            '| 기존 결정 대체하기 | `adrs new%s --supersedes <기존번호> "<영문 제목>"` |\n'
+            "| 목록 | `adrs list` |\n\n"
+            "- **제목은 영어로 준다.** 도구가 제목을 그대로 파일명으로 쓴다.\n"
+            "- **상태를 손으로 고치지 않는다.** 도구가 넣는 값을 그대로 둔다."
+        ) % (fmt, fmt)
+    where = "front matter 의 `status:` 한 줄" if style == "madr" else "`## Status` 절"
+    return (
+        "도구를 쓰지 않는다. 손으로 한다.\n\n"
+        "| 하는 일 | 어떻게 |\n|---|---|\n"
+        "| 새 결정 만들기 | `%s/templates/template.md` 를 `NNNN-title-with-dashes.md` 로 복사한다. "
+        "번호는 남은 파일의 최대 번호 + 1 |\n"
+        "| 기존 결정 대체하기 | 새 문서를 만들고, 기존 문서의 %s 만 대체 표기로 바꾼다 |\n"
+        "| 목록 | `ls %s` |\n\n"
+        "- **제목·파일명은 영어로 쓴다.** 본문은 프로젝트 문서 언어로.\n"
+        "- **대체할 때 고치는 것은 상태 한 줄뿐이다.** 본문도 날짜도 건드리지 않는다 —\n"
+        "  기록은 로그이고 틀린 결정도 그대로 남아야 한다."
+    ) % (d, where, d)
+
+
+def derive(cfg: dict) -> dict:
+    p, b, c, r = cfg["project"], cfg["branches"], cfg["commit"], cfg["review"]
+    i, m, f = cfg["issues"], cfg["mr"], cfg["forge"]
+    tags = "|".join(c["tags"])
+    docs_tag = "docs" if "docs" in c["tags"] else c["tags"][0]   # 문서 변경 커밋의 태그
+    rv = VENDORS[vendor(cfg, "code-reviewer")]
+
+    if c["issue_ref"] == "suffix":
+        subject_re = r"^(%s): .+\(#[0-9]+\)$" % tags
+        subject_form = "<tag>: {summary}(#{issue})"
+        subject_example = "%s: short summary(#123)" % c["tags"][0]
+        docs_form = "%s: <요약>(#<이슈번호>)" % docs_tag
+    else:
+        k = c["ticket_key"]
+        subject_re = r"^\[%s-[0-9]+\] (%s): .+$" % (k, tags)
+        subject_form = "[%s-{ticket}] <tag>: {summary}" % k
+        subject_example = "[%s-123] %s: short summary" % (k, c["tags"][0])
+        docs_form = "[%s-<이슈번호>] %s: <요약>" % (k, docs_tag)
+
+    return {
+        "HARNESS_VERSION": cfg["harness"]["version"],
+        "PROJECT_NAME": p["name"],
+        "BASE_BRANCH": b["base"],
+        "PROTECTED_BRANCHES": " ".join(b["protected"]),
+        "PROTECTED_REF_CASE": "|".join("refs/heads/%s" % x for x in b["protected"]),
+        "PROTECTED_BRANCH_CASE": "|".join(b["protected"]),
+        "COMMIT_TAGS": tags,
+        "COMMIT_TAGS_HUMAN": " | ".join(c["tags"]),
+        "COMMIT_SUBJECT_RE": subject_re,
+        "COMMIT_SUBJECT_FORM": subject_form,
+        "COMMIT_SUBJECT_EXAMPLE": subject_example,
+        "COMMIT_DOCS_FORM": docs_form,
+        "COMMIT_TICKET_KEY": c["ticket_key"] or "PROJ",
+        "BRANCH_PATTERN": "<tag>/<issue-number>-<english-summary>",
+        "REVIEW_MAX_ROUNDS": str(r["max_rounds"]),
+        "REVIEW_REPEAT_FILE_MAX": str(r["repeat_file_max"]),
+        "REVIEW_ROUND_LABEL": r["round_label"],
+        "REVIEWER_LABEL": rv.get("label") or rv["name"],
+        "FORGE_TRACKER": f["tracker"],
+        "FORGE_REVIEW_HOST": f["review_host"],
+        "FORGE_TRACKER_CLI": FORGE_CLI.get(f["tracker"], f["tracker"]),
+        "FORGE_REVIEW_CLI": FORGE_CLI.get(f["review_host"], f["review_host"]),
+        "ISSUE_LABEL_TASK": i["labels"].get("task", ""),
+        "ISSUE_LABEL_REQUIREMENT": i["labels"].get("requirement", ""),
+        "ISSUE_LABEL_INVALID": i["labels"].get("invalid", ""),
+        "ISSUE_TYPE": i.get("type", ""),
+        "ISSUE_CLOSED_STATUS": i.get("closed_status", ""),
+        "ISSUE_REQUIRED_FIELDS": " ".join(i["required_fields"]),
+        "ISSUE_DELETE_FORBIDDEN": "1" if i["deletion_forbidden"] else "0",
+        "ISSUE_DELETE_RULE": (
+            "이 프로젝트는 이슈 삭제를 **금지**한다. 잘못 만든 이슈는 `%s` 로\n"
+            "    닫힌 채 영구히 남는다 — 되돌릴 수 없으므로 만들기 전에 확인한다"
+            % i["labels"].get("invalid", "invalid")
+        ) if i["deletion_forbidden"] else (
+            "잘못 만든 이슈는 지울 수 있다. 그래도 빈 이슈를 만들지 않는다 —\n"
+            "    지우기 전까지 남아 있고, 지우면 그 번호를 가리키던 참조가 깨진다"
+        ),
+        "FORGE_CLIS": " ".join(dict.fromkeys(
+            [FORGE_CLI.get(f["tracker"], f["tracker"]),
+             FORGE_CLI.get(f["review_host"], f["review_host"])])),
+        "ISSUE_REF_DISPLAY": "#{id}" if c["issue_ref"] == "suffix" else "{id}",
+        "MR_DEFAULT_ASSIGNEE": m["default_assignee"],
+        "MR_DEFAULT_REVIEWER": m["default_reviewer"],
+        "PROTECTED_DOCS_RE": docs_regex(cfg["docs"]["protected"]),
+        # 가드 회귀 테스트가 "보호되는 경로 하나" 로 쓴다. 디렉터리면 그 아래 파일 하나를 만든다.
+        "PROTECTED_DOCS_SAMPLE": (lambda g: g if not g.endswith("/") else g + "sample.md")(
+            docs_regex(cfg["docs"]["protected"]).split("|")[0].replace("\\", "")),
+        "PROTECTED_DOCS_LIST": ", ".join("`%s`" % g for g in cfg["docs"]["protected"]),
+        "AGENT_TABLE": agent_table(cfg),
+        "AGENT_COUNT": str(len(cfg["roles"])),
+        "COMMAND_TABLE": "\n".join(command_rows(cfg)),
+        "COMMAND_COUNT": str(len(command_rows(cfg))),
+        "ADR_STYLE": cfg["adr"]["style"],
+        "ADR_TOOL": cfg["adr"]["tool"],
+        "ADR_DIR": cfg["adr"]["dir"],
+        "ADR_PROCEDURE": adr_procedure(cfg["adr"]["style"], cfg["adr"]["tool"], cfg["adr"]["dir"]),
+        "USAGE_LOG_PATH": cfg["usage"]["log_path"].replace("{project}", p["name"]),
+        "USAGE_ENV_VAR": cfg["usage"]["env_var"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 생성물
+# ─────────────────────────────────────────────────────────────────────────────
+
+VAR = re.compile(r"\{\{([A-Z_]+)\}\}")
+INCLUDE = re.compile(r"^\{\{INCLUDE:(\S+)\}\}$", re.M)
+LEAD_COMMENT = re.compile(r"\A\s*<!--.*?-->\s*", re.S)
+
+
+def substitute(text: str, v: dict, where: str, target: Path = None) -> str:
+    """{{VAR}} 치환. {{INCLUDE:경로}} 는 대상 리포의 소유 파일 본문을 그 자리에 넣는다.
+
+    소유 파일을 참조가 아니라 본문으로 넣는 이유: 에이전트가 읽는 규칙 정본이 한 파일이어야
+    하고, 중첩 import 가 모든 하네스에서 따라가진다는 보장이 없다. 사람이 소유 파일을 고치고
+    render 를 잊으면 check 가 커밋을 막는다 — 어긋난 채로 지나가지 않는다.
+    """
+    # 변수는 템플릿 자신의 것만 본다. 소유 파일 본문은 그 뒤에 넣는다 — 프로젝트 문서가
+    # `{{VAR}}` 같은 표기를 다룰 수 있고(템플릿 엔진을 쓰는 프로젝트, 이 하네스 자신), 그것을
+    # 하네스 변수로 읽으면 사실 문서 한 줄이 render 를 막는다.
+    missing = sorted({m for m in VAR.findall(text) if m not in v})
+    if missing:
+        die("error: unknown template variable(s): %s\n  --> %s" % (", ".join(missing), where))
+    text = VAR.sub(lambda m: v[m.group(1)], text)
+    if target is not None:
+        def pull(m):
+            p = target / m.group(1)
+            if not p.is_file():
+                die("error: included file is missing\n  --> %s\n  required by %s" % (p, where))
+            body = p.read_text(encoding="utf-8")
+            # 소유 파일 머리의 안내 주석은 그 파일을 고치는 사람에게 하는 말이다.
+            # 규칙 정본에 담으면 에이전트가 읽는 근거에 소음이 섞인다.
+            body = LEAD_COMMENT.sub("", body, count=1)
+            return body.strip()
+        text = INCLUDE.sub(pull, text)
+    return text
+
+
+def deny_rules(cfg: dict) -> list:
+    """보호 브랜치 push · force push · --no-verify · 기준 문서 수정."""
+    out = []
+    for br in cfg["branches"]["protected"]:
+        out += [
+            "Bash(git push origin %s)" % br,
+            "Bash(git push origin %s:*)" % br,
+            "Bash(git push -u origin %s)" % br,
+            "Bash(git push --set-upstream origin %s)" % br,
+            "Bash(git push origin HEAD:%s)" % br,
+            "Bash(git push*HEAD:refs/heads/%s*)" % br,
+            "Bash(git push*refs/heads/%s*)" % br,
+            "Bash(git push*:%s)" % br,
+        ]
+    out += [
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+        "Bash(git push --force-with-lease:*)",
+        "Bash(git push origin --force:*)",
+        "Bash(git push origin -f:*)",
+        "Bash(git push origin +*)",
+        "Bash(git push --no-verify:*)",
+        "Bash(git push*--no-verify*)",
+        "Bash(git commit --no-verify:*)",
+        "Bash(git commit*--no-verify*)",
+        "Bash(git commit -n:*)",
+    ]
+    for doc in cfg["docs"]["protected"]:
+        # 디렉터리는 그 아래 전부다. 권한 규칙은 `dir/` 로는 그 아래 파일에 걸리지 않는다.
+        rule = doc.rstrip("*").rstrip("/") + "/**" if doc.endswith(("/", "/**")) else doc
+        for tool in ("Edit", "Write", "NotebookEdit"):
+            out.append("%s(%s)" % (tool, rule))
+    return out
+
+
+def settings_json(cfg: dict) -> str:
+    data = {
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": "$CLAUDE_PROJECT_DIR/script/hooks/bash-guard.sh",
+                }],
+            }],
+        },
+        # 단계 시작 표지는 묻지 않고 돈다 — 단계마다 승인을 받으면 흐름이 끊긴다
+        "permissions": {"allow": ["Bash(script/metric.py step:*)"], "deny": deny_rules(cfg)},
+    }
+    return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+
+
+# 값 안의 $HOME 을 셸이 펼쳐야 하는 키. 나머지는 전부 리터럴로 인용한다 —
+# 정규식의 `$` 가 변수 확장으로 읽히면 검사식이 조용히 달라진다.
+SHELL_EXPANDS = {"USAGE_LOG_PATH"}
+
+
+def harness_env(v: dict) -> str:
+    lines = [BANNER_SH, "# 셸이 읽는 설정값. `. script/harness.env` 로 소스한다.\n"]
+    for k in sorted(v):
+        lines.append("%s=%s\n" % (k, shell_quote(v[k], expand=k in SHELL_EXPANDS)))
+    return "".join(lines)
+
+
+def shell_quote(s: str, expand: bool = False) -> str:
+    if s == "":
+        return '""'
+    if expand:
+        return '"%s"' % s.replace('\\', '\\\\').replace('"', r'\"').replace('`', r'\`')
+    if re.fullmatch(r"[A-Za-z0-9_./:=-]+", s):
+        return s
+    return "'%s'" % s.replace("'", "'\\''")
+
+
+def parse_frontmatter(text: str, where: str):
+    if not text.startswith("---\n"):
+        die("error: missing frontmatter\n  --> %s" % where)
+    end = text.find("\n---\n", 3)
+    if end < 0:
+        die("error: unterminated frontmatter\n  --> %s" % where)
+    meta = {}
+    for line in text[4:end].splitlines():
+        if not line.strip():
+            continue
+        k, _, val = line.partition(":")
+        meta[k.strip()] = val.strip()
+    return meta, text[end + 5:]
+
+
+def toml_str(s: str) -> str:
+    """TOML basic string. JSON 이스케이프와 호환된다."""
+    return json.dumps(s, ensure_ascii=False)
+
+
+def agent_table(cfg: dict) -> str:
+    """설정된 역할만으로 자산 표의 행을 만든다.
+
+    표를 손으로 적으면 역할을 지운 뒤에도 이름이 남아, 만들어지지 않은 파일을 가리킨다.
+    한 줄 설명은 어댑터 본문의 frontmatter `summary` 가 갖는다 — 설명과 본문이 같은 파일에 있다.
+    """
+    rows = []
+    for name in sorted(cfg["roles"]):
+        src = TEMPLATES / "agents" / ("%s.md" % name)
+        if not src.is_file():
+            die("error: no adapter body for role `%s`\n  --> %s" % (name, src))
+        meta, _ = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))
+        if "summary" not in meta:
+            die("error: frontmatter has no `summary`\n  --> %s" % src)
+        rows.append("| `.claude/agents/%s.md` | %s |" % (name, meta["summary"]))
+    return "\n".join(rows)
+
+
+# 커맨드 파일 이름이 역할 이름과 같으면 그 역할 전용 커맨드다 — 역할을 지우면 함께 빠진다.
+COMMANDS_DIR = TEMPLATES / "managed" / ".claude" / "commands"
+
+
+def command_rows(cfg: dict) -> list:
+    """설치되는 커맨드만으로 자산 표의 행을 만든다.
+
+    손으로 적으면 역할을 지운 뒤에도 이름이 남아, 만들어지지 않은 파일을 가리킨다.
+    한 줄 설명은 그 커맨드의 frontmatter `description` 이 갖는다.
+    """
+    rows = []
+    for src in sorted(COMMANDS_DIR.glob("*.md")):
+        name = src.stem
+        if name not in cfg["roles"] and (TEMPLATES / "agents" / ("%s.md" % name)).is_file():
+            continue   # 그 역할을 쓰지 않는다 — render 도 이 커맨드를 깔지 않는다
+        meta, _ = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))
+        if "summary" not in meta:
+            die("error: frontmatter has no `summary`\n  --> %s" % src)
+        rows.append("| `.claude/commands/%s.md` | %s |" % (name, meta["summary"]))
+    for wf, body in sorted(cfg["workflows"].items()):   # 이 프로젝트가 만든 절차의 커맨드
+        if fragment(wf, "_head") is None:
+            rows.append("| `.claude/commands/%s.md` | `/%s <이슈번호>` — %s |" % (wf, wf, body.get("title") or wf))
+    return rows
+
+
+def role_notes(target, name: str, where: str = None) -> str:
+    """그 역할(또는 절차)에 이 프로젝트가 더한 지시. 머리 안내 주석은 사람에게 하는 말이라 뺀다."""
+    p = target / (where or ROLE_NOTES) / ("%s.md" % name) if target else None
+    return LEAD_COMMENT.sub("", p.read_text(encoding="utf-8")).strip() if p and p.is_file() else ""
+
+
+def agent_files(cfg: dict, v: dict, target: Path = None) -> list:
+    """역할 어댑터. 본문은 하네스가 갖고 frontmatter 는 설정에서 나온다."""
+    out = []
+    for name in sorted(cfg["roles"]):
+        role = dict(cfg["roles"][name], model=role_model(cfg, name))   # 어댑터에는 실제로 쓰는 모델을 적는다
+        src = TEMPLATES / "agents" / ("%s.md" % name)
+        if not src.is_file():
+            die("error: no adapter body for role `%s`\n  --> %s" % (name, src))
+        meta, body = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))
+        if "description" not in meta:
+            die("error: frontmatter has no `description`\n  --> %s" % src)
+        body = substitute(body, v, str(src)).strip() + "\n"
+        extra = role_notes(target, name)
+        if extra:
+            body += "\n## 이 프로젝트에서\n\n%s\n" % extra
+        if "'''" in body:
+            die("error: body contains \'\'\' — the TOML copy cannot be generated\n  --> %s" % src)
+
+        # 어댑터 형식을 가진 벤더마다 하나씩. 오케스트레이터를 바꿔도 파일이 오가지 않는다
+        for v in VENDORS.values():
+            if v.get("adapter"):
+                out.append(ADAPTERS[v["adapter"]](name, meta, body, role))
+    return out
+
+
+def _sandbox(role: dict) -> str:
+    return "read-only" if role["access"] == "read-only" else "workspace-write"
+
+
+def claude_md(name: str, meta: dict, body: str, role: dict):
+    fm = ["---", "name: %s" % name, "description: %s" % meta["description"],
+          "tools: %s" % ", ".join(tools_of(role))]
+    if role.get("model"):
+        fm.append("model: %s" % role["model"])
+    fm += ["codex_sandbox_mode: %s" % _sandbox(role), "---", ""]
+    return (".claude/agents/%s.md" % name, "\n".join(fm) + "\n" + body, 0o644)
+
+
+def codex_toml(name: str, meta: dict, body: str, role: dict):
+    toml = ["name = %s" % toml_str(name), "description = %s" % toml_str(meta["description"]),
+            "sandbox_mode = %s" % toml_str(_sandbox(role))]
+    if role.get("model"):
+        toml.append("model = %s" % toml_str(role["model"]))
+    toml.append("developer_instructions = '''\n%s'''" % body)
+    return (".codex/agents/%s.toml" % name, "\n".join(toml) + "\n", 0o644)
+
+
+# 벤더 선언의 `adapter` 가 이 이름 중 하나를 고른다. 새 형식의 벤더가 오면 렌더러 하나를 더한다
+ADAPTERS = {"claude-md": claude_md, "codex-toml": codex_toml}
+
+
+def forge_doc(cfg: dict, v: dict) -> str:
+    """`.ai/forge.md` — 사람과 에이전트가 읽는 forge 명령 사전.
+
+    **손으로 쓰지 않는다.** 손으로 쓴 사전은 실제 어댑터와 갈라져, 없는 플래그를 적은 채
+    남는다. 트래커와 리뷰 호스트가 다른 forge 여도 각자의 절이 제 자리에서 나온다.
+    """
+    f = cfg["forge"]
+    parts = [substitute((TEMPLATES / "forge" / "forge.md").read_text(encoding="utf-8"),
+                        v, "forge.md")]
+    for kind, frag in ((f["tracker"], "tracker.md"), (f["review_host"], "review.md")):
+        src = TEMPLATES / "forge" / kind / frag
+        if not src.is_file():
+            die("error: no command reference for this forge\n  --> %s\n\nhelp: check [forge] in harness.toml" % src)
+        parts.append(substitute(src.read_text(encoding="utf-8"), v, str(src)))
+    return "\n".join(p.strip() for p in parts) + "\n"
+
+
+def adr_files(cfg: dict, v: dict) -> list:
+    """ADR 스타일별 문서 세트. 스타일이 정하는 것은 문서뿐이고 절차는 바뀌지 않는다."""
+    style, tool, d = cfg["adr"]["style"], cfg["adr"]["tool"], cfg["adr"]["dir"]
+    base = TEMPLATES / "adr" / style
+    if not base.is_dir():
+        die("error: unknown adr.style `%s` (available: %s)"
+            % (style, ", ".join(sorted(p.name for p in (TEMPLATES / "adr").iterdir()))))
+    if style == "nygard" and tool not in ("adr-tools", "manual", "none"):
+        die("error: adr.style = nygard supports adr.tool adr-tools, manual or none (got %r)" % tool)
+    if style == "madr" and tool == "adr-tools":
+        die("error: adr.tool = adr-tools cannot be used with adr.style = madr\n"
+            "\n"
+            "  adr-tools locates status and supersede links by the `## Status` heading,\n"
+            "  which MADR does not have — it would silently do nothing.\n"
+            "\n"
+            "help: use the manual procedure with MADR\n"
+            "        harness set adr.tool manual")
+
+    out = [(".ai/adr.md", substitute((base / "adr.md").read_text(encoding="utf-8"),
+                                     v, str(base / "adr.md")), 0o644)]
+    if style == "none":
+        return out
+    out.append(("%s/README.md" % d,
+                substitute((base / "README.md").read_text(encoding="utf-8"),
+                           v, str(base / "README.md")), 0o644))
+    tpl = base / "template.md"
+    if tpl.is_file():
+        out.append(("%s/templates/template.md" % d,
+                    substitute(tpl.read_text(encoding="utf-8"), v, str(tpl)), 0o644))
+    if tool == "adr-tools":
+        # adr-tools 가 대상 디렉터리를 이 파일 하나로 읽는다.
+        out.append((".adr-dir", d + "\n", 0o644))
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 절차 — `workflows.<이름>.steps` 를 이어 `.ai/workflows/<이름>.md` 를 만든다
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 단계 하나는 종류·제목과 본문이다. 본문은 `templates/workflows/<이름>/<id>.md` 조각이 있으면
+# 그것이고, 없으면 종류에서 만든다. 번호는 순서에서 나온다 — 조각은 다른 단계를 번호가 아니라
+# `{{step:<id>}}` 로 가리키므로, 순서를 바꿔도 참조가 따라가고 가리킨 단계를 빼면 렌더가 막힌다.
+
+WORKFLOWS = TEMPLATES / "workflows"
+STEP_KINDS = ("agent", "script", "prompt", "gate")
+STEP_REF = re.compile(r"\{\{step:([a-z0-9-]+)\}\}")
+# 기본 절차가 부르는 역할 이름. 어댑터의 위임표가 이 표현으로 서브에이전트를 찾는다.
+# 여기 없는 역할은 키를 그대로 쓴다 — 어댑터가 "`<역할>` 역할" 을 그 이름의 서브에이전트로 읽는다.
+ROLE_LABEL = {"requirement-analyzer": "요구사항 검토자", "spec-writer": "명세 작성자",
+              "planner": "작업 분해자", "developer": "구현자"}
+
+
+def default_workflows() -> dict:
+    """하네스가 싣고 온 기본 설정의 절차. 설치본은 `.harness/templates/harness.toml` 로 들고 간다."""
+    if not DEFAULT_CONFIG.is_file():
+        return {}
+    with DEFAULT_CONFIG.open("rb") as f:
+        return tomllib.load(f).get("workflows", {})
+
+
+def fragment(wf: str, name: str):
+    p = WORKFLOWS / wf / ("%s.md" % name)
+    return p.read_text(encoding="utf-8") if p.is_file() else None
+
+
+def validate_workflows(cfg: dict):
+    known = sorted(p.name for p in WORKFLOWS.iterdir() if p.is_dir()) if WORKFLOWS.is_dir() else []
+    for wf, body in cfg["workflows"].items():
+        where = "workflows.%s" % wf
+        if wf not in known:
+            # 이 프로젝트가 만든 절차. 머리글과 커맨드는 render 가 설정에서 만든다
+            if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", wf):
+                die("error: %s — a workflow name is lowercase letters, digits and dashes (2–31 chars)" % where)
+            taken = {p.stem for p in COMMANDS_DIR.glob("*.md")} | set(cfg["roles"])
+            if wf in taken:
+                die("error: %s — `%s` is already a command or a role name" % (where, wf))
+        steps = body.get("steps") or []
+        if not steps:
+            die("error: %s.steps is empty — a workflow needs at least one step" % where)
+        seen = set()
+        for i, st in enumerate(steps):
+            at = "%s.steps[%d]" % (where, i)
+            sid = st.get("id", "")
+            if not re.fullmatch(r"[a-z0-9-]+", sid):
+                die("error: %s.id must be lowercase letters, digits and dashes (got %r)" % (at, sid))
+            if sid in seen:
+                die("error: %s.id %r appears twice in %s" % (at, sid, where))
+            seen.add(sid)
+            kind = st.get("type")
+            if kind not in STEP_KINDS:
+                die("error: %s.type must be one of %s (got %r)" % (at, ", ".join(STEP_KINDS), kind))
+            if not st.get("title", "").strip():
+                die("error: %s.title is empty" % at)
+            own = fragment(wf, sid) is not None
+            if kind == "agent":
+                role = st.get("role", "")
+                if role not in cfg["roles"]:
+                    die("error: %s.role %r is not a configured role (have: %s)"
+                        % (at, role, ", ".join(sorted(cfg["roles"]))))
+                # 전용 스크립트가 있는 CLI 러너 역할은 그 스크립트를 부른다(리뷰 → review-mr.sh). 입력이 이슈가 아니다
+                entry = role_meta(role)["entry"]
+                if cfg["roles"][role]["runner"] != "inproc" and entry:
+                    die("error: %s delegates to %s, which runs through a script (runner = %s)\n\n"
+                        "help: call the script that runs it with a script step instead\n"
+                        "        { type = \"script\", run = \"%s\", ... }"
+                        % (at, role, cfg["roles"][role]["runner"], entry))
+            if kind == "script" and not st.get("run", "").strip():
+                die("error: %s is a script step without `run`" % at)
+            if kind == "prompt" and not own and not st.get("text", "").strip():
+                die("error: %s is a prompt step without `text` — say what the orchestrator does" % at)
+
+
+def step_heading(cfg: dict, st: dict) -> str:
+    k, t = st["type"], st["title"]
+    if k == "agent" and cfg["roles"][st["role"]]["runner"] != "inproc":
+        return "%s — %s 역할을 %s 로 실행" % (t, ROLE_LABEL.get(st["role"], "`%s`" % st["role"]),
+                                          VENDORS[cfg["roles"][st["role"]]["runner"]]["name"])
+    if k == "agent":
+        return "%s — %s 역할에 위임" % (t, ROLE_LABEL.get(st["role"], "`%s`" % st["role"]))
+    if k == "script":
+        return "%s — `%s`" % (t, st["run"])
+    if k == "gate":
+        return "%s (사람)" % t
+    return t
+
+
+def step_body(cfg: dict, wf: str, st: dict) -> str:
+    extra = st.get("text", "").strip()
+    own = fragment(wf, st["id"])
+    k = st["type"]
+    if k == "agent" and cfg["roles"][st["role"]]["runner"] != "inproc":
+        r = st["role"]
+        lead = ("```bash\n%s %s <이슈번호>\n```\n\n이 역할은 서브에이전트가 아니라 %s 로 따로 돈다"
+                "(`roles.%s.runner`). 그 CLI 는 리포와 `.ai/templates/%s.md` 계약을 직접 읽는다 — 앞 단계의 결과는 "
+                "리포에 남긴 것만 전해진다. **종료 코드가 0 이 아니면 다음 단계로 가지 않는다.** 출력을 그대로 보고하고 멈춘다."
+                % (RUN_AGENT, r, VENDORS[cfg["roles"][r]["runner"]]["name"], r, r))
+        rest = (own or "").strip("\n")
+        return "\n" + "\n\n".join(x for x in (lead, rest, extra) if x) + "\n\n"
+    if own is not None:
+        return own if not extra else own.rstrip("\n") + "\n\n" + extra + "\n\n"
+    if k == "agent":
+        lead = ("`.ai/templates/%s.md` 계약을 따르는 역할이다. 이슈 번호와 앞 단계의 결과를 넘긴다."
+                % st["role"])
+    elif k == "script":
+        lead = ("```bash\n%s\n```\n\n**종료 코드가 0 이 아니면 다음 단계로 가지 않는다.** "
+                "출력을 그대로 보고하고 멈춘다." % st["run"])
+    elif k == "gate":
+        lead = "**여기서 멈추고 사용자에게 올린다.** 사용자가 답하기 전에는 다음 단계로 가지 않는다."
+    else:
+        lead = ""
+    return "\n" + "\n\n".join(x for x in (lead, extra) if x) + "\n\n"
+
+
+def custom_head(wf: str, title: str) -> str:
+    return ("# %s — %s\n\n하네스 설정(`workflows.%s`)에서 만든 절차다. 단계의 순서와 내용은 그 설정이 정한다.\n\n"
+            "## 입력\n\n이슈 번호 하나. 없으면 진행하지 않고 번호를 요구한다.\n\n## 절차\n\n" % (wf, title, wf))
+
+
+def custom_command(wf: str, title: str) -> str:
+    """이 프로젝트가 만든 절차의 Claude Code 커맨드. 절차를 복사하지 않고 정본을 가리킨다."""
+    return ("---\ndescription: %s. 절차 정본은 .ai/workflows/%s.md 다.\nsummary: `/%s <이슈번호>` — %s\n"
+            "argument-hint: <이슈번호>\ndisable-model-invocation: true\n---\n\n"
+            "> **명시 호출 전용.** 사용자가 직접 부른 턴에서만 돈다.\n\n"
+            "**절차 정본은 `.ai/workflows/%s.md` 다. 먼저 읽고 그대로 따른다.**\n"
+            "이 파일에 절차를 복사하지 않는다 — 복사본은 정본 개정을 따라가지 못한다.\n\n"
+            "대상 이슈: **$1**\n\n`$1` 이 비어 있으면 아무것도 하지 말고 이슈 번호를 요구한다.\n\n"
+            "정본이 \"`<역할>` 역할에 위임\" 이라고 한 지점은 그 이름의 서브에이전트를 부른다.\n"
+            "사람에게 올리라고 한 지점(사람 게이트)은 위임하지 않고 이 커맨드가 직접 묻는다.\n"
+            % (title, wf, wf, title, wf))
+
+
+def workflow_doc(cfg: dict, wf: str, target: Path = None) -> str:
+    steps = cfg["workflows"][wf]["steps"]
+    head = fragment(wf, "_head")
+    if head is None:   # 이 프로젝트가 만든 절차. 제목은 선택이다 — 없으면 이름을 쓴다
+        head = custom_head(wf, cfg["workflows"][wf].get("title") or wf)
+    num = {st["id"]: str(i + 1) for i, st in enumerate(steps)}
+    # 실행 지표가 켜져 있으면 단계마다 시작 표지를 한 번 남기게 한다 — 세션 토큰을 단계로 나누는 기준이다
+    mark = (lambda st: "\n> 시작 표지: `script/metric.py step %s %s` 를 한 번 실행한다(실행 지표 — 결과와 무관하다)\n"
+            % (wf, st["id"])) if cfg["metrics"]["dir"] != "off" else (lambda st: "")
+    text = head + "".join(
+        "### %d. %s\n%s%s" % (i + 1, step_heading(cfg, st), mark(st), step_body(cfg, wf, st)) for i, st in enumerate(steps)
+    ) + (fragment(wf, "_tail") or "")
+    extra = role_notes(target, wf, WORKFLOW_NOTES)
+    if extra:
+        text = text.rstrip("\n") + "\n\n## 이 프로젝트에서\n\n%s\n" % extra
+
+    def ref(m):
+        if m.group(1) not in num:
+            die("error: workflows.%s no longer has step %r, but the procedure still refers to it\n\n"
+                "  Another step (or the fixed text around the steps) points at it by number,\n"
+                "  so removing it would leave that reference dangling.\n\n"
+                "help: put the step back, or keep the steps that depend on it out as well"
+                % (wf, m.group(1)))
+        return num[m.group(1)]
+    return substitute(STEP_REF.sub(ref, text), derive(cfg), "workflows.%s" % wf)
+
+
+def plan(cfg: dict, target: Path = None) -> list:
+    """생성되는 파일 전부. (경로, 내용, 권한)"""
+    v = derive(cfg)
+    out = []
+
+    gen = TEMPLATES / "generated"
+    for src in sorted(gen.rglob("*")):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(gen).as_posix()
+        text = src.read_text(encoding="utf-8")
+        mode = 0o755 if os.access(src, os.X_OK) else 0o644
+        out.append((rel, substitute(text, dict(v, PROJECT_COMMANDS=commands_doc(cfg, target)), str(src), target), mode))
+
+    out.append(("script/harness.env", harness_env(v), 0o644))
+    out.append((VERIFY_SCRIPT, verify_script(cfg), 0o755))
+    out.append(("script/harness.plan.json", json.dumps(run_plan(cfg), ensure_ascii=False, indent=2) + "\n", 0o644))
+    out.append((".claude/settings.json", settings_json(cfg), 0o644))
+    out.append((".ai/forge.md", forge_doc(cfg, v), 0o644))
+    out += adr_files(cfg, v)
+    out += agent_files(cfg, v, target)
+    out += [(".claude/commands/%s.md" % wf, custom_command(wf, body.get("title") or wf), 0o644)
+            for wf, body in sorted(cfg["workflows"].items()) if fragment(wf, "_head") is None]
+    out += [(".ai/workflows/%s.md" % wf, workflow_doc(cfg, wf, target), 0o644) for wf in sorted(cfg["workflows"])]
+    return sorted(out)
+
+
+def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None):
+    """관리 파일은 덮어쓰고, 소유 파일은 없을 때만 깐다. (바뀐 수, 깐 경로 전부)"""
+    n, paths = 0, []
+    if not src.is_dir():
+        return 0, []
+    for f in sorted(src.rglob("*")):
+        if not f.is_file():
+            continue
+        rel = f.relative_to(src).as_posix()
+        if skip and skip(rel):
+            continue
+        paths.append(rel)
+        out = dst / rel
+        if only_if_absent and out.exists():
+            continue
+        out.parent.mkdir(parents=True, exist_ok=True)
+        text = f.read_text(encoding="utf-8")
+        if subst is not None:
+            text = substitute(text, subst, str(f))
+        if out.is_file() and out.read_text(encoding="utf-8") == text:
+            continue
+        out.write_text(text, encoding="utf-8")
+        os.chmod(out, 0o755 if os.access(f, os.X_OK) else 0o644)
+        n += 1
+    return n, paths
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 명령
+# ─────────────────────────────────────────────────────────────────────────────
+
+# 지난 render 가 무엇을 깔았는지. 설정이 바뀌어 더는 만들지 않는 파일을 지우는 근거이고,
+# 제거할 때 무엇이 하네스 것이고 무엇이 프로젝트 것인지 가르는 근거다.
+MANIFEST = ".harness/generated"
+MANIFEST_MANAGED = ".harness/managed"
+
+
+def previous(target: Path, name: str = MANIFEST) -> list:
+    p = target / name
+    return p.read_text(encoding="utf-8").split() if p.is_file() else []
+
+
+def prune(target: Path, keep: set, manifest: str) -> int:
+    """직전에 깔았으나 이번에는 만들지 않는 파일을 지운다. 빈 디렉터리도 함께 걷는다."""
+    n = 0
+    for rel in previous(target, manifest):
+        if rel in keep:
+            continue
+        stale = target / rel
+        if stale.is_file():
+            stale.unlink()
+            n += 1
+            for d in stale.parents:
+                if d == target or any(d.iterdir()):
+                    break
+                d.rmdir()
+    return n
+
+
+def ci_dir(cfg: dict) -> Path:
+    return TEMPLATES / "ci" / cfg["forge"]["review_host"]
+
+
+def cmd_render(cfg, target, _args):
+    # 소유 파일을 먼저 깐다 — 생성물이 그 본문을 포함할 수 있다.
+    owned, _ = copy_tree(TEMPLATES / "owned", target, only_if_absent=True)
+    # CI 설정은 **있으면 손대지 않는다.** 프로젝트가 이미 갖고 있던 파이프라인을 덮으면
+    # 하네스 설치 한 번으로 빌드가 통째로 바뀐다. 없을 때만 최소 골격을 깐다.
+    owned += copy_tree(ci_dir(cfg), target, only_if_absent=True, subst=derive(cfg))[0]
+    # 쓰지 않는 역할의 계약은 깔지 않는다. 깔아 두면 설정에 없는 역할을 가리키는 문서가 남는다.
+    known = {f.stem for f in (TEMPLATES / "agents").glob("*.md")}
+    unused = known - set(cfg["roles"])
+    def role_file_unused(rel):
+        """쓰지 않는 역할의 계약과 그 역할만 부르는 커맨드는 깔지 않는다."""
+        for pre in (".ai/templates/", ".claude/commands/"):
+            if rel.startswith(pre) and rel.endswith(".md") \
+               and rel[len(pre):-len(".md")] in unused:
+                return True
+        return False
+
+    managed, managed_paths = copy_tree(
+        TEMPLATES / "managed", target, only_if_absent=False, skip=role_file_unused)
+
+    items = plan(cfg, target)
+    written = 0
+    for rel, content, mode in items:
+        p = target / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        old = p.read_text(encoding="utf-8") if p.is_file() else None
+        if old != content:
+            p.write_text(content, encoding="utf-8")
+            written += 1
+        os.chmod(p, mode)
+
+    # 설정이 바뀌면 만들던 파일이 빠진다. 남겨 두면 옛 forge 어댑터나 쓰지 않는 역할의 계약이
+    # 리포에 그대로 있어, 사람도 에이전트도 어느 쪽이 현재인지 알 수 없다.
+    made = {rel for rel, _c, _m in items}
+    removed = prune(target, made, MANIFEST) + prune(target, set(managed_paths) | made, MANIFEST_MANAGED)
+
+    mf = target / MANIFEST
+    mf.parent.mkdir(parents=True, exist_ok=True)
+    mf.write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
+    (target / MANIFEST_MANAGED).write_text(
+        "".join(rel + "\n" for rel in sorted(managed_paths)), encoding="utf-8")
+
+    print("render: %d generated (%d updated, %d removed) · %d managed updated · %d owned created"
+          % (len(items), written, removed, managed, owned))
+    return 0
+
+
+def staged_text(target: Path, rel: str):
+    r = subprocess.run(["git", "-C", str(target), "show", ":%s" % rel],
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def cmd_check(cfg, target, args):
+    bad = []
+    items = plan(cfg, target)
+    made = {rel for rel, _c, _m in items}
+    for rel in previous(target):
+        if rel not in made and (target / rel).is_file():
+            bad.append((rel, "left over; the config no longer generates it"))
+    for rel, content, _mode in items:
+        if args.staged:
+            actual = staged_text(target, rel)
+        else:
+            p = target / rel
+            actual = p.read_text(encoding="utf-8") if p.is_file() else None
+        if actual is None:
+            bad.append((rel, "missing"))
+        elif actual != content:
+            bad.append((rel, "differs from the config"))
+    if bad:
+        print("error: generated files do not match the config%s"
+              % (" (staged contents)" if args.staged else ""), file=sys.stderr)
+        for rel, why in bad:
+            print("  %-52s %s" % (rel, why), file=sys.stderr)
+        print("\nhelp: regenerate them — never edit generated files by hand\n"
+              "        harness render", file=sys.stderr)
+        return 1
+    print("check: %d generated files match the config" % len(items))
+    return 0
+
+
+def cmd_vars(cfg, _target, _args):
+    for k, val in sorted(derive(cfg).items()):
+        print("%-24s %s" % (k, val))
+    return 0
+
+
+def seed_config(target: Path):
+    """설정이 없는 대상에 기본 설정을 깔고 프로젝트 이름만 채운다."""
+    dst = target / "harness.toml"
+    if dst.exists():
+        return
+    text = DEFAULT_CONFIG.read_text(encoding="utf-8")
+    dst.write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
+                   encoding="utf-8")
+    print("created %s — review the values, then run `harness render`" % dst)
+
+
+# 설치된 프로젝트의 목록. UI 가 이것으로 프로젝트를 전환한다.
+# 사용 기록(`usage.log_path`)과 같은 `~/.harness/<이름>/` 에 경로 한 줄을 남긴다.
+def registry() -> Path:
+    return Path(os.environ.get("HARNESS_HOME") or Path.home() / ".harness")
+
+
+def register(cfg, target: Path):
+    # ponytail: 이름이 키다. 같은 이름의 프로젝트 둘이면 나중에 설치한 쪽이 이긴다
+    d = registry() / cfg["project"]["name"]
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "project.json").write_text(json.dumps({"path": str(target)}) + "\n", encoding="utf-8")
+
+
+def unregister(target: Path):
+    for f in registry().glob("*/project.json"):
+        try:
+            if json.loads(f.read_text(encoding="utf-8")).get("path") == str(target):
+                f.unlink()
+        except (OSError, ValueError):
+            pass
+
+
+def source_tree(p: Path) -> bool:
+    """하네스 소스 리포인가 — 실행 파일과 기본 설정을 `src/` 아래에 갖는다."""
+    return (p / "src" / "bin" / "harness").is_file() and (p / "src" / "templates" / "harness.toml").is_file()
+
+
+def cmd_install(cfg, target, _args):
+    dst = target / ".harness"
+    if source_tree(target):
+        # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
+        # 생성물이 작업 트리가 아니라 지난 사본을 따라간다. 훅과 검증 스크립트는 `.harness/bin/harness`
+        # 가 없으면 `src/bin/harness` 를 쓴다. 옛 방식으로 깔린 사본이 있으면 걷어낸다(매니페스트는 남긴다).
+        for stale in (dst / "bin", dst / "templates", dst / "VERSION"):
+            if stale.is_dir():
+                shutil.rmtree(stale)
+            elif stale.is_file():
+                stale.unlink()
+        print("install: %s is the harness source tree — it runs its own src/bin/harness, nothing to vendor" % target)
+        register(cfg, target)
+        return cmd_render(cfg, target, _args)
+    if dst.exists():
+        shutil.rmtree(dst)
+    (dst / "bin").mkdir(parents=True)
+    shutil.copy2(HERE / "harness", dst / "bin" / "harness")
+    shutil.copytree(TEMPLATES, dst / "templates")
+    (dst / "VERSION").write_text(cfg["harness"]["version"] + "\n", encoding="utf-8")
+    print("install: %s (harness %s)" % (dst, cfg["harness"]["version"]))
+    register(cfg, target)
+    return cmd_render(cfg, target, _args)
+
+
+
+# 설정에 적는 이름과 설치되는 실행 파일 이름이 다른 도구.
+ADR_EXE = {"adr-tools": "adr"}
+
+
+def hooks_path(target: Path):
+    r = subprocess.run(["git", "-C", str(target), "config", "core.hooksPath"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def owned_files(target: Path):
+    """대상에 실제로 있는 소유 파일과 설정. `--purge` 만 이것을 지운다."""
+    out = [rel for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
+                                 for p in (TEMPLATES / "owned").rglob("*") if p.is_file())
+           if (target / rel).is_file()]
+    out += [rel for rel in (LEGACY_VERIFY, LEGACY_COMMANDS) if (target / rel).is_file() and rel not in out]
+    if (target / "harness.toml").is_file():
+        out.append("harness.toml")
+    return out
+
+
+def by_dir(paths):
+    """최상위 디렉터리로 묶어 건수만 낸다. 수십 개를 나열하면 아무도 읽지 않는다."""
+    out = {}
+    for rel in paths:
+        head = rel.split("/")[0] + "/" if "/" in rel else rel
+        out[head] = out.get(head, 0) + 1
+    return sorted(out.items())
+
+
+def confirm_purge(target: Path, harness_files, owned, args):
+    """`--purge` 는 사람이 쓴 산문과 설정까지 지운다. 무엇이 사라지는지 보이고 확인을 받는다.
+
+    되돌릴 수 없는 유일한 명령이므로 게이트가 여기 있다. 종료 코드: 0 진행 · 1 거절 · 2 확인 불가.
+    """
+    print("purge target: %s" % target)
+    print("\n  installed by the harness — `harness install` puts these back")
+    print("    %-30s vendored copy of the harness" % ".harness/")
+    for d, n in by_dir(harness_files):
+        print("    %-30s %s" % (d, "%d files" % n if d.endswith("/") else ""))
+    print("\n  yours — these do not come back")
+    for rel in owned:
+        print("    %s" % rel)
+    leftovers = [d for d in ("docs/spec", "docs/plan", cfg_adr_dir(target),
+                             ".github/workflows", ".gitlab-ci.yml")
+                 if d and (target / d).exists()]
+    if leftovers:
+        print("\n  untouched work output: %s" % ", ".join(leftovers))
+
+    if args.yes:
+        return 0
+    if not sys.stdin.isatty():
+        sys.stdout.flush()   # 목록이 먼저 보여야 사유가 읽힌다
+        print("\nstop: --purge needs a confirmation and this shell is not interactive\n"
+              "help: rerun with --yes if you mean it", file=sys.stderr)
+        return 2
+    try:
+        answer = input("\nremove these? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer not in ("y", "yes"):
+        print("stop: nothing was removed")
+        return 1
+    return 0
+
+
+def cmd_uninstall(_cfg, target, args):
+    """하네스가 깐 것만 지운다. 프로젝트가 쓴 것은 남긴다.
+
+    소유 파일(`.ai/project/`·`docs/spec/README.md`, 옛 설치의 `script/verify-project.sh`)과 설정,
+    그리고 명세·분해·결정 기록 같은 작업 산출물은 **사람이 쓴 것이라 지우지 않는다.** `--purge` 를 줘야 소유 파일과
+    설정까지 지운다 — 그건 되돌릴 수 없으므로 따로 켜고, 지우기 전에 확인을 받는다.
+    """
+    gen = previous(target, MANIFEST)
+    man = previous(target, MANIFEST_MANAGED)
+    if not gen and not man:
+        die("error: no harness manifest at %s\n\n  Nothing was installed here, or it has already been removed." % MANIFEST)
+
+    owned = owned_files(target)
+    if args.purge:
+        rc = confirm_purge(target, sorted(set(gen) | set(man)), owned, args)
+        if rc:
+            return rc
+
+    removed, kept = [], []
+    for rel in sorted(set(gen) | set(man)):
+        f = target / rel
+        if f.is_file():
+            f.unlink()
+            removed.append(rel)
+
+    if args.purge:
+        for rel in owned:
+            f = target / rel
+            if f.is_file():
+                f.unlink()
+                removed.append(rel)
+    else:
+        kept = owned
+
+    shutil.rmtree(target / ".harness", ignore_errors=True)
+    unregister(target)
+
+    # 훅 설정이 사라진 디렉터리를 가리키면 커밋할 때마다 git 이 실패한다.
+    if hooks_path(target) == "script/githooks":
+        subprocess.run(["git", "-C", str(target), "config", "--unset", "core.hooksPath"],
+                       capture_output=True)
+        print("  unset core.hooksPath (it pointed at a directory that is now gone)")
+
+    # 하네스가 만든 빈 디렉터리를 정리한다. 작업 산출물이 남아 있으면 그대로 둔다.
+    for d in sorted((target / p).parent for p in removed):
+        while d != target and d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+            d = d.parent
+
+    print("uninstall: removed %d files" % len(removed))
+    if kept:
+        print("\nkept — these are yours, not the harness's (use --purge to remove them too):")
+        for rel in kept:
+            print("  %s" % rel)
+    leftovers = [d for d in ("docs/spec", "docs/plan", cfg_adr_dir(target),
+                             ".github/workflows", ".gitlab-ci.yml")
+                 if d and (target / d).exists()]
+    if leftovers:
+        print("\nuntouched: %s" % ", ".join(leftovers))
+    return 0
+
+
+def cfg_adr_dir(target: Path):
+    """설정이 이미 지워졌을 수 있으므로 없으면 조용히 넘어간다."""
+    p = target / "harness.toml"
+    if not p.is_file():
+        return ""
+    try:
+        with p.open("rb") as f:
+            return tomllib.load(f).get("adr", {}).get("dir", "")
+    except Exception:
+        return ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 참조 검사
+#
+# 하네스 문서가 사람에게 시키던 grep 을 여기로 옮긴다. 문서에 적힌 검사는
+# 아무도 돌리지 않는다 — 검사는 명령이 갖고, 문서는 그 명령을 부른다.
+
+SCAN_DIRS = (".ai", ".claude", ".codex", "script", "docs")
+SCAN_ROOTS = ("CLAUDE.md", "AGENTS.md", "README.md", "harness.toml")
+SCAN_SUFFIX = {".md", ".sh", ".json", ".toml", ".yml", ".yaml", ".py", ""}
+
+# 백틱 안의 리포 경로. 자리표시자(`<이슈>`·`*`·`{}`)가 섞인 것은 실재를 물을 수 없다.
+REF_RE = re.compile(r"`([^`\s]+)`")
+REF_PREFIX = (".ai/", ".claude/", ".codex/", "script/", "docs/")
+REF_SUFFIX = (".md", ".sh", ".json", ".toml", ".yml", ".yaml", ".py")
+REF_SKIP = set("<>*{}|()[]…")
+
+# 하네스가 문서에 적지만 만들지는 않는 파일. 없는 것이 정상이라 끊긴 참조가 아니다.
+# git 이 무시하는 경로도 같이 빠지지만, 그쪽은 리포가 git 일 때만 판정된다.
+REF_OPTIONAL = {".claude/settings.local.json", LEGACY_VERIFY, LEGACY_COMMANDS}
+
+
+def scan_files(target):
+    """참조를 찾을 파일. 생성·관리·소유를 가리지 않고 리포가 읽는 텍스트 전부."""
+    for d in SCAN_DIRS:
+        base = target / d
+        if base.is_dir():
+            for f in sorted(base.rglob("*")):
+                if f.is_file() and f.suffix in SCAN_SUFFIX:
+                    yield f
+    for n in SCAN_ROOTS:
+        f = target / n
+        if f.is_file():
+            yield f
+
+
+def ref_paths(text):
+    """본문이 실재를 주장하는 리포 경로만 낸다."""
+    for tok in REF_RE.findall(text):
+        if REF_SKIP & set(tok) or "://" in tok:
+            continue
+        if not tok.startswith(REF_PREFIX) or not tok.endswith(REF_SUFFIX):
+            continue
+        yield tok
+
+
+def dangling_roles(cfg, target):
+    """설정에 없는 역할을 아직 부르는 자리. 역할을 지우고 참조를 남기면 없는 것을 부른다."""
+    known = {f.stem for f in (TEMPLATES / "agents").glob("*.md")}
+    gone = sorted(known - set(cfg["roles"]))
+    out = []
+    for name in gone:
+        for f in scan_files(target):
+            for i, ln in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if name in ln:
+                    out.append((name, f.relative_to(target).as_posix(), i))
+                    break
+    return out
+
+
+def git_ignored(target, paths):
+    """git 이 무시하는 경로. 개인 설정처럼 없는 것이 정상인 파일을 결과에서 뺀다."""
+    if not paths:
+        return set()
+    try:
+        r = subprocess.run(["git", "check-ignore", "--stdin"], cwd=target,
+                           input="\n".join(paths), capture_output=True, text=True)
+    except OSError:
+        return set()
+    return set(r.stdout.split())
+
+
+def broken_refs(target):
+    """문서가 가리키는데 없는 파일. 문서가 언급하는 파일은 실재해야 한다."""
+    out = []
+    for f in scan_files(target):
+        if f.suffix != ".md":
+            continue
+        for tok in dict.fromkeys(ref_paths(f.read_text(encoding="utf-8", errors="replace"))):
+            if tok not in REF_OPTIONAL and not (target / tok).exists():
+                out.append((f.relative_to(target).as_posix(), tok))
+    skip = git_ignored(target, sorted({t for _, t in out}))
+    return [(rel, tok) for rel, tok in out if tok not in skip]
+
+
+def cmd_doctor(cfg, target, _args):
+    """쓸 준비가 됐는지 본다. 설정 자체는 여기 오기 전에 이미 검증됐다."""
+    v = derive(cfg)
+    bad = warn = 0
+
+    def line(state, what, detail=""):
+        nonlocal bad, warn
+        mark = {"ok": "  ok  ", "warn": "  warn", "bad": "  FAIL"}[state]
+        bad += state == "bad"
+        warn += state == "warn"
+        print("%s %s%s" % (mark, what, ("  — " + detail) if detail else ""))
+
+    print("config")
+    line("ok", "harness.toml is valid")
+    for rev, dev in distinct_pairs(cfg):
+        line("ok", "%s (%s) differs from %s (%s)" % (dev, vendor(cfg, dev), rev, vendor(cfg, rev)))
+    # 오케스트레이터가 할 수 없는 것 — 벤더 선언의 능력에서. 막지는 않는다(확인되지 않은 능력이 있다)
+    o = VENDORS[cfg["harness"]["orchestrator"]]
+    if not o.get("hooks"):
+        line("warn", "no command guard for %s" % o["name"],
+             "bash-guard.sh runs only under an orchestrator the harness wires hooks for; git hooks still apply")
+    for n in sorted(cfg["roles"]):
+        if cfg["roles"][n].get("model") and cfg["roles"][n]["runner"] == cfg["harness"]["orchestrator"]:
+            line("warn", "roles.%s.model = %s is not used" % (n, cfg["roles"][n]["model"]),
+                 "the orchestrator runs this role, so it uses harness.model")
+    inproc = sorted(n for n, r in cfg["roles"].items() if r["runner"] == "inproc")
+    if inproc and not o.get("subagents"):
+        line("warn", "%s cannot run subagents" % o["name"], "these roles need a CLI runner: %s" % ", ".join(inproc))
+    # 역할의 모델은 그 역할을 실제로 돌리는 에이전트의 것이어야 한다. 오케스트레이터를 바꾸면
+    # 서브에이전트 역할의 실행 주체가 따라 바뀌므로, 전에 고른 모델이 새 주체에 없을 수 있다.
+    tools = recorded_tools()
+    for n in sorted(cfg["roles"]):
+        if model_ok(cfg, n, tools) is False:
+            line("warn", "roles.%s.model = %s" % (n, cfg["roles"][n]["model"]),
+                 "not a model of %s on this machine (harness tools --sync to refresh)" % vendor(cfg, n))
+
+    print("\ngenerated files")
+    items = plan(cfg, target)
+    stale = [r for r in previous(target) if r not in {x[0] for x in items} and (target / r).is_file()]
+    diff = [r for r, c, _m in items
+            if not (target / r).is_file() or (target / r).read_text(encoding="utf-8") != c]
+    if diff or stale:
+        line("bad", "%d files differ from the config" % (len(diff) + len(stale)),
+             "run `harness render`")
+    else:
+        line("ok", "%d files match the config" % len(items))
+
+    print("\nproject facts")
+    for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
+                      for p in (TEMPLATES / "owned").rglob("*") if p.is_file()):
+        f = target / rel
+        if not f.is_file():
+            line("bad", rel, "missing")
+            continue
+        n = f.read_text(encoding="utf-8").count("TBD")
+        if n:
+            line("warn", rel, "%d placeholder(s) still to fill" % n)
+        else:
+            line("ok", rel)
+
+    print("\nverification")
+    if legacy_verify(target):
+        # 손으로 쓴 스크립트가 있으면 run-lint-test.sh 가 그것을 돈다 — 옮기기 전까지 동작을 바꾸지 않는다
+        r = subprocess.run(["bash", LEGACY_VERIFY], capture_output=True, cwd=target, env=QUIET_ENV())
+        line("ok" if r.returncode == 0 else "bad", "%s (hand-written)" % LEGACY_VERIFY,
+             "" if r.returncode == 0 else "verification does not pass yet")
+        if verify_steps(cfg):
+            line("warn", "%s runs instead of [commands] and [verify]" % LEGACY_VERIFY,
+                 "move its checks into harness.toml, then delete it")
+    else:
+        r = subprocess.run(["bash", VERIFY_SCRIPT], capture_output=True, text=True, cwd=target, env=QUIET_ENV())
+        if r.returncode == 0:
+            line("ok", VERIFY_SCRIPT, "passes")
+        elif r.returncode == VERIFY_UNSET:
+            line("bad", VERIFY_SCRIPT, "not set up — no commands yet")
+        else:
+            m = re.search(r"^verify: FAIL (.+)$", r.stderr, re.M)
+            line("bad", VERIFY_SCRIPT, "fails at %s" % m.group(1) if m else "does not pass")
+    if (target / LEGACY_COMMANDS).is_file() and any(cfg["commands"].values()):
+        line("warn", "%s is no longer read" % LEGACY_COMMANDS, "[commands] in harness.toml replaced it — delete the file")
+
+    print("\nreferences")
+    dr = dangling_roles(cfg, target)
+    if dr:
+        for name, rel, ln in dr:
+            line("warn", "role `%s` is not in harness.toml" % name,
+                 "still referenced at %s:%d" % (rel, ln))
+    else:
+        line("ok", "every role reference resolves to a configured role")
+    br = broken_refs(target)
+    if br:
+        for rel, tok in br[:10]:
+            line("warn", "`%s` does not exist" % tok, "referenced by %s" % rel)
+        if len(br) > 10:
+            line("warn", "%d more broken path reference(s)" % (len(br) - 10))
+    else:
+        line("ok", "every path a document names exists")
+
+    print("\ntools and connections")
+    for cli in v["FORGE_CLIS"].split():
+        line("ok" if shutil.which(cli) else "bad", "forge CLI `%s`" % cli,
+             "" if shutil.which(cli) else "not installed")
+    for kind in dict.fromkeys([cfg["forge"]["tracker"], cfg["forge"]["review_host"]]):
+        a = target / "script" / "forge" / ("%s.sh" % kind)
+        if not a.is_file():
+            line("bad", "adapter `%s`" % kind, "file is missing")
+        elif "미검증" in a.read_text(encoding="utf-8"):
+            line("warn", "adapter `%s`" % kind,
+                 "unverified — run `script/forge-selftest.sh`")
+        else:
+            line("ok", "adapter `%s`" % kind)
+    if cfg["adr"]["tool"] not in ("manual", "none"):
+        t = cfg["adr"]["tool"]
+        exe = ADR_EXE.get(t, t)
+        line("ok" if shutil.which(exe) else "warn", "decision-record tool `%s`" % t,
+             "" if shutil.which(exe) else "`%s` is not installed" % exe)
+
+    print("\ngit")
+    hp = hooks_path(target)
+    line("ok" if hp == "script/githooks" else "bad", "git hooks enabled",
+         "" if hp == "script/githooks" else "run `git config core.hooksPath script/githooks`")
+
+    print()
+    sys.stdout.flush()
+    if bad:
+        print("%d failing · %d warning — not ready to use" % (bad, warn))
+        return 1
+    if warn:
+        print("%d warning(s) — usable, with open items" % warn)
+        return 0
+    print("all checks passed — ready to use")
+    return 0
+
+
+# 설정에 넣을 수 있는 값의 형태. TOML 을 다시 쓰지 않고 그 줄만 바꾼다.
+def toml_value(raw: str) -> str:
+    if raw in ("true", "false"):
+        return raw
+    if re.fullmatch(r"-?[0-9]+", raw):
+        return raw
+    if "," in raw:
+        return "[%s]" % ", ".join('"%s"' % x.strip() for x in raw.split(",") if x.strip())
+    return '"%s"' % raw
+
+
+def set_line(lines: list, dotted: str, raw: str, where: Path):
+    """설정 줄 목록에서 값 하나를 바꾼다. (바꾸기 전, 바꾼 뒤) 를 돌려준다."""
+    if "." not in dotted:
+        die("error: key must be `<section>.<name>` (got %r)" % dotted)
+    section, key = dotted.rsplit(".", 1)
+    want = "[%s]" % section
+    inside = False
+    hit = None
+    for i, ln in enumerate(lines):
+        st = ln.strip()
+        if st.startswith("[") and st.endswith("]"):
+            inside = st == want
+            continue
+        if inside and re.match(r"%s\s*=" % re.escape(key), st):
+            hit = i
+            break
+    command = section == "commands" and key in {k for k, _ in COMMAND_KEYS}
+    if hit is None and command and not any(ln.strip() == want for ln in lines):
+        lines += ["\n" if lines and lines[-1].strip() else "", "%s\n" % want]   # 옛 설정에는 절이 없다
+    if hit is None and (re.fullmatch(r"roles\.[\w-]+", section) and key in OPTIONAL_ROLE_KEYS
+                        or dotted == "harness.model" or command):
+        # 선택 키는 적지 않아도 되는 값이라(옛 설정에 없다), 처음 정할 때는 그 절 끝에 한 줄을 더한다
+        head = next((i for i, ln in enumerate(lines) if ln.strip() == want), None)
+        if head is not None:
+            end = head + 1
+            while end < len(lines) and not lines[end].strip().startswith("["):
+                end += 1
+            while end > head + 1 and not lines[end - 1].strip():
+                end -= 1
+            lines.insert(end, "%s = \"\"\n" % key)
+            hit = end
+    if hit is None:
+        die("error: no such key `%s` in the config\n  --> %s\n\nhelp: open the file and check the section and key name" % (dotted, where))
+
+    # 여러 줄에 걸친 배열이면 닫는 `]` 까지가 그 값이다. 첫 줄만 바꾸면 나머지 줄이 떠서 설정이 깨진다.
+    end = hit + 1
+    if lines[hit].split("=", 1)[1].strip().startswith("[") and "]" not in lines[hit].split("#", 1)[0]:
+        while end < len(lines) and lines[end].split("#", 1)[0].strip() != "]":
+            end += 1
+        end += 1
+    before = " ".join(ln.strip() for ln in lines[hit:end] if not ln.strip().startswith("#"))
+    # 명령은 언제나 문자열이다 — 쉼표·따옴표가 든 셸 명령을 배열이나 깨진 TOML 로 만들지 않는다
+    value = json.dumps(raw, ensure_ascii=False) if command else toml_value(raw)
+    lines[hit:end] = ["%s = %s\n" % (key, value)]
+    return before, lines[hit].strip()
+
+
+def cmd_set(_cfg, target, args):
+    """`harness set <절.키> <값> [<절.키> <값> ...]` — 설정을 바꾸고 다시 렌더한다.
+
+    사람이 TOML 을 직접 고쳐도 되지만, 고친 뒤 render 를 잊으면 검사가 커밋을 막는다.
+    한 명령으로 묶어 그 사이가 벌어지지 않게 한다.
+
+    **여러 쌍은 한꺼번에 바꾸고 한 번 검증한다.** 불변식이 두 값에 걸치면(구현·리뷰 러너 분리) 하나씩
+    바꾸는 어느 순서도 중간 상태에서 거부된다 — 오케스트레이터와 리뷰어를 맞바꿀 때가 그렇다.
+    """
+    if not args.args or len(args.args) % 2:
+        die("usage: harness set <section.key> <value> [<section.key> <value> ...]\n\n"
+            "example: harness set branches.base develop\n"
+            "         harness set harness.orchestrator codex roles.code-reviewer.runner claude")
+    p = target / "harness.toml"
+    original = p.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    changes = [set_line(lines, args.args[i], args.args[i + 1], p) for i in range(0, len(args.args), 2)]
+    p.write_text("".join(lines), encoding="utf-8")
+
+    # 바꾼 값이 성립하지 않으면 되돌린다. 깨진 설정을 남기면 다음 명령이 전부 막힌다.
+    try:
+        cfg = load(target)
+        normalize(cfg)
+        validate(cfg)
+    except SystemExit:
+        p.write_text(original, encoding="utf-8")
+        print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+
+    for before, after in changes:
+        print("set: %s" % before)
+        print("  to %s" % after)
+    return cmd_render(cfg, target, args)
+
+
+def cmd_run(cfg, target, args):
+    """`harness run <워크플로> <이슈>` — 설정된 오케스트레이터로 절차를 시작한다.
+
+    절차는 사람이 승인하는 지점에서 멈추므로 **대화형으로 띄운다.** 비대화형으로 돌리면
+    그 게이트가 통과된 것처럼 지나간다.
+    """
+    if len(args.args) != 2:
+        die("usage: harness run <workflow> <issue>\n\nexample: harness run work 12")
+    name, issue = args.args
+    wf = target / ".ai" / "workflows" / ("%s.md" % name)
+    if not wf.is_file():
+        avail = sorted(p.stem for p in (target / ".ai" / "workflows").glob("*.md"))
+        die("error: no such workflow `%s` (available: %s)"
+            % (name, ", ".join(avail) or "none"))
+
+    who = cfg["harness"]["orchestrator"]
+    # 슬래시 커맨드가 없는 오케스트레이터는 {prompt} 로 절차 파일을 가리킨다
+    cmd = expand(VENDORS[who]["launch"], {"workflow": name, "issue": issue,
+                 "model": model_args(VENDORS[who], cfg["harness"]["model"]), "prompt":
+                 "이 리포의 .ai/workflows/%s.md 절차를 이슈 %s 에 대해 수행한다. "
+                 "그 파일을 먼저 읽고 그대로 따른다. 규칙 정본은 .ai/AI_AGENT.md 다. "
+                 "사람이 승인하는 지점에서는 멈추고 묻는다." % (name, issue)})
+    if not shutil.which(cmd[0]):
+        die("error: orchestrator `%s` is not installed\n\nhelp: install it, or point harness.orchestrator at one you have\n        harness set harness.orchestrator <claude|codex>" % cmd[0])
+    if args.dry_run:
+        print(" ".join(repr(c) if " " in c else c for c in cmd))
+        return 0
+    os.chdir(target)
+    # 이 실행 하나가 트레이스다. 시작 기록이 곧 run manifest 다 — 세션 가져오기가 이 시각·벤더·절차로
+    # 대화 기록을 이 실행에 붙인다. 대화형으로 끝날 때까지 기다려 끝 기록도 남긴다
+    m = load_metric(target)
+    attrs = {"workflow": name, "vendor": who, **({"issue": issue} if issue.isdigit() else {}),
+             **({"model": cfg["harness"]["model"]} if cfg["harness"]["model"] else {})}
+    trace, span = m.start("run/%s" % name, "command", attrs, source="runner") if m else ("", "")
+    env = dict(os.environ, HARNESS_WORKFLOW=name, **({"HARNESS_TRACE_ID": trace, "HARNESS_PARENT_SPAN": span} if m else {}))
+    t0 = time.monotonic()
+    try:
+        code = subprocess.call(cmd, env=env)
+    except KeyboardInterrupt:
+        code = 130
+    if m:
+        m.end(span, "ok" if code == 0 else "error", code, (time.monotonic() - t0) * 1000)
+    return code
+
+
+def load_metric(target: Path):
+    """대상 리포의 지표 기록기(script/metric.py). 없으면(옛 설치) None — 기록하지 않는다."""
+    import importlib.util
+    f = target / "script" / "metric.py"
+    if not f.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("harness_metric", f)
+    mod = importlib.util.module_from_spec(spec)
+    sys.dont_write_bytecode = True
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        return None
+    return mod
+
+
+def steps_block(wf: str, steps: list, title: str = None) -> str:
+    """단계 목록을 한 단계 한 줄의 TOML 로. 문자열은 JSON 인용 — TOML 기본 문자열과 같은 규칙이다."""
+    rows = ["  { %s },\n" % ", ".join("%s = %s" % (k, json.dumps(str(st[k]), ensure_ascii=False))
+                                       for k in ("id", "type", "title", "role", "run", "text")
+                                       if str(st.get(k, "")).strip())
+            for st in steps]
+    head = "title = %s\n" % json.dumps(title, ensure_ascii=False) if title else ""
+    return "[workflows.%s]\n%ssteps = [\n%s]\n" % (wf, head, "".join(rows))
+
+
+def workflow_span(lines: list, wf: str):
+    """설정에서 `[workflows.<절차>]` 절이 차지하는 줄 범위."""
+    return section_span(lines, "[workflows.%s]" % wf)
+
+
+def section_span(lines: list, head: str):
+    """설정에서 한 절이 차지하는 줄 범위. 다음 절의 머리 주석은 그 절의 것이라 넣지 않는다."""
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
+    if at is None:
+        return None
+    end = at + 1
+    while end < len(lines) and not lines[end].lstrip().startswith("["):
+        end += 1
+    while end > at + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+        end -= 1
+    return at, end
+
+
+def rename_or_delete_workflow(cfg, target, args):
+    """`harness steps <절차> --rename <새이름>` · `harness steps <절차> --delete` — 이 프로젝트가 만든 절차만.
+
+    하네스 기본 절차는 본문 조각이 이름에 묶여 있어 이름을 바꿀 수 없고, 지워도 기본값으로 돌아온다.
+    절차별 지시(`.ai/project/workflows/<절차>.md`)는 이름을 바꾸면 따라가고, 지우면 남긴다 — 사람이 쓴 것이다.
+    """
+    if len(args.args) != 1:
+        die("usage: harness steps <workflow> --rename <new-name> | --delete")
+    wf = args.args[0]
+    if wf not in cfg["workflows"]:
+        die("error: no workflow `%s`" % wf)
+    if fragment(wf, "_head") is not None:
+        die("error: `%s` is a harness workflow — only workflows this project made can be renamed or deleted" % wf)
+    p = target / "harness.toml"
+    original = p.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    span = workflow_span(lines, wf)
+    if span is None:
+        die("error: `[workflows.%s]` is not in the config file" % wf)
+    at, end = span
+    new = args.rename
+    if new:
+        if new in cfg["workflows"]:
+            die("error: a workflow `%s` already exists" % new)
+        lines[at] = "[workflows.%s]\n" % new
+    else:
+        del lines[at:end]
+        while at < len(lines) and at > 0 and not lines[at].strip() and not lines[at - 1].strip():
+            del lines[at]   # 지운 자리에 빈 줄이 겹치지 않게
+    p.write_text("".join(lines), encoding="utf-8")
+    try:
+        cfg = load(target)
+        normalize(cfg)
+        validate(cfg)
+        plan(cfg, target)
+    except SystemExit:
+        p.write_text(original, encoding="utf-8")
+        print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    notes = target / WORKFLOW_NOTES / ("%s.md" % wf)
+    if new and notes.is_file():
+        notes.rename(notes.with_name("%s.md" % new))
+    print("steps: workflows.%s %s" % (wf, ("renamed to %s" % new) if new else "deleted"))
+    if not new and notes.is_file():
+        print("note: %s is kept — it is yours" % notes.relative_to(target))
+    return cmd_render(cfg, target, args)
+
+
+def cmd_steps(cfg, target, args):
+    """`harness steps` — 절차의 단계를 JSON 으로 낸다.
+    `harness steps <절차> <JSON>` — 그 절차의 단계를 통째로 바꾸고 렌더한다. 성립하지 않으면 되돌린다.
+
+    `set` 은 한 줄짜리 값만 다룬다. 단계 목록은 표의 배열이라 따로 둔다.
+    """
+    if not args.args:
+        # body 는 기본 본문 조각 원문이다 — 단계 참조(`{{step:<id>}}`)가 풀리지 않은 채로 나간다.
+        print(json.dumps({wf: [dict(st, builtin=fragment(wf, st["id"]) is not None,
+                                    body=fragment(wf, st["id"]) or "")
+                               for st in body["steps"]]
+                          for wf, body in cfg["workflows"].items()}, ensure_ascii=False, indent=2))
+        return 0
+    if args.delete or args.rename:
+        return rename_or_delete_workflow(cfg, target, args)
+    if len(args.args) != 2:
+        die("usage: harness steps [<workflow> <json>]\n\nexample: harness steps work '[{\"id\":\"implement\",...}]'")
+    wf, raw = args.args
+    try:
+        data = json.loads(raw)
+        steps = data["steps"] if isinstance(data, dict) else data
+        title = data.get("title") if isinstance(data, dict) else cfg["workflows"].get(wf, {}).get("title")
+        assert isinstance(steps, list) and all(isinstance(x, dict) for x in steps)
+    except (ValueError, AssertionError, KeyError):
+        die("error: steps must be a JSON array of objects, or {\"title\": ..., \"steps\": [...]}")
+
+    if args.dry_run:
+        # 설정을 쓰지 않고 같은 검사만 돈다. UI 가 편집 중에 부른다.
+        cfg["workflows"][wf] = {"steps": steps, **({"title": title} if title else {})}
+        validate(cfg)
+        plan(cfg, target)
+        print("steps: workflows.%s — %d steps are valid" % (wf, len(steps)))
+        return 0
+
+    p = target / "harness.toml"
+    original = p.read_text(encoding="utf-8")
+    block = steps_block(wf, steps, title)
+    lines = original.splitlines(keepends=True)
+    head = "[workflows.%s]" % wf
+    at = next((i for i, ln in enumerate(lines) if ln.strip() == head), None)
+    if at is None:
+        text = original.rstrip("\n") + "\n\n" + block
+    else:
+        end = at + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("["):
+            end += 1
+        while end > at + 1 and (not lines[end - 1].strip() or lines[end - 1].lstrip().startswith("#")):
+            end -= 1   # 다음 절의 머리 주석은 그 절의 것이다
+        text = "".join(lines[:at]) + block + "".join(lines[end:])
+    p.write_text(text, encoding="utf-8")
+    try:
+        cfg = load(target)
+        normalize(cfg)
+        validate(cfg)
+        plan(cfg, target)   # 끊긴 단계 참조는 생성할 때 드러난다
+    except SystemExit:
+        p.write_text(original, encoding="utf-8")
+        print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    print("steps: workflows.%s — %d steps" % (wf, len(steps)))
+    return cmd_render(cfg, target, args)
+
+
+def cmd_checks(cfg, target, args):
+    """`harness checks` — 검증 검사를 JSON 으로 낸다.
+    `harness checks <JSON>` — `[verify]` 의 검사 목록을 통째로 바꾸고 렌더한다. 성립하지 않으면 되돌린다.
+
+    `set` 은 한 줄짜리 값만 다룬다. 검사 목록은 표의 배열이라 따로 둔다.
+    """
+    if not args.args:
+        print(json.dumps(cfg["verify"]["checks"], ensure_ascii=False, indent=2))
+        return 0
+    try:
+        checks = json.loads(args.args[0])
+        assert len(args.args) == 1 and isinstance(checks, list) and all(isinstance(x, dict) for x in checks)
+    except (ValueError, AssertionError):
+        die("usage: harness checks [<json>]\n\nexample: harness checks '[{\"name\":\"module boundaries\",\"run\":\"script/check-deps.sh\"}]'")
+    rows = "".join("  { name = %s, run = %s },\n" % (json.dumps(str(x.get("name", "")), ensure_ascii=False),
+                                                   json.dumps(str(x.get("run", "")), ensure_ascii=False)) for x in checks)
+    block = "[verify]\nchecks = [\n%s]\n" % rows
+    p = target / "harness.toml"
+    original = p.read_text(encoding="utf-8")
+    lines = original.splitlines(keepends=True)
+    span = section_span(lines, "[verify]")
+    text = (original.rstrip("\n") + "\n\n" + block) if span is None else "".join(lines[:span[0]]) + block + "".join(lines[span[1]:])
+    p.write_text(text, encoding="utf-8")
+    try:
+        cfg = load(target)
+        normalize(cfg)
+        validate(cfg)
+    except SystemExit:
+        p.write_text(original, encoding="utf-8")
+        print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    print("checks: verify.checks — %d" % len(checks))
+    return cmd_render(cfg, target, args)
+
+
+ADR_TOOLS = [("adr-tools", "adr"), ("adrs", "adrs")]   # manual·none 은 도구가 필요 없다
+
+
+# 에이전트 CLI 가 이 기기에서 쓸 수 있는 모델. **CLI 자신이 남긴 기록만 읽는다** — 모델 이름을 여기 적어 두면
+# 그 CLI 가 올라갈 때마다 낡는다. 읽을 곳이 없는 CLI 는 모델을 고를 수 없고 기본 모델로 돈다.
+def claude_models(path: str) -> dict:
+    """`claude --help` 의 --model 설명에 나온 이름과, 사용자 설정의 기본 모델."""
+    models, default = [], ""
+    try:
+        text = subprocess.run([path, "--help"], capture_output=True, text=True, timeout=8).stdout
+        m = re.search(r"--model <\w+>(.*?)(?:\n\s*-{1,2}\w|\Z)", text, re.S)
+        for name in re.findall(r"'([\w.\[\]-]+)'", m.group(1) if m else ""):
+            if name not in models:
+                models.append(name)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    try:
+        default = json.loads((Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8")).get("model", "")
+    except (OSError, ValueError):
+        pass
+    if default and default not in models:
+        models.append(default)
+    return {"models": [{"id": x, "name": x} for x in models], "default_model": default,
+            "models_from": "claude --help · ~/.claude/settings.json"}
+
+
+def codex_models(_path: str) -> dict:
+    """Codex 가 받아 둔 모델 목록(`~/.codex/models_cache.json`) 중 목록에 보이는 것과, 설정의 기본 모델."""
+    models, default = [], ""
+    try:
+        cache = json.loads((Path.home() / ".codex" / "models_cache.json").read_text(encoding="utf-8"))
+        models = [{"id": x["slug"], "name": x.get("display_name") or x["slug"]}
+                  for x in cache.get("models", []) if x.get("slug") and x.get("visibility") == "list"]
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        with (Path.home() / ".codex" / "config.toml").open("rb") as f:
+            default = tomllib.load(f).get("model", "")
+    except (OSError, tomllib.TOMLDecodeError):
+        pass
+    return {"models": models, "default_model": default, "models_from": "~/.codex/models_cache.json · ~/.codex/config.toml"}
+
+
+# 벤더 선언의 `models` 가 이 이름 중 하나를 고른다
+MODEL_READERS = {"claude-help": claude_models, "codex-cache": codex_models}
+
+
+def recorded_tools():
+    """마지막으로 찾은 도구 기록. 없으면 None — 모델 판정을 하지 않는다."""
+    try:
+        return json.loads((registry() / "tools.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def model_ok(cfg: dict, role: str, tools):
+    """그 역할의 모델이 실제로 돌리는 에이전트의 모델인가. 모델을 비웠거나 목록을 모르면 None."""
+    m = role_model(cfg, role)
+    agent = next((a for a in (tools or {}).get("agents", []) if a["id"] == vendor(cfg, role)), None)
+    if not m or not agent or not agent.get("models"):
+        return None
+    return m in {x["id"] for x in agent["models"]}
+
+
+def detect_tools() -> dict:
+    """PATH 에서 찾고 `--version` 첫 줄을 붙인다. 버전을 못 읽어도 찾았으면 있는 것이다."""
+    def probe(exe):
+        path = shutil.which(exe)
+        if not path:
+            return None
+        try:
+            r = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=8)
+            first = ((r.stdout or r.stderr).strip().splitlines() or [""])[0][:80]
+            # 성공하고 숫자 버전이 있을 때만 — 오류 문구나 사용법이 버전 자리에 들어가지 않게
+            ver = first if r.returncode == 0 and re.search(r"\d+\.\d+", first) else ""
+        except (OSError, subprocess.TimeoutExpired):
+            ver = ""
+        return {"path": path, "version": ver}
+    agents = []
+    for a in AGENTS:
+        hit = probe(a["exe"])
+        if hit:
+            found = dict(hit, id=a["id"], name=a["name"], supported=a["orchestrator"] or a["runner"])
+            reader = MODEL_READERS.get(VENDORS[a["id"]].get("models", ""))
+            if reader:
+                found.update(reader(hit["path"]))
+            agents.append(found)
+    adr = [dict(hit, id=tid) for tid, exe in ADR_TOOLS for hit in [probe(exe)] if hit]
+    import datetime
+    return {"synced_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "agents": agents, "adr_tools": adr}
+
+
+def cmd_tools(_cfg, _target, args):
+    """`harness tools [--sync]` — 이 기기에 설치된 에이전트 CLI·결정 기록 도구.
+
+    결과는 `~/.harness/tools.json` 에 둔다. **기기의 사실이라 프로젝트(`.harness/`)에 두지 않는다** —
+    리포에 커밋되는 사본에 적으면 기기마다 다른 값으로 매번 바뀐다. `--sync` 가 없으면 기록을 읽고,
+    기록이 없을 때만 찾는다.
+    """
+    f = registry() / "tools.json"
+    data = None
+    if not args.sync and f.is_file():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            data = None
+    if data is None:
+        data = detect_tools()
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_schema(cfg, _target, _args):
+    tools = recorded_tools()
+    """`harness schema` — UI 가 선택지를 그리는 데 쓰는 해석된 설정. 등록부와 역할별 실제 실행 주체를 낸다.
+
+    UI 가 이 표를 따로 들고 있지 않게 한다 — 한쪽만 고치면 고를 수 없는 값을 고르게 된다.
+    """
+    print(json.dumps({
+        "agents": AGENTS,
+        # 전용 스크립트로 도는 역할 → 그 스크립트. 캔버스가 스크립트 단계에서 역할을 알아본다
+        "script_roles": {n: role_meta(n)["entry"] for n in cfg["roles"] if role_meta(n)["entry"]},
+        "orchestrator": cfg["harness"]["orchestrator"],
+        "orchestrator_model": cfg["harness"]["model"],   # 모델을 비운 서브에이전트가 이어받는 값
+        "roles": {n: {"runner": r["runner"], "access": r["access"], "model": r.get("model", ""),
+                      # 오케스트레이터가 돌리는 역할은 harness.model 을 따른다 — UI 는 그 역할의 모델을 고르게 하지 않는다
+                      "follows_orchestrator": r["runner"] == cfg["harness"]["orchestrator"],
+                      "vendor": vendor(cfg, n), "runners": ["inproc"] + (RUNNERS if role_meta(n)["headless"] else []),
+                      "model_ok": model_ok(cfg, n, tools),
+                      # about 은 사람에게 보이는 한 문장이다. description 은 에이전트 선택용이라 길다
+                      "about": (lambda m: m.get("about") or m.get("description", ""))(parse_frontmatter(
+                          (TEMPLATES / "agents" / ("%s.md" % n)).read_text(encoding="utf-8"), n)[0]),
+                      "contract": ".ai/templates/%s.md" % n, "notes": "%s/%s.md" % (ROLE_NOTES, n)}
+                  for n, r in cfg["roles"].items()},
+        # 명령 탭의 값. 이 키가 없는 옛 하네스 사본은 명령을 문서(.ai/project/commands.md)로만 받는다
+        "commands": cfg["commands"], "checks": cfg["verify"]["checks"],
+        "legacy_verify": legacy_verify(_target),
+        "workflow_notes": {wf: "%s/%s.md" % (WORKFLOW_NOTES, wf) for wf in cfg["workflows"]},
+        # 절차 목록: 제목과, 이 프로젝트가 만든 것인지(하네스 기본 조각이 없는 것)
+        "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None}
+                      for wf, body in cfg["workflows"].items()},
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def read_spans(d: Path):
+    """지표 파일을 읽어 스팬 id → {start, end} 로 모은다. 깨진 줄·쓰는 중인 마지막 줄은 세기만 한다."""
+    spans, bad, files, size = {}, 0, 0, 0
+    for p in sorted(d.glob("spans-*.jsonl")) if d.is_dir() else []:
+        files += 1
+        raw = p.read_bytes()
+        size += len(raw)
+        whole = raw[:raw.rfind(b"\n") + 1]            # 개행으로 끝나지 않은 줄은 아직 쓰는 중이다
+        bad += raw[len(whole):].strip() != b""
+        for ln in whole.splitlines():
+            try:
+                e = json.loads(ln)
+                spans.setdefault(e["span"], {})[e["ev"]] = e
+            except (ValueError, KeyError, TypeError):
+                bad += 1
+    return spans, {"bad_lines": bad, "files": files, "bytes": size}
+
+
+def parse_iso(t: str):
+    return datetime.datetime.fromisoformat(t.replace("Z", "+00:00"))
+
+
+def pct(xs: list, q: float):
+    if not xs:
+        return 0
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(round(q * (len(xs) - 1))))]
+
+
+def metrics_report(spans: dict, since, now, stale_h: int, trace_id: str = None) -> dict:
+    """스팬 → Metrics 탭이 그리는 집계. 순수 함수라 고정 입력으로 검사한다."""
+    rows = []
+    for sid, e in spans.items():
+        s = e.get("start")
+        if not s:
+            continue                                    # 끝만 남은 것(시작 줄이 지워진 파일에 있었다)
+        t0 = parse_iso(s["t"])
+        if t0 < since and not (trace_id and s["trace"] == trace_id):
+            continue
+        en = e.get("end")
+        if en:
+            status = en["status"]
+            dur = en.get("dur_ms", int((parse_iso(en["t"]) - t0).total_seconds() * 1000))
+        else:
+            status = "stale" if (now - t0).total_seconds() > stale_h * 3600 else "running"
+            dur = int((now - t0).total_seconds() * 1000)
+        u = (en or {}).get("usage") or {}
+        if s["kind"] == "marker":
+            continue                                    # 단계 시작 표지 — 시각만 쓰고 집계하지 않는다
+        rows.append({"span": sid, "trace": s["trace"], "parent": s.get("parent"), "name": s["name"], "kind": s["kind"],
+                     "source": s.get("source", "script"), "attrs": s.get("attrs", {}), "t": s["t"], "t0": t0,
+                     "status": status, "dur_ms": dur, "exit": (en or {}).get("exit"), "model": (en or {}).get("model", ""),
+                     "usage": {k: u.get(k, 0) for k in ("input", "output", "cache_read", "cache_write", "reasoning")},
+                     "log": (en or {}).get("log")})
+    tok = lambda r: r["usage"]["input"] + r["usage"]["output"]
+
+    def group(key):
+        g = {}
+        for r in rows:
+            k = key(r)
+            if k:
+                g.setdefault(k, []).append(r)
+        return sorted(({"name": k, "count": len(v), "tokens": sum(map(tok, v)),
+                        "errors": sum(r["status"] == "error" for r in v),
+                        "p50_ms": pct([r["dur_ms"] for r in v if r["status"] in ("ok", "error")], .5),
+                        "p95_ms": pct([r["dur_ms"] for r in v if r["status"] in ("ok", "error")], .95)}
+                       for k, v in g.items()), key=lambda x: (-x["tokens"], -x["count"], x["name"]))
+
+    by_trace = {}
+    for r in rows:
+        by_trace.setdefault(r["trace"], []).append(r)
+    traces = []
+    for tid, rs in by_trace.items():
+        ids = {r["span"] for r in rs}
+        roots = [r for r in rs if not r["parent"] or r["parent"] not in ids]
+        root = min(roots, key=lambda r: r["t0"])
+        traces.append({"trace": tid, "name": "unattributed" if tid == UNATTRIBUTED else root["name"], "kind": root["kind"], "t": root["t"], "status": root["status"],
+                       "dur_ms": root["dur_ms"], "spans": len(rs), "tokens": sum(map(tok, rs)),
+                       "sources": sorted({r["source"] for r in rs}), "attrs": root["attrs"]})
+    traces.sort(key=lambda x: x["t"], reverse=True)
+    runs = [t for t in traces if t["trace"] != UNATTRIBUTED]   # 어느 실행에도 못 붙인 기록은 실행으로 세지 않는다
+    done = [t for t in runs if t["status"] in ("ok", "error")]
+    daily = {}
+    for r in rows:
+        if tok(r) or r["usage"]["cache_read"]:
+            day = r["t0"].astimezone().strftime("%Y-%m-%d")      # 이 컴퓨터의 시간대로 하루를 가른다
+            key = "%s%s" % (r["attrs"].get("vendor", "unknown"), "/" + r["model"] if r["model"] else "")
+            d = daily.setdefault(day, {})
+            d[key] = d.get(key, 0) + tok(r)
+    out = {
+        "summary": {"runs": len(runs), "ok": sum(t["status"] == "ok" for t in done),
+                    "error": sum(t["status"] == "error" for t in done),
+                    "running": sum(t["status"] == "running" for t in runs), "stale": sum(t["status"] == "stale" for t in runs),
+                    "success_rate": round(sum(t["status"] == "ok" for t in done) / len(done), 4) if done else None,
+                    "dur_ms": sum(t["dur_ms"] for t in done),
+                    "tokens": {k: sum(r["usage"][k] for r in rows) for k in ("input", "output", "cache_read", "cache_write", "reasoning")}},
+        "daily": [{"day": d, "by": v} for d, v in sorted(daily.items())],
+        "by_step": group(lambda r: r["attrs"].get("step") and "%s/%s" % (r["attrs"].get("workflow", "?"), r["attrs"]["step"])),
+        "by_role": group(lambda r: r["attrs"].get("role")),
+        "by_script": group(lambda r: r["kind"] == "script" and r["name"]),
+        "traces": traces[:200],
+        "errors": [{"t": r["t"], "name": r["name"], "trace": r["trace"], "exit": r["exit"], "log": r["log"]}
+                   for r in sorted(rows, key=lambda r: r["t"], reverse=True) if r["status"] == "error"][:50],
+    }
+    if trace_id:
+        rs = sorted(by_trace.get(trace_id, []), key=lambda r: r["t0"])
+        base = rs[0]["t0"] if rs else now
+        out["trace"] = [dict({k: v for k, v in r.items() if k != "t0"}, offset_ms=int((r["t0"] - base).total_seconds() * 1000))
+                        for r in rs]
+    return out
+
+
+# ─── 세션 가져오기 ─────────────────────────────────────────────────────────────
+# 대화형 오케스트레이터는 하네스가 감싸지 못한다. 각 CLI 가 이미 남기는 대화 기록에서 **사용량·시각·역할만**
+# 읽어 스팬으로 옮긴다. 메시지 본문은 저장하지 않는다. 형식은 이 기계의 기록으로 확인한 것이다 —
+#   Claude Code  ~/.claude/projects/<경로의 영숫자 외 문자를 - 로>/<세션>.jsonl, 서브에이전트는 <세션>/subagents/
+#                assistant 줄의 message.usage. 한 응답이 여러 줄로 반복되므로 message.id 로 한 번만 센다
+#   Codex        ~/.codex/sessions/**/rollout-*.jsonl, session_meta.payload.cwd 로 프로젝트를 가린다
+#                token_usage_record(응답마다) 가 있으면 그것을, 없으면 token_count 누적값의 증가분을 쓴다
+# 붙일 곳: 같은 벤더로 그 시각에 돌던 harness run 이 **하나일 때만** 그 실행, 아니면 unattributed.
+# 단계: 그 실행의 마지막 시작 표지(script/metric.py step). 없으면 단계 미상.
+UNATTRIBUTED = "t-unattributed"
+
+
+def claude_usage(u: dict) -> dict:
+    return {"input": u.get("input_tokens", 0), "output": u.get("output_tokens", 0),
+            "cache_read": u.get("cache_read_input_tokens", 0), "cache_write": u.get("cache_creation_input_tokens", 0),
+            "reasoning": (u.get("output_tokens_details") or {}).get("thinking_tokens", 0)}
+
+
+def codex_usage(u: dict) -> dict:
+    cached = u.get("cached_input_tokens", 0)
+    # OpenAI 사용량은 캐시 읽기를 input 에 포함한다 — 다른 벤더와 같은 뜻이 되게 뺀다(run-agent.py 와 같다)
+    return {"input": max(0, u.get("input_tokens", 0) - cached), "output": u.get("output_tokens", 0),
+            "cache_read": cached, "cache_write": u.get("cache_write_input_tokens", 0),
+            "reasoning": u.get("reasoning_output_tokens", 0)}
+
+
+def new_lines(f: Path, st: dict):
+    """커서 뒤의 온전한 줄. 파일이 바뀌었으면(다른 inode·줄어듦) 처음부터 — 메시지 id 로 중복을 막는다."""
+    info = f.stat()
+    if st.get("ino") != info.st_ino or info.st_size < st.get("off", 0):
+        st.update(ino=info.st_ino, off=0)
+    with f.open("rb") as fh:
+        fh.seek(st["off"])
+        raw = fh.read()
+    whole = raw[:raw.rfind(b"\n") + 1]                  # 쓰는 중인 마지막 줄은 다음에 읽는다
+    st["off"] += len(whole)
+    for ln in whole.splitlines():
+        try:
+            yield json.loads(ln)
+        except ValueError:
+            st["bad"] = st.get("bad", 0) + 1
+
+
+def seen(st: dict, key: str) -> bool:
+    ids = st.setdefault("ids", [])
+    if key in ids:
+        return True
+    ids.append(key)
+    del ids[:-500]
+    return False
+
+
+def import_claude(target: Path, cursor: dict, since, roles: set):
+    base = Path(os.environ.get("HARNESS_CLAUDE_DIR") or Path.home() / ".claude" / "projects")
+    names = {re.sub(r"[^A-Za-z0-9]", "-", str(p)) for p in (target, target.resolve())}
+    for d in (base / n for n in names):
+        for f in sorted(d.glob("*.jsonl")) + sorted(d.glob("*/subagents/agent-*.jsonl")) if d.is_dir() else []:
+            if datetime.datetime.fromtimestamp(f.stat().st_mtime, datetime.timezone.utc) < since:
+                continue
+            role = ""
+            if f.parent.name == "subagents":
+                try:
+                    role = json.loads(f.with_suffix(".meta.json").read_text(encoding="utf-8")).get("agentType", "")
+                except (OSError, ValueError):
+                    role = ""
+                role = role if role in roles else ("other" if role else "")
+            st = cursor.setdefault("claude:" + str(f), {})
+            for e in new_lines(f, st):
+                m = e.get("message") or {}
+                if e.get("type") != "assistant" or "usage" not in m or seen(st, m.get("id") or e.get("uuid", "")):
+                    continue
+                t = parse_iso(e["timestamp"])
+                if t >= since:
+                    yield {"vendor": "claude", "session": e.get("sessionId", f.stem), "role": role, "t": t,
+                           "model": m.get("model", ""), "usage": claude_usage(m["usage"])}
+
+
+def import_codex(target: Path, cursor: dict, since):
+    base = Path(os.environ.get("HARNESS_CODEX_DIR") or Path.home() / ".codex" / "sessions")
+    mine = {str(target), str(target.resolve())}
+    for f in sorted(base.rglob("rollout-*.jsonl")) if base.is_dir() else []:
+        st = cursor.setdefault("codex:" + str(f), {})
+        if st.get("other") or datetime.datetime.fromtimestamp(f.stat().st_mtime, datetime.timezone.utc) < since:
+            continue
+        for e in new_lines(f, st):
+            p = e.get("payload") or {}
+            kind = e.get("type")
+            if kind == "session_meta":
+                cwd = p.get("cwd", "")
+                st["mine"] = any(cwd == m or cwd.startswith(m + "/") for m in mine)
+                st["other"] = not st["mine"]            # 다른 프로젝트의 기록은 다시 열지 않는다
+                st["session"] = p.get("id", f.stem)
+                continue
+            if not st.get("mine"):
+                continue
+            if kind == "turn_context" and p.get("model"):
+                st["model"] = p["model"]
+            t = parse_iso(e["timestamp"]) if e.get("timestamp") else None
+            if kind == "token_usage_record":
+                st["rec"] = True
+                if seen(st, p.get("response_id", "")) or not t or t < since:
+                    continue
+                yield {"vendor": "codex", "session": st.get("session", f.stem), "role": "", "t": t,
+                       "model": st.get("model", ""), "usage": codex_usage(p.get("usage") or {})}
+            elif kind == "event_msg" and p.get("type") == "token_count" and not st.get("rec"):
+                tot = ((p.get("info") or {}).get("total_token_usage")) or {}
+                cur = codex_usage(tot)
+                if not any(cur.values()):
+                    continue                            # 합계만 있고 내역이 없는 기록(가져온 대화 등)은 세지 않는다
+                prev = st.get("cum") or {k: 0 for k in cur}
+                st["cum"] = cur
+                delta = {k: max(0, cur[k] - prev.get(k, 0)) for k in cur}
+                if any(delta.values()) and t and t >= since:
+                    yield {"vendor": "codex", "session": st.get("session", f.stem), "role": "", "t": t,
+                           "model": st.get("model", ""), "usage": delta}
+
+
+def metrics_import(cfg: dict, target: Path) -> dict:
+    """새 대화 기록을 스팬으로 옮긴다. 커서는 지표와 따로(보관 정책 밖에) 두고 원자적으로 바꾼다."""
+    m = load_metric(target)
+    mc = metrics_cfg(cfg)
+    if not m or mc["dir"] == "off":
+        return {"enabled": False}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    since = now - datetime.timedelta(days=mc["retention_days"])
+    state = registry() / cfg["project"]["name"] / "state"
+    cur_file = state / "import-cursor.json"
+    try:
+        cursor = json.loads(cur_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cursor = {}
+    records = list(import_claude(target, cursor, since, set(cfg["roles"]))) + list(import_codex(target, cursor, since))
+
+    spans, _ = read_spans(Path(os.path.expandvars(os.path.expanduser(mc["dir"]))))
+    runs, marks = [], {}
+    for sid, e in spans.items():
+        s = e.get("start") or {}
+        if s.get("kind") == "command" and s.get("name", "").startswith("run/"):
+            t1 = parse_iso(e["end"]["t"]) if e.get("end") else now
+            runs.append((s["trace"], sid, s["attrs"].get("vendor", ""), parse_iso(s["t"]), t1))
+        elif s.get("kind") == "marker":
+            marks.setdefault(s["trace"], []).append((parse_iso(s["t"]), s["attrs"]))
+    for v in marks.values():
+        v.sort(key=lambda x: x[0])
+
+    groups = {}
+    for r in records:
+        hit = [x for x in runs if x[2] == r["vendor"] and x[3] <= r["t"] <= x[4] + datetime.timedelta(seconds=60)]
+        trace, parent = (hit[0][0], hit[0][1]) if len(hit) == 1 else (UNATTRIBUTED, None)
+        step = next((a for t, a in reversed(marks.get(trace, [])) if t <= r["t"]), {})
+        key = (trace, parent, r["session"], r["vendor"], r["role"], r["model"], step.get("workflow", ""), step.get("step", ""))
+        g = groups.setdefault(key, {"t0": r["t"], "t1": r["t"], "usage": {k: 0 for k in r["usage"]}, "n": 0})
+        g["t0"], g["t1"], g["n"] = min(g["t0"], r["t"]), max(g["t1"], r["t"]), g["n"] + 1
+        for k, x in r["usage"].items():
+            g["usage"][k] += x
+    for (trace, parent, _session, vendor, role, model, wf, stp), g in groups.items():
+        attrs = m.clean_attrs(["vendor=" + vendor, "model=" + model, "role=" + role, "workflow=" + wf, "step=" + stp])
+        name = role or ("%s/%s" % (wf, stp) if stp else "session/%s" % vendor)
+        _, sid = m.start(name, "agent" if role else "session", attrs, trace=trace, parent=parent or "", source="session", t=g["t0"])
+        m.end(sid, "ok", dur_ms=(g["t1"] - g["t0"]).total_seconds() * 1000, usage=g["usage"], model=model or None, t=g["t1"])
+
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = cur_file.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(cursor, fh)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, cur_file)
+    return {"enabled": True, "records": len(records), "spans": len(groups),
+            "unattributed": sum(1 for k in groups if k[0] == UNATTRIBUTED),
+            "bad_lines": sum(x.get("bad", 0) for x in cursor.values())}
+
+
+def cmd_metrics(cfg, target, args):
+    """`harness metrics [--since 24h|7d|30d] [--trace ID]` — 실행 지표 집계(JSON). `harness metrics prune` — 정리."""
+    m = metrics_cfg(cfg)
+    d = Path(os.path.expandvars(os.path.expanduser(m["dir"]))) if m["dir"] != "off" else None
+    if args.args[:1] == ["prune"]:
+        r = subprocess.run([sys.executable, str(target / "script" / "metric.py"), "prune"], cwd=target)
+        return r.returncode
+    imported = metrics_import(cfg, target) if args.args[:1] == ["import"] else None
+    mt = re.fullmatch(r"(\d+)([hd])", args.since or "7d")
+    if not mt:
+        die("error: --since takes a span like 24h, 7d or 30d (got %r)" % args.since)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    since = now - datetime.timedelta(hours=int(mt.group(1)) * (24 if mt.group(2) == "d" else 1))
+    spans, diag = read_spans(d) if d else ({}, {"bad_lines": 0, "files": 0, "bytes": 0})
+    out = metrics_report(spans, since, now, m["stale_after_hours"], args.trace)
+    out["diagnostics"] = dict(diag, imported=imported, enabled=d is not None, dir=m["dir"], retention_days=m["retention_days"],
+                              max_total_mb=m["max_total_mb"], capture_logs=m["capture_logs"])
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_status(cfg, target, args):
+    """`harness status` — 홈 화면용 프로젝트 상태(JSON). 검사를 새로 만들지 않고 check·doctor 를 그대로 돌려 읽는다.
+
+    doctor 의 한 줄은 `  ok   무엇  — 설명` 이고 절 제목 아래에 모인다. 그 구조를 그대로 옮긴다.
+    """
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+        cmd_doctor(cfg, target, args)
+    items, section = [], ""
+    for ln in buf.getvalue().splitlines():
+        m = re.match(r"  (ok  |warn|FAIL) (.+?)(?:  — (.*))?$", ln)
+        if m:
+            items.append({"section": section, "state": {"ok  ": "ok", "warn": "warn", "FAIL": "bad"}[m.group(1)],
+                          "what": m.group(2).strip(), "detail": m.group(3) or ""})
+        elif ln and not ln.startswith(" ") and "·" not in ln:
+            section = ln.strip()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        check_ok = cmd_check(cfg, target, argparse.Namespace(staged=False)) == 0
+    # 설정 진행도: 소유 문서 중 자리표시자가 남지 않은 것
+    facts = sorted(p.relative_to(TEMPLATES / "owned").as_posix()
+                   for p in (TEMPLATES / "owned" / ".ai" / "project").glob("*.md"))
+    todo = {i["what"] for i in items if i["section"] == "project facts" and i["state"] != "ok"}
+    def git(*a):
+        r = subprocess.run(["git", "-C", str(target), *a], capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    v = target / ".harness" / "VERSION"
+    notes = [p for d in (ROLE_NOTES, WORKFLOW_NOTES) for p in (target / d).glob("*.md")] if target else []
+    print(json.dumps({
+        "version": v.read_text(encoding="utf-8").strip() if v.is_file() else "",
+        "check_ok": check_ok,
+        "doctor": {"bad": sum(i["state"] == "bad" for i in items), "warn": sum(i["state"] == "warn" for i in items),
+                   "items": items},   # 통과한 줄도 싣는다 — Doctor 화면이 절마다 통과 수를 보인다
+        "facts": {"total": len(facts), "filled": len([f for f in facts if f not in todo])},
+        "git": {"branch": git("branch", "--show-current"), "dirty": bool(git("status", "--porcelain")),
+                "last_commit": git("log", "-1", "--format=%cI")},
+        "custom": {"roles": len([p for p in notes if ROLE_NOTES in str(p)]),
+                   "workflows": len([p for p in notes if WORKFLOW_NOTES in str(p)])},
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+UI_PORT = 7777
+
+
+def cmd_start_server(_cfg, _target, args):
+    """`harness start-server` — 설정·워크플로·프로젝트 사실을 고치는 웹 UI 를 띄운다.
+
+    UI 는 전역 설치에만 있다. 프로젝트에 고정된 사본은 `templates/` 만 들고 간다.
+    """
+    ui = ROOT / "ui"
+    if not (ui / "package.json").is_file():
+        die("error: the UI is not part of this copy of the harness\n  --> %s\n\n"
+            "help: run the globally installed harness, not the one vendored in .harness/" % ui)
+    if not shutil.which("npm"):
+        die("error: start-server needs Node.js (npm not found)\n\nhelp: brew install node")
+    if not (ui / "node_modules").is_dir():
+        print("start-server: installing UI dependencies (first run)")
+        if subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=ui).returncode:
+            die("error: npm install failed")
+    os.environ["HARNESS_HOME"] = str(registry())
+    os.environ["HARNESS_BIN"] = str(HERE / "harness")
+    print("start-server: http://localhost:%d" % UI_PORT)
+    os.chdir(ui)
+    # 로컬 파일을 쓰는 서버다. 루프백에만 묶는다.
+    os.execvp("npx", ["npx", "next", "dev", "-H", "127.0.0.1", "-p", str(UI_PORT)])
+
+
+COMMANDS = {
+    # 이름          (함수, 설정이 필요한가, 인수, 설명)
+    "install":   (None, True,  "[--target DIR]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
+    "render":    (None, True,  "[--target DIR]", "harness.toml + .ai/project/ -> generated files"),
+    "check":     (None, True,  "[--staged]", "verify generated files match the config"),
+    "doctor":    (None, True,  "", "report readiness: config, files, tools, hooks"),
+    "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
+    "run":       (None, True,  "<workflow> <issue>", "start a workflow in the configured orchestrator"),
+    "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
+    "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
+    "metrics":   (None, True,  "[import|prune] [--since 7d] [--trace ID]", "run metrics as JSON for the Metrics tab; import reads new session logs first; prune applies retention"),
+    "vars":      (None, True,  "", "print template variables (debugging)"),
+    "uninstall": (None, False, "[--purge] [--yes]", "remove what the harness installed; --purge also removes yours"),
+    "start-server": (None, False, "", "open the web UI on http://localhost:%d" % UI_PORT),
+    "schema":    (None, True,  "", "agent registry and resolved roles as JSON (for the UI)"),
+    "status":    (None, True,  "", "project health for the home screen as JSON: check, doctor, facts, git"),
+    "tools":     (None, False, "[--sync]", "list agent CLIs and decision-record tools on this machine"),
+    "version":   (None, False, "", "version of this harness"),
+    "help":      (None, False, "", "this help"),
+}
+
+
+def cmd_version(_cfg, target, _args):
+    with DEFAULT_CONFIG.open("rb") as f:
+        print("harness %s" % tomllib.load(f)["harness"]["version"])
+    v = target / ".harness" / "VERSION" if target else None
+    if v and v.is_file():
+        print("pinned in this project: %s" % v.read_text(encoding="utf-8").strip())
+    return 0
+
+
+def cmd_help(_cfg, _target, _args):
+    print(__doc__.strip().splitlines()[0])
+    print()
+    for name, (_f, _n, usage, desc) in COMMANDS.items():
+        print("  harness %-12s %-22s %s" % (name, usage, desc))
+    print()
+    print("  --target DIR   target repository (default: current directory)")
+    print()
+    print("Values live in the target repo's harness.toml; project facts in .ai/project/.")
+    print("Generated files are never edited by hand — render overwrites them and check")
+    print("blocks commits that drift.")
+    return 0
+
+
+# 전역 CLI 를 깔아도 각 프로젝트는 자기가 고정한 버전으로 돌아야 한다. 그러지 않으면
+# 전역을 올리는 순간 모든 프로젝트의 생성물이 조용히 바뀌고, 그 리포의 검사가 한꺼번에 깨진다.
+DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall"}
+
+
+def delegate(target: Path, command: str):
+    """대상 리포에 고정된 하네스가 있으면 그쪽으로 넘긴다.
+
+    `install` 은 넘기지 않는다 — 고정된 사본을 갈아 끼우는 것이 그 명령의 일이다.
+    하네스 소스 리포가 대상이면 `install` 까지 그 안의 `src/bin/harness` 로 넘긴다 — 소스 리포의
+    생성물은 언제나 자기 작업 트리의 템플릿에서 나와야 하고, 전역 CLI 의 템플릿이 섞이면 안 된다.
+    """
+    if source_tree(target):
+        local = target / "src" / "bin" / "harness"
+    elif command in DELEGATES:
+        local = target / ".harness" / "bin" / "harness"
+    else:
+        return
+    if not local.is_file() or local.resolve() == Path(__file__).resolve():
+        return
+    mine = there = ""
+    try:
+        with DEFAULT_CONFIG.open("rb") as f:
+            mine = tomllib.load(f)["harness"]["version"]
+        there = (target / ".harness" / "VERSION").read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    if mine and there and mine != there:
+        print("note: this project is pinned to harness %s (global is %s) — delegating to it\n"
+              "      to upgrade the project, run: harness install --target %s"
+              % (there, mine, target), file=sys.stderr)
+    os.execv(sys.executable, [sys.executable, str(local)] + sys.argv[1:])
+
+
+def main():
+    handlers = {"install": cmd_install, "render": cmd_render, "check": cmd_check,
+                "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
+                "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
+                "start-server": cmd_start_server, "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
+
+    ap = argparse.ArgumentParser(prog="harness", add_help=False,
+                                 description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", nargs="?", default="help", choices=list(COMMANDS))
+    ap.add_argument("args", nargs="*")
+    ap.add_argument("--target", default=".", help="target repository (default: current directory)")
+    ap.add_argument("--staged", action="store_true", help="check against staged contents")
+    ap.add_argument("--purge", action="store_true", help="uninstall: also remove owned files and the config")
+    ap.add_argument("--yes", action="store_true", help="uninstall: answer the --purge confirmation up front")
+    ap.add_argument("--sync", action="store_true", help="tools: look again instead of reading the record")
+    ap.add_argument("--delete", action="store_true", help="steps: delete a workflow this project made")
+    ap.add_argument("--rename", metavar="NEW", help="steps: rename a workflow this project made")
+    ap.add_argument("--dry-run", action="store_true", help="run: print the command instead of executing it; steps: validate without writing")
+    ap.add_argument("--since", help="metrics: how far back, like 24h, 7d or 30d (default 7d)")
+    ap.add_argument("--trace", help="metrics: include the span tree of this trace")
+    ap.add_argument("-h", "--help", action="store_true")
+    args = ap.parse_args()
+    if args.help:
+        args.command = "help"
+
+    if args.command == "help":
+        return cmd_help(None, None, args)
+    if args.command == "start-server":   # 대상 리포가 없다 — 등록된 프로젝트 전부를 본다
+        return cmd_start_server(None, None, args)
+    if args.command == "tools":          # 기기의 사실이다 — 대상 리포가 필요 없다
+        return cmd_tools(None, None, args)
+
+    target = Path(args.target).resolve()
+    delegate(target, args.command)
+
+    cfg = None
+    if COMMANDS[args.command][1]:
+        if args.command == "install":
+            seed_config(target)
+        cfg = load(target)
+        normalize(cfg)
+        validate(cfg)
+    return handlers[args.command](cfg, target, args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

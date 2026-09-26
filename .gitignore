@@ -1,0 +1,9 @@
+# 이 리포도 하네스를 쓴다 — .ai/ .claude/ script/ docs/ 는 루트 harness.toml 에서 생성·설치된 것이라 커밋한다.
+__pycache__/
+
+### IDE ###
+.idea/
+
+# UI 의존성과 빌드 산출물
+src/ui/node_modules/
+src/ui/.next/

@@ -1,0 +1,19 @@
+# 머지 전 검증. 하네스가 **처음 설치할 때 한 번만** 깔고 그 뒤로는 프로젝트 것이다 —
+# render 가 덮지 않고 uninstall 도 지우지 않는다. 마음대로 고친다.
+#
+# 여기서 도는 것은 `script/run-lint-test.sh` 하나다. 무엇을 검증할지는 `harness.toml` 의
+# `[commands]`·`[verify]` 가 갖는다 — CI 설정에 검증 내용을 복사하지 않는다.
+#
+# 언어 런타임이 더 필요하면 image 를 바꾸거나 before_script 에 더한다.
+# 모노레포에서 하네스가 하위 디렉터리에 있으면 이 파일을 **리포 루트로 옮기고**
+# `default.before_script` 에 `cd <그 경로>` 를 둔다 — GitLab 은 리포 루트의
+# `.gitlab-ci.yml` 만 읽는다.
+harness-verify:
+  image: python:3.11-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git >/dev/null
+  script:
+    - script/run-lint-test.sh
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "{{BASE_BRANCH}}"

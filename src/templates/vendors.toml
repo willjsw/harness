@@ -1,0 +1,93 @@
+# 에이전트 CLI 등록부 — 하네스가 아는 에이전트 CLI 의 정본.
+#
+# 검증(오케스트레이터·러너), 설치 감지(`harness tools`), 실행 명령, 어댑터 파일, UI 선택지가 모두 여기서 나온다.
+# **실행되는 값이라 하네스 사본에만 둔다** — 프로젝트의 harness.toml 은 벤더 id 만 고르고 명령을 담지 못한다.
+# 플래그는 그 CLI 로 직접 확인한 것만 적는다. 확인하지 않은 벤더는 id·name·exe 만 두고 감지만 한다.
+#
+#   launch     오케스트레이터로 절차를 시작하는 argv. 있으면 harness.orchestrator 로 고를 수 있다
+#              {workflow} {issue} {prompt} · {model} = model 표의 인자(harness.model 을 비우면 없다)
+#   headless   역할 하나를 비대화형으로 한 번 돌리는 argv. 있으면 roles.*.runner 로 고를 수 있다
+#              {role} · {access} = access 표의 인자 · {model} = model 표의 인자(모델을 비우면 없다)
+#   output     결과를 받는 방법. "stdout" 이거나, 결과 파일을 넘기는 인자({out})
+#   usage_format  사용량(토큰)을 함께 내게 하는 인자. 있으면 run-agent.py 가 출력을 받아
+#   usage_parser  이 파서(run-agent.py 의 PARSERS)로 본문과 사용량을 가른다 — 본문은 output 대신 직접 쓴다
+#   adapter    서브에이전트 정의 파일 형식 — bin/harness 의 ADAPTERS 에 렌더러가 있다
+#   models     고를 수 있는 모델을 읽는 곳 — bin/harness 의 MODEL_READERS 에 리더가 있다
+#   subagents  오케스트레이터일 때 inproc 역할을 서브에이전트로 부를 수 있는가
+#   hooks      오케스트레이터일 때 하네스가 명령 실행 전 가드(bash-guard.sh)를 연결하는가
+#   label      리뷰 댓글에 붙는 짧은 이름
+
+[[vendor]]
+id = "claude"
+name = "Claude Code"
+label = "Claude"
+exe = "claude"
+adapter = "claude-md"
+models = "claude-help"
+subagents = true
+hooks = true                     # .claude/settings.json 의 PreToolUse
+launch = ["claude", "{model}", "/{workflow} {issue}"]
+headless = ["claude", "-p", "--agent", "{role}", "--no-session-persistence", "{access}", "{model}"]
+access = { read-only = [], write = ["--permission-mode", "acceptEdits"] }
+model = ["--model", "{model}"]
+output = "stdout"
+usage_format = ["--output-format", "json"]
+usage_parser = "claude-json"
+
+[[vendor]]
+id = "codex"
+name = "Codex CLI"
+label = "Codex"
+exe = "codex"
+adapter = "codex-toml"
+models = "codex-cache"
+subagents = true                 # .codex/agents/*.toml 을 만든다 — Codex 가 실제로 불러 쓰는지는 확인 필요
+hooks = false                    # Codex 에도 훅이 있으나 하네스가 그 설정을 만들지 않는다
+launch = ["codex", "{model}", "{prompt}"]
+headless = ["codex", "exec", "{access}", "--ephemeral", "{model}"]
+access = { read-only = ["--sandbox", "read-only"], write = ["--sandbox", "workspace-write"] }
+model = ["-m", "{model}"]
+output = ["--output-last-message", "{out}"]
+usage_format = ["--json"]
+usage_parser = "codex-jsonl"
+
+# 감지만 한다 — 명령을 확인하기 전까지 고를 수 없다.
+[[vendor]]
+id = "gemini"
+name = "Gemini CLI"
+exe = "gemini"
+
+[[vendor]]
+id = "grok"
+name = "Grok CLI"
+exe = "grok"
+
+[[vendor]]
+id = "hermes"
+name = "Hermes Agent"
+exe = "hermes"
+
+[[vendor]]
+id = "opencode"
+name = "OpenCode"
+exe = "opencode"
+
+[[vendor]]
+id = "cursor-agent"
+name = "Cursor CLI"
+exe = "cursor-agent"
+
+[[vendor]]
+id = "aider"
+name = "Aider"
+exe = "aider"
+
+[[vendor]]
+id = "qwen"
+name = "Qwen Code"
+exe = "qwen"
+
+[[vendor]]
+id = "copilot"
+name = "GitHub Copilot CLI"
+exe = "copilot"

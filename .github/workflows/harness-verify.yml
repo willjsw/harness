@@ -1,0 +1,28 @@
+# 머지 전 검증. 하네스가 **처음 설치할 때 한 번만** 깔고 그 뒤로는 프로젝트 것이다 —
+# render 가 덮지 않고 uninstall 도 지우지 않는다. 마음대로 고친다.
+#
+# 여기서 도는 것은 `script/run-lint-test.sh` 하나다. 무엇을 검증할지는 `harness.toml` 의
+# `[commands]`·`[verify]` 가 갖는다 — CI 설정에 검증 내용을 복사하지 않는다.
+#
+# 언어 런타임을 더 깔아야 하면 아래 steps 에 더한다 (JDK·Node·Go 등).
+# 모노레포에서 하네스가 하위 디렉터리에 있으면 이 파일을 **리포 루트로 옮기고**
+# `defaults.run.working-directory` 를 그 경로로 맞춘다 — GitHub 은 리포 루트의
+# `.github/workflows/` 만 읽는다.
+name: harness verify
+
+on:
+  pull_request:
+    branches: ["main"]
+  push:
+    branches: ["main"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: run-lint-test
+        run: script/run-lint-test.sh

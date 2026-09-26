@@ -1,0 +1,18 @@
+{
+  "name": "harness-ui",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1 -p 7777",
+    "test": "node --test lib/*.test.js"
+  },
+  "dependencies": {
+    "@xyflow/react": "^12.11.6",
+    "next": "^16.3.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-icons": "^5.7.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "type": "module"
+}

@@ -1,0 +1,36 @@
+#!/usr/bin/env sh
+# 커밋 직전의 두 가지를 막는다 — 설정과 어긋난 생성 파일, 그리고 새로 들어오는 자격증명.
+#
+# 이 파일은 harness.toml 에서 생성된다. 직접 고치지 않는다.
+#
+# **왜 스테이징 기준인가.** 설정만 스테이징하고 생성 파일을 빼면 작업 트리는 일치해도
+# 커밋은 어긋난다. 받는 사람에게는 설정과 다른 훅·권한이 간다.
+#
+# 하네스를 찾지 못하면 통과시킨다 — 검사 도구가 없다는 이유로 커밋을 막으면
+# --no-verify 가 습관이 된다. 그때는 다른 층(수동 실행·리뷰)이 받는다.
+#
+# 활성화: git config core.hooksPath script/githooks
+set -u
+# 훅은 하네스 루트가 아니라 리포 루트에서 돌 수 있다. 자기 위치로 먼저 잡고,
+# 그게 하네스 루트가 아니면 리포 루트로 물러선다 — 모노레포에서 갈린다.
+root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." 2>/dev/null && pwd)
+[ -f "$root/script/harness.env" ] || root=$(git rev-parse --show-toplevel 2>/dev/null)
+[ -n "$root" ] || exit 0
+
+for cli in "$root/.harness/bin/harness" "$root/src/bin/harness"; do
+  if [ -x "$cli" ]; then
+    "$cli" check --target "$root" --staged || exit 1
+    break
+  fi
+done
+
+# 자격증명은 커밋되는 순간 유출이고 히스토리에서 지워도 되돌려지지 않는다.
+# **더한 줄만** 보므로 이미 들어와 있는 것이 매 커밋마다 다시 걸리지 않는다.
+if [ -x "$root/script/secret-scan.sh" ]; then
+  "$root/script/secret-scan.sh" --staged || {
+    "$root/script/usage-log.sh" block pre-commit secret-scan >/dev/null 2>&1 || true
+    exit 1
+  }
+fi
+
+exit 0
