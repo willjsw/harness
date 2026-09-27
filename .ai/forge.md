@@ -13,7 +13,7 @@
 |---|---|
 | 이슈 추적 | github (`gh`) |
 | 코드 리뷰 | github (`gh`) |
-| 리뷰 대상 브랜치 | `main` |
+| 리뷰 대상 브랜치 | `develop` |
 
 ## 용어
 
@@ -61,7 +61,7 @@ PR 번호는 `#N` 으로 적는다. 이슈 번호와 같은 표기이므로 어�
 
 ```bash
 gh pr create --title "<제목>" --body-file <본문파일> \
-  --base main --assignee <username> --reviewer <username>
+  --base develop --assignee <username> --reviewer <username>
 ```
 
 - 본문 자동 채움(`--fill`)을 쓰지 않는다 — 양식 항목이 누락된다.

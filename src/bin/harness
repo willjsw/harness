@@ -76,6 +76,7 @@ WORKFLOW_NOTES = ".ai/project/workflows"
 # 리뷰 회차 상한·반복 지적 상한이 가질 수 있는 가장 큰 값. 그 이상은 사람에게 넘길 시점을 놓친다.
 REVIEW_LIMIT = 20
 # 보호 경로 하나: 리포 기준 상대 경로. 파일, `dir/`, `dir/**`. 절대 경로·`..`·공백은 받지 않는다.
+BRANCH_NAME = re.compile(r"(?!/)(?!.*\.\.)[\w.-]+(/[\w.-]+)*")
 PROTECTED_PATH = re.compile(r"(?!/)(?!.*(^|/)\.\.(/|$))[\w.-]+(/[\w.-]+)*(/|/\*\*)?")
 
 
@@ -331,6 +332,13 @@ def validate(cfg: dict):
                 "help: harness set roles.%s.runner inproc" % (name, role["runner"], name, name))
         if role["access"] not in ("read-only", "write"):
             die("error: roles.%s.access must be read-only or write (got %r)" % (name, role["access"]))
+
+    # 브랜치 이름은 훅의 case 패턴과 가드에 그대로 들어간다
+    bad = [x for x in [cfg["branches"]["base"]] + cfg["branches"]["protected"] if not BRANCH_NAME.fullmatch(x)]
+    if bad:
+        die("error: branches has a name that is not a single branch name: %s\n\n"
+            "help: list each branch as its own string, like protected = [\"main\", \"develop\"]"
+            % ", ".join(repr(x) for x in bad))
 
     bad = [x for x in cfg["docs"]["protected"] if not PROTECTED_PATH.fullmatch(x)]
     if bad:
