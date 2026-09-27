@@ -206,12 +206,13 @@ echo "branch type follows the configured protected branches and commit tags"
 # 브랜치·태그 이름은 설정에서 가져온다. 브랜치는 커밋 없는 임시 저장소의 HEAD 로 만든다.
 branch_repo="$sandbox/branch-repo"
 mkdir -p "$branch_repo" && git -C "$branch_repo" init -q >/dev/null 2>&1 || exit 2
-branch_type_on() { # <브랜치이름>
-  git -C "$branch_repo" symbolic-ref HEAD "refs/heads/$1" || return 2
+branch_type_with() { # <기록기> <브랜치이름>
+  git -C "$branch_repo" symbolic-ref HEAD "refs/heads/$2" || return 2
   : > "$log"
-  (cd "$branch_repo" && with_log "$log" "$root/script/usage-log.sh" note test-caller)
+  (cd "$branch_repo" && with_log "$log" "$1" note test-caller)
   awk -F'|' 'END{print $5}' "$log"
 }
+branch_type_on() { branch_type_with "$root/script/usage-log.sh" "$1"; }
 IFS=' ' read -r -a protected_list <<< "$PROTECTED_BRANCHES"
 IFS='|' read -r -a tag_list <<< "$COMMIT_TAGS"
 [ "${#protected_list[@]}" -gt 0 ] || { echo "error: no protected branches in the config" >&2; exit 2; }
@@ -235,6 +236,41 @@ outside="${tag_list[0]}x"
 while printf '%s\n' "${tag_list[@]}" | grep -qxF "$outside"; do outside="${outside}x"; done
 check branch-type "prefix outside the configured tags" unknown "$(branch_type_on "$outside/x")"
 check branch-type "tag name alone without a slash" unknown "$(branch_type_on "${tag_list[0]}")"
+
+echo "branch type follows a config whose names differ from the defaults"
+# 이 리포의 설정 값을 본문에 박은 구현은 여기서 드러난다. 기록기를 임시 디렉터리에 두고
+# 설정 사본 끝에 다른 값을 덧써서 그 값으로 판정하는지 본다.
+stage_recorder() { # <디렉터리> <보호 브랜치> <커밋 태그>
+  mkdir -p "$1" || return 2
+  cp "$root/script/usage-log.sh" "$root/script/usage-vocab.sh" "$root/script/harness.env" "$1/" || return 2
+  printf "PROTECTED_BRANCHES='%s'\nCOMMIT_TAGS='%s'\n" "$2" "$3" >> "$1/harness.env"
+}
+alt="$sandbox/alt-config/script"
+stage_recorder "$alt" 'release trunk' 'work|hotfix|spike' || exit 2
+for b in release trunk; do
+  check branch-type "configured protected branch $b" protected "$(branch_type_with "$alt/usage-log.sh" "$b")"
+done
+for t in work hotfix spike; do
+  check branch-type "configured tag branch $t/x" "$t" "$(branch_type_with "$alt/usage-log.sh" "$t/x")"
+done
+for b in "${protected_list[@]}"; do
+  case " release trunk " in *" $b "*) continue ;; esac
+  check branch-type "branch $b not in the configured protected branches" unknown "$(branch_type_with "$alt/usage-log.sh" "$b")"
+done
+for t in "${tag_list[@]}"; do
+  case "|work|hotfix|spike|" in *"|$t|"*) continue ;; esac
+  check branch-type "prefix $t/ not in the configured tags" unknown "$(branch_type_with "$alt/usage-log.sh" "$t/x")"
+done
+check branch-type "part of a configured tag is not a tag" unknown "$(branch_type_with "$alt/usage-log.sh" "hot/x")"
+check branch-type "five fields per record with a changed config" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+
+echo "empty protected branches and commit tags match no branch"
+empty="$sandbox/empty-config/script"
+stage_recorder "$empty" '' '' || exit 2
+check branch-type "empty protected branches — ${protected_list[0]}" unknown "$(branch_type_with "$empty/usage-log.sh" "${protected_list[0]}")"
+check branch-type "empty commit tags — ${tag_list[0]}/x" unknown "$(branch_type_with "$empty/usage-log.sh" "${tag_list[0]}/x")"
+check branch-type "empty commit tags — any prefix" unknown "$(branch_type_with "$empty/usage-log.sh" "x/y")"
+check branch-type "five fields per record with an empty config" 5 "$(awk -F'|' 'END{print NF}' "$log")"
 
 echo "a missing config logs nothing, prints nothing and exits 0"
 # 이 리포의 설정은 건드리지 않는다. 기록기만 설정 없는 임시 디렉터리에 둔다.
