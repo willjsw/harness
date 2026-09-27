@@ -165,6 +165,18 @@ echo "UT-05 check catches a missing generated file"
 rm "$t/.claude/settings.json"
 "$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check exit code" "$?" "1"
 
+echo "UT-59 check and doctor see the same drift"
+t="$work/drift"; setup "$t"
+"$root/bin/harness" doctor --target "$t" >"$work/drift-ok.log" 2>&1
+has "$work/drift-ok.log" "files match the config" "doctor right after render does not report a match"
+echo "# hand edit" >> "$t/AGENTS.md"
+rm "$t/.claude/settings.json"
+"$root/bin/harness" check --target "$t" >"$work/drift-check.log" 2>&1; check "check exit code on drift" "$?" "1"
+grep -E '^  AGENTS.md +differs from the config$' "$work/drift-check.log" >/dev/null && ok || bad "check did not name the edited file with its reason"
+grep -E '^  .claude/settings.json +missing$' "$work/drift-check.log" >/dev/null && ok || bad "check did not name the deleted file with its reason"
+"$root/bin/harness" doctor --target "$t" >"$work/drift-doc.log" 2>&1
+has "$work/drift-doc.log" "2 files differ from the config" "doctor does not count the same two files"
+
 echo "UT-06 render refuses when the implementer and the reviewer share a runner"
 # 같은 모델이 자기 코드를 리뷰하면 같은 맹점을 두 번 지나간다. 문서가 아니라 도구가 막아야 한다.
 t="$work/samerunner"; setup "$t"

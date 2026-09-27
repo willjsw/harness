@@ -1144,7 +1144,8 @@ def staged_text(target: Path, rel: str):
     return r.stdout if r.returncode == 0 else None
 
 
-def cmd_check(cfg, target, args):
+def drift(cfg, target, staged=False):
+    """생성물과 설정의 어긋남 — (경로, 사유) 목록. staged 면 작업 트리 대신 인덱스와 비교한다."""
     bad = []
     items = plan(cfg, target)
     made = {rel for rel, _c, _m in items}
@@ -1152,7 +1153,7 @@ def cmd_check(cfg, target, args):
         if rel not in made and (target / rel).is_file():
             bad.append((rel, "left over; the config no longer generates it"))
     for rel, content, _mode in items:
-        if args.staged:
+        if staged:
             actual = staged_text(target, rel)
         else:
             p = target / rel
@@ -1161,6 +1162,11 @@ def cmd_check(cfg, target, args):
             bad.append((rel, "missing"))
         elif actual != content:
             bad.append((rel, "differs from the config"))
+    return bad
+
+
+def cmd_check(cfg, target, args):
+    bad = drift(cfg, target, staged=args.staged)
     if bad:
         print("error: generated files do not match the config%s"
               % (" (staged contents)" if args.staged else ""), file=sys.stderr)
@@ -1169,7 +1175,7 @@ def cmd_check(cfg, target, args):
         print("\nhelp: regenerate them — never edit generated files by hand\n"
               "        harness render", file=sys.stderr)
         return 1
-    print("check: %d generated files match the config" % len(items))
+    print("check: %d generated files match the config" % len(plan(cfg, target)))
     return 0
 
 
@@ -1505,15 +1511,11 @@ def cmd_doctor(cfg, target, _args):
                  "not a model of %s on this machine (harness tools --sync to refresh)" % vendor(cfg, n))
 
     print("\ngenerated files")
-    items = plan(cfg, target)
-    stale = [r for r in previous(target) if r not in {x[0] for x in items} and (target / r).is_file()]
-    diff = [r for r, c, _m in items
-            if not (target / r).is_file() or (target / r).read_text(encoding="utf-8") != c]
-    if diff or stale:
-        line("bad", "%d files differ from the config" % (len(diff) + len(stale)),
-             "run `harness render`")
+    diff = drift(cfg, target)
+    if diff:
+        line("bad", "%d files differ from the config" % len(diff), "run `harness render`")
     else:
-        line("ok", "%d files match the config" % len(items))
+        line("ok", "%d files match the config" % len(plan(cfg, target)))
 
     print("\nproject facts")
     for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
