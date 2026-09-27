@@ -16,7 +16,7 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." 2>/dev/null && pwd)
 
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
   case "$remote_ref" in
-    refs/heads/main) ;;
+    refs/heads/main|refs/heads/develop) ;;
     *) continue ;;
   esac
 
@@ -25,7 +25,7 @@ while read -r _local_ref _local_sha remote_ref _remote_sha; do
   fi
 
   echo "blocked: $remote_ref is a protected branch — direct push is not allowed" >&2
-  echo "  open a review request from a <tag>/<issue-number>-<english-summary> branch onto main instead" >&2
+  echo "  open a review request from a <tag>/<issue-number>-<english-summary> branch onto develop instead" >&2
   exit 1
 done
 

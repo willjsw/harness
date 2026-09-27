@@ -147,6 +147,12 @@ sed -i '' 's/issue_ref = "suffix"/issue_ref = "prefix"/' "$t/harness.toml"
 sed -i '' 's/^runner = "codex"$/runner = "unknown-runner"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "unknown runner" "$?" "2"
 
+echo "UT-07d a branch list written as one comma-joined string is refused"
+# 브랜치 이름은 훅의 case 패턴에 그대로 들어가므로, 쉼표·공백이 섞이면 훅이 문법 오류로 깨진다.
+t="$work/branchname"; setup "$t"
+sed -i '' 's/^protected = \["main", "development"\]$/protected = ["main, development"]/' "$t/harness.toml"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "comma-joined branch list" "$?" "2"
+
 echo "UT-07b the integration branch is protected even when it is not listed"
 # 거기로 직접 push 할 수 있으면 승인 게이트가 우회된다. 선택지가 아니므로 채운다.
 t="$work/autoprotect"; setup "$t"
