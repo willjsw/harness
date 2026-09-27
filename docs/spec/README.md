@@ -19,3 +19,4 @@
 | 문서 | 다루는 것 |
 |---|---|
 | [`63-usage-log-config-values.md`](63-usage-log-config-values.md) | 사용 기록의 브랜치 유형 분류 — 설정 값으로 판정, 설정 누락 시 기록하지 않음 |
+| [`64-modularize-cli-review-scripts.md`](64-modularize-cli-review-scripts.md) | 리뷰 판정 데이터(JSON) 계약·집계·등록 댓글 렌더링, 리뷰 루프 공용 모듈, CLI 지표 모듈 분리와 중복 정리, 테스트 기록 경로 격리 |
