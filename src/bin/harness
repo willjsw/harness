@@ -240,12 +240,18 @@ RUN_AGENT = "script/run-agent.py"
 
 
 def role_meta(name: str) -> dict:
+    """역할 어댑터 본문(templates/agents/<역할>.md)의 frontmatter. 파일이 없으면 {}.
+
+    frontmatter 의 원래 키(description · summary · about …)에 해석한 값(headless · entry ·
+    distinct_from)을 덮고, 본문(body)과 파일 경로(path)를 함께 담는다.
+    """
     src = TEMPLATES / "agents" / ("%s.md" % name)
     if not src.is_file():
         return {}
-    meta = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))[0]
-    return {"headless": meta.get("headless", "true") != "false", "entry": meta.get("entry", ""),
-            "distinct_from": [x.strip() for x in meta.get("distinct_from", "").split(",") if x.strip()]}
+    meta, body = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))
+    return dict(meta, headless=meta.get("headless", "true") != "false", entry=meta.get("entry", ""),
+                distinct_from=[x.strip() for x in meta.get("distinct_from", "").split(",") if x.strip()],
+                body=body, path=src)
 
 
 def role_model(cfg: dict, role: str) -> str:
@@ -286,7 +292,7 @@ def run_plan(cfg: dict) -> dict:
                         "model": role_model(cfg, n),
                         "usage_format": VENDORS[r["runner"]].get("usage_format", []),
                         "usage_parser": VENDORS[r["runner"]].get("usage_parser", ""),
-                        "entry": role_meta(n)["entry"] or "%s %s" % (RUN_AGENT, n)}
+                        "entry": role_meta(n).get("entry") or "%s %s" % (RUN_AGENT, n)}
     return {"_generated": "harness.toml 에서 생성된다. 직접 고치지 않는다 — harness render 가 다시 만든다.",
             "roles": roles, "metrics": metrics_cfg(cfg)}
 
@@ -419,7 +425,7 @@ def tools_of(role: dict) -> list:
 
 def distinct_pairs(cfg: dict) -> list:
     """(역할, 그와 달라야 하는 역할) — 역할 선언의 distinct_from 에서. 설정에 없는 역할은 뺀다."""
-    return [(n, o) for n in sorted(cfg["roles"]) for o in role_meta(n)["distinct_from"] if o in cfg["roles"]]
+    return [(n, o) for n in sorted(cfg["roles"]) for o in role_meta(n).get("distinct_from", []) if o in cfg["roles"]]
 
 
 FORGE_CLI = {"gitlab": "glab", "github": "gh", "jira": "jira"}
@@ -695,9 +701,9 @@ def agent_table(cfg: dict) -> str:
     rows = []
     for name in sorted(cfg["roles"]):
         src = TEMPLATES / "agents" / ("%s.md" % name)
-        if not src.is_file():
+        meta = role_meta(name)
+        if not meta:
             die("error: no adapter body for role `%s`\n  --> %s" % (name, src))
-        meta, _ = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))
         if "summary" not in meta:
             die("error: frontmatter has no `summary`\n  --> %s" % src)
         rows.append("| `.claude/agents/%s.md` | %s |" % (name, meta["summary"]))
@@ -741,9 +747,10 @@ def agent_files(cfg: dict, v: dict, target: Path = None) -> list:
     for name in sorted(cfg["roles"]):
         role = dict(cfg["roles"][name], model=role_model(cfg, name))   # 어댑터에는 실제로 쓰는 모델을 적는다
         src = TEMPLATES / "agents" / ("%s.md" % name)
-        if not src.is_file():
+        meta = role_meta(name)
+        if not meta:
             die("error: no adapter body for role `%s`\n  --> %s" % (name, src))
-        meta, body = parse_frontmatter(src.read_text(encoding="utf-8"), str(src))
+        body = meta["body"]
         if "description" not in meta:
             die("error: frontmatter has no `description`\n  --> %s" % src)
         body = substitute(body, v, str(src)).strip() + "\n"
@@ -903,7 +910,7 @@ def validate_workflows(cfg: dict):
                     die("error: %s.role %r is not a configured role (have: %s)"
                         % (at, role, ", ".join(sorted(cfg["roles"]))))
                 # 전용 스크립트가 있는 CLI 러너 역할은 그 스크립트를 부른다(리뷰 → review-mr.sh). 입력이 이슈가 아니다
-                entry = role_meta(role)["entry"]
+                entry = role_meta(role).get("entry", "")
                 if cfg["roles"][role]["runner"] != "inproc" and entry:
                     die("error: %s delegates to %s, which runs through a script (runner = %s)\n\n"
                         "help: call the script that runs it with a script step instead\n"
@@ -2032,25 +2039,24 @@ def cmd_tools(_cfg, _target, args):
 
 
 def cmd_schema(cfg, _target, _args):
-    tools = recorded_tools()
     """`harness schema` — UI 가 선택지를 그리는 데 쓰는 해석된 설정. 등록부와 역할별 실제 실행 주체를 낸다.
 
     UI 가 이 표를 따로 들고 있지 않게 한다 — 한쪽만 고치면 고를 수 없는 값을 고르게 된다.
     """
+    tools = recorded_tools()
     print(json.dumps({
         "agents": AGENTS,
         # 전용 스크립트로 도는 역할 → 그 스크립트. 캔버스가 스크립트 단계에서 역할을 알아본다
-        "script_roles": {n: role_meta(n)["entry"] for n in cfg["roles"] if role_meta(n)["entry"]},
+        "script_roles": {n: role_meta(n)["entry"] for n in cfg["roles"] if role_meta(n).get("entry")},
         "orchestrator": cfg["harness"]["orchestrator"],
         "orchestrator_model": cfg["harness"]["model"],   # 모델을 비운 서브에이전트가 이어받는 값
         "roles": {n: {"runner": r["runner"], "access": r["access"], "model": r.get("model", ""),
                       # 오케스트레이터가 돌리는 역할은 harness.model 을 따른다 — UI 는 그 역할의 모델을 고르게 하지 않는다
                       "follows_orchestrator": r["runner"] == cfg["harness"]["orchestrator"],
-                      "vendor": vendor(cfg, n), "runners": ["inproc"] + (RUNNERS if role_meta(n)["headless"] else []),
+                      "vendor": vendor(cfg, n), "runners": ["inproc"] + (RUNNERS if role_meta(n).get("headless", True) else []),
                       "model_ok": model_ok(cfg, n, tools),
                       # about 은 사람에게 보이는 한 문장이다. description 은 에이전트 선택용이라 길다
-                      "about": (lambda m: m.get("about") or m.get("description", ""))(parse_frontmatter(
-                          (TEMPLATES / "agents" / ("%s.md" % n)).read_text(encoding="utf-8"), n)[0]),
+                      "about": role_meta(n).get("about") or role_meta(n).get("description", ""),
                       "contract": ".ai/templates/%s.md" % n, "notes": "%s/%s.md" % (ROLE_NOTES, n)}
                   for n, r in cfg["roles"].items()},
         # 명령 탭의 값. 이 키가 없는 옛 하네스 사본은 명령을 문서(.ai/project/commands.md)로만 받는다

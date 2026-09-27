@@ -780,6 +780,21 @@ has "$work/ra.out" "runs as a subagent" "the runner does not say why"
 check "an agent step for a role with its own script" "$?" "2"
 has "$work/entry.out" "script/review-mr.sh" "the refusal does not name the role's script"
 
+echo "UT-60 a missing or incomplete adapter body stops render with its message"
+frontmatter_case() { # <이름> <기대 메시지> <템플릿을 바꾸는 파이썬 한 줄>
+  local h="$work/fm-$1" t="$work/fm-$1-target"
+  rm -rf "$h"; mkdir -p "$h"; cp -R "$root/bin" "$root/templates" "$h/"
+  python3 -c "import pathlib, re; p = pathlib.Path('$h/templates/agents/planner.md'); s = p.read_text(encoding='utf-8'); $3" \
+    || { bad "$1: could not prepare the template"; return; }
+  setup "$t"
+  "$h/bin/harness" render --target "$t" >"$work/fm-$1.out" 2>&1
+  [ "$?" -ne 0 ] && ok || bad "$1: render did not stop"
+  has "$work/fm-$1.out" "$2" "$1: render did not say '$2'"
+}
+frontmatter_case nobody "no adapter body for role \`planner\`" "p.unlink()"
+frontmatter_case nosummary "frontmatter has no \`summary\`" "p.write_text(re.sub(r'(?m)^summary:.*\\n', '', s, count=1), encoding='utf-8')"
+frontmatter_case nodescription "frontmatter has no \`description\`" "p.write_text(re.sub(r'(?m)^description:.*\\n', '', s, count=1), encoding='utf-8')"
+
 echo "UT-52 a role may forbid CLI runners, and orchestrator gaps show in doctor"
 h="$work/harness-copy"; rm -rf "$h"; mkdir -p "$h"; cp -R "$root/bin" "$root/templates" "$h/"
 python3 - "$h/templates/agents/planner.md" <<'PY'
