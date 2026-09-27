@@ -64,13 +64,31 @@ detail=$(printf '%s' "$detail" | tr '\n\r\t|' '    ' | awk \
     print out
   }' | cut -c1-80)
 
+# 브랜치 유형은 설정의 보호 브랜치(공백 구분)와 커밋 태그(| 구분)에서 항목 단위로 판정한다.
+# 태그 목록을 case 패턴 자리에 변수로 넣으면 | 가 대안으로 해석되지 않아 아무것도 맞지 않는다.
 branch=$(git branch --show-current 2>/dev/null) || branch=""
-case "$branch" in
-  main|development) branch_type=protected ;;
-  feat/*|fix/*|docs/*|chore/*|refactor/*) branch_type=${branch%%/*} ;;
-  "") branch_type="-" ;;
-  *) branch_type=unknown ;;
-esac
+set -f
+if [ -z "$branch" ]; then
+  branch_type="-"
+else
+  branch_type=unknown
+  for _p in ${PROTECTED_BRANCHES:-}; do
+    if [ "$branch" = "$_p" ]; then branch_type=protected; break; fi
+  done
+  if [ "$branch_type" = unknown ]; then
+    case "$branch" in
+      */*)
+        _prefix=${branch%%/*}
+        _ifs=$IFS; IFS='|'
+        for _t in ${COMMIT_TAGS:-}; do
+          if [ -n "$_t" ] && [ "$_prefix" = "$_t" ]; then branch_type=$_t; break; fi
+        done
+        IFS=$_ifs
+        ;;
+    esac
+  fi
+fi
+set +f
 
 mkdir -p "$(dirname "$log")" 2>/dev/null || exit 0
 printf '%s|%s|%s|%s|%s\n' \

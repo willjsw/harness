@@ -202,6 +202,40 @@ out=$(script/usage-report.sh "$logdir")
 check UT-05 "empty file in the mix — total" 2 "$(printf '%s\n' "$out" | sed -n 's/^TOTAL=//p')"
 check UT-05 "empty file in the mix — nothing dropped" 0 "$(printf '%s\n' "$out" | sed -n 's/^DROPPED=//p')"
 
+echo "branch type follows the configured protected branches and commit tags"
+# 브랜치·태그 이름은 설정에서 가져온다. 브랜치는 커밋 없는 임시 저장소의 HEAD 로 만든다.
+branch_repo="$sandbox/branch-repo"
+mkdir -p "$branch_repo" && git -C "$branch_repo" init -q >/dev/null 2>&1 || exit 2
+branch_type_on() { # <브랜치이름>
+  git -C "$branch_repo" symbolic-ref HEAD "refs/heads/$1" || return 2
+  : > "$log"
+  (cd "$branch_repo" && with_log "$log" "$root/script/usage-log.sh" note test-caller)
+  awk -F'|' 'END{print $5}' "$log"
+}
+IFS=' ' read -r -a protected_list <<< "$PROTECTED_BRANCHES"
+IFS='|' read -r -a tag_list <<< "$COMMIT_TAGS"
+[ "${#protected_list[@]}" -gt 0 ] || { echo "error: no protected branches in the config" >&2; exit 2; }
+[ "${#tag_list[@]}" -gt 0 ] || { echo "error: no commit tags in the config" >&2; exit 2; }
+for b in "${protected_list[@]}"; do
+  check branch-type "protected branch $b" protected "$(branch_type_on "$b")"
+done
+check branch-type "five fields per record on a protected branch" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+base_listed=no
+for b in "${protected_list[@]}"; do [ "$b" = "$BASE_BRANCH" ] && base_listed=yes; done
+if [ "$base_listed" = yes ]; then
+  check branch-type "integration branch $BASE_BRANCH" protected "$(branch_type_on "$BASE_BRANCH")"
+else
+  echo "skip [branch-type] the integration branch is not a protected branch in this config" >&2
+fi
+for t in "${tag_list[@]}"; do
+  check branch-type "tag branch $t/x" "$t" "$(branch_type_on "$t/x")"
+done
+check branch-type "five fields per record on a tag branch" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+outside="${tag_list[0]}x"
+while printf '%s\n' "${tag_list[@]}" | grep -qxF "$outside"; do outside="${outside}x"; done
+check branch-type "prefix outside the configured tags" unknown "$(branch_type_on "$outside/x")"
+check branch-type "tag name alone without a slash" unknown "$(branch_type_on "${tag_list[0]}")"
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "usage log test failed: $pass passed, $fail failed" >&2
