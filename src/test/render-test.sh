@@ -27,6 +27,20 @@ has()  { if grep -qF -- "$2" "$1"; then ok; else bad "$3"; fi; }
 hasnt(){ if grep -qF -- "$2" "$1"; then bad "$3"; else ok; fi; }
 
 
+records_under_work() { # records_under_work <리포> — 두 기록 경로가 $work 아래를 가리키는지 본다
+  local md ul
+  md=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$1/script/harness.plan.json")
+  case "$md" in "$work"/*) ok ;; *) bad "$1: the plan's metrics dir is outside \$work: $md" ;; esac
+  ul=$(sed -n 's/^USAGE_LOG_PATH=//p' "$1/script/harness.env" | tr -d "\"'")
+  case "$ul" in "$work"/*) ok ;; *) bad "$1: the usage log path is outside \$work: $ul" ;; esac
+}
+
+isolate_records() { # isolate_records <리포> — install 한 리포의 기록 경로를 테스트 작업 디렉터리로 옮긴다
+  "$root/bin/harness" set --target "$1" metrics.dir "$1.records/metrics" usage.log_path "$1.records/usage.log" >/dev/null \
+    || bad "$1: could not move the record paths"
+  records_under_work "$1"
+}
+
 setup() {          # setup <대상> — 기본 설정으로 렌더한 대상 하나를 만든다
   rm -rf "$1"; mkdir -p "$1"
   cp "$root/templates/harness.toml" "$1/harness.toml"
@@ -35,9 +49,10 @@ setup() {          # setup <대상> — 기본 설정으로 렌더한 대상 하
   # 고정하지 않으면 기본값이 그 값과 같아지는 순간 치환이 아무것도 바꾸지 않고, 테스트는
   # 통과하면서 아무것도 검사하지 않는 상태가 된다 — 실패보다 나쁘다. 배포되는 기본값 자체는
   # UT-00 이 따로 본다.
-  python3 - "$1/harness.toml" <<'PY'
+  # 기록 경로(지표·사용 기록)는 대상 옆의 테스트 작업 디렉터리로 둔다 — 기본값은 실제 홈 아래다.
+  python3 - "$1/harness.toml" "$1.records" <<'PY'
 import pathlib, re, sys
-p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8"); rec = sys.argv[2]
 for pat, repl in [
     (r'^base = .*$',            'base = "development"'),
     (r'^protected = \[.*\]$',  'protected = ["main", "development"]'),
@@ -47,10 +62,23 @@ for pat, repl in [
     (r'^review_host = .*$',     'review_host = "gitlab"'),
     (r'^style = .*$',           'style = "nygard"'),
     (r'^tool = .*$',            'tool = "adr-tools"'),
-    (r'^dir = .*$',             'dir = "docs/adr"'),
     (r'^deletion_forbidden = .*$', 'deletion_forbidden = true'),
 ]:
     s = re.sub(pat, repl, s, count=1, flags=re.M)
+# 같은 키 이름이 여러 절에 있으므로 절 안에서만 바꾼다.
+def in_section(s, section, pat, repl):
+    m = re.search(r'^\[' + re.escape(section) + r'\]\s*$', s, flags=re.M)
+    if not m:
+        sys.exit("setup: no [%s] section" % section)
+    nxt = re.search(r'^\[', s[m.end():], flags=re.M)
+    end = m.end() + (nxt.start() if nxt else len(s) - m.end())
+    body, n = re.subn(pat, lambda _: repl, s[m.end():end], count=1, flags=re.M)
+    if n != 1:
+        sys.exit("setup: no match for %s in [%s]" % (pat, section))
+    return s[:m.end()] + body + s[end:]
+s = in_section(s, "adr", r'^dir = .*$', 'dir = "docs/adr"')
+s = in_section(s, "metrics", r'^dir = .*$', 'dir = "%s/metrics"' % rec)
+s = in_section(s, "usage", r'^log_path = .*$', 'log_path = "%s/usage.log"' % rec)
 p.write_text(s, encoding="utf-8")
 PY
   "$root/bin/harness" render --target "$1" >/dev/null
@@ -76,6 +104,18 @@ for p in pathlib.Path(sys.argv[1]).glob('.codex/agents/*.toml'):
     tomllib.load(p.open('rb'))
 " "$t"
 check "codex toml parses" "$?" "0"
+
+echo "UT-57 the test setup keeps its records under the test work directory"
+# 기본 설정의 기록 경로는 실제 홈 아래다. 테스트가 만든 대상이 거기 쌓으면 안 된다.
+t="$work/recpath"; setup "$t"
+python3 - "$t/harness.toml" > "$work/recpath.out" <<'PY'
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+print(c["adr"]["dir"]); print(c["metrics"]["dir"]); print(c["usage"]["log_path"])
+PY
+check "the adr dir in the adr section" "$(sed -n 1p "$work/recpath.out")" "docs/adr"
+[ "$(sed -n 2p "$work/recpath.out")" != "docs/adr" ] && ok || bad "the adr dir value landed in the metrics dir"
+records_under_work "$t"
 
 echo "UT-02 changing the commit subject format changes the pattern and the guidance together"
 # 값 하나를 바꿨는데 한쪽만 따라오면 훅이 거부하며 보여 주는 예시가 통과하지 못하는 형식이 된다.
@@ -261,6 +301,7 @@ echo "UT-15 every managed script's regression test passes in an installed repo"
 t="$work/installed"; rm -rf "$t"; mkdir -p "$t"
 ( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
+isolate_records "$t"
 # 목록을 적지 않고 설치된 것을 센다 — 적어 두면 새 테스트가 여기서 빠진 채 지나간다.
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
@@ -275,6 +316,7 @@ done
 ( cd "$t" && ./script/run-lint-test.sh >"$work/lint.log" 2>&1 )
 check "verification bundle right after install" "$?" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
+ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
 
 echo "UT-16 the forge self-test tells contract compliance apart"
 # 자체 검사는 실제 forge 를 상대로 도는 도구라 그 자신은 검사되지 않는다.
@@ -507,6 +549,7 @@ echo "UT-34 the pre-commit hook blocks a credential from being committed"
 t="$work/secret"; rm -rf "$t"; mkdir -p "$t"
 ( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
+isolate_records "$t"
 # 훅은 생성물 일치도 본다. 하네스를 먼저 커밋해 두어야 시크릿 층까지 도달한다.
 gitq() { git -C "$t" -c user.name=t -c user.email=t@example.invalid "$@"; }
 gitq add -A >/dev/null && gitq commit -q -m "chore: 하네스" >/dev/null
