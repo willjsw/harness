@@ -16,6 +16,7 @@ docs/workflow/README.md
 docs/workflow/changing.md
 docs/workflow/flow.md
 script/README.md
+script/_review.py
 script/check-open-mrs.sh
 script/create-carryover-issue.sh
 script/forge-selftest.sh

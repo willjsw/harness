@@ -27,6 +27,7 @@
 | `create-carryover-issue.sh` | 범위 밖으로 넘긴 지적의 이월 이슈 생성 — 본문 검사 뒤 원본에서 필수 필드 상속. `--dry-run` | 구현자가 이월처를 만들 때 |
 | `review-mr.sh` | 리뷰 입력을 묶어 리뷰 도구에 넘기고 `post-review.sh` 로 등록. **회차 라벨을 스스로 올리고 상한을 강제.** 0=PASS, 1=수정 필요, 2=실패, 3=상한 | 리뷰 단계 |
 | `post-review.sh` | 리뷰 본문을 등록(인라인 + 요약)하고 **발견 등급 집계로 판정.** 0=PASS, 1=수정 필요, 2=실패, 3=한 파일 반복 | `review-mr.sh` |
+| `_review.py` | 리뷰 루프의 파이썬 — 리뷰 입력 맥락 구성, 회차 라벨 계산, 실행 계획·리뷰 요청 필드 조회. `python3 script/_review.py <하위명령>` 으로만 실행한다. 표지는 환경의 `FMT_*` 를 읽는다 | `review-mr.sh` |
 | `harness-format.sh` | **기계가 읽는 문자열의 정본.** 쓰는 쪽(계약·양식)과 읽는 쪽(파서)이 같은 값을 보게 한다 | 리뷰·이슈 스크립트 |
 | `forge/_common.sh` | forge 어댑터 **계약**과 기본 구현 | `forge.sh` |
 | `forge/<kind>.sh` | forge 어댑터 구현. CLI 이름과 응답 형태를 여기서만 안다 | `forge.sh` |

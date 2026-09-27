@@ -30,8 +30,7 @@ hist_format=$(sed -n 's/^HIST_FORMAT = .\(#format [0-9]*\).*/\1/p' \
 [ -n "$hist_format" ] || { echo "could not read the history format marker" >&2; exit 2; }
 ROUND=$REVIEW_ROUND_LABEL
 # 스텁으로 갈아끼울 리뷰 도구 — 실행 계획이 고른 CLI 다
-reviewer_bin=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["roles"]["code-reviewer"].get("exe", ""))' \
-  "$repo_root/script/harness.plan.json") || exit 2
+reviewer_bin=$(python3 "$repo_root/script/_review.py" plan-exe "$repo_root/script/harness.plan.json") || exit 2
 [ -n "$reviewer_bin" ] || { echo "roles.code-reviewer.runner is inproc — nothing to stub" >&2; exit 2; }
 [ -n "$reviewer_bin" ] || { echo "no review runner configured — cannot exercise the loop" >&2; exit 2; }
 
@@ -46,7 +45,7 @@ mkdir -p "$stub" "$state" "$work/script" "$work/.ai/templates"
 cp "$repo_root/script/review-mr.sh" "$repo_root/script/post-review.sh" \
    "$repo_root/script/usage-log.sh" "$repo_root/script/usage-vocab.sh" \
    "$repo_root/script/harness-format.sh" "$repo_root/script/run-agent.py" \
-   "$repo_root/script/metric.py" "$work/script/"
+   "$repo_root/script/metric.py" "$repo_root/script/_review.py" "$work/script/"
 # 지표는 샌드박스 안에만 남긴다 — 실제 홈의 기록을 건드리지 않고, 리뷰 도구의 사용량이 남는지 본다
 python3 - "$repo_root/script/harness.plan.json" "$work/script/harness.plan.json" "$sandbox/metrics" <<'PY'
 import json, sys
@@ -744,6 +743,45 @@ for m in "$FMT_FINDINGS_HEADING" "$FMT_NO_FINDINGS" "$FMT_VERDICT_PASS" "$FMT_VE
          "$FMT_OUT_OF_SCOPE"; do
   check UT-21 "present in the contract: $m" 1 "$(grep -cF -- "$m" "$contract" >/dev/null 2>&1 && echo 1 || echo 0)"
 done
+
+echo "UT-24 the review scripts carry no embedded python"
+# 파이썬은 script/_review.py 한 곳에 둔다. 스크립트 본문에 흩어지면 같은 규칙이 두 번 적힌다.
+for f in review-mr.sh; do
+  check UT-24 "$f — python3 -c" 0 "$(grep -c 'python3 -c' "$work/script/$f")"
+  check UT-24 "$f — python heredoc" 0 "$(grep -cE 'python3 +-( |$)' "$work/script/$f")"
+done
+
+echo "UT-25 the MR body goes whole when neither context section is there"
+cat > "$state/mr-description" <<'MD'
+## 다른 절
+
+목적 절도 포인트 절도 없는 본문의 문장이다.
+MD
+rm -f "$state/threads.json" "$state/issue.json" "$state/reviewer-input"
+echo "$ROUND:1" > "$state/labels"
+check UT-25 "exit code" 0 "$(run_review "$sandbox/clean.md")"
+check UT-25 "the whole body is passed" 1 "$(input_hits '목적 절도 포인트 절도 없는 본문의 문장')"
+check UT-25 "the other heading is quoted" 1 "$(input_hits '^> ## 다른 절')"
+rm -f "$state/mr-description"
+
+echo "UT-26 the round is the largest round label"
+printf '{"labels": ["%s:1", "other", "%s:3", "%s:x"]}' "$ROUND" "$ROUND" "$ROUND" > "$sandbox/round.json"
+check UT-26 "largest round" 3 "$(python3 "$work/script/_review.py" round "$sandbox/round.json" "$ROUND" | sed -n 1p)"
+check UT-26 "round labels" "$ROUND:1 $ROUND:3" "$(python3 "$work/script/_review.py" round "$sandbox/round.json" "$ROUND" | sed -n 2p)"
+printf '{"labels": ["other"]}' > "$sandbox/round.json"
+check UT-26 "no round label" 0 "$(python3 "$work/script/_review.py" round "$sandbox/round.json" "$ROUND" | sed -n 1p)"
+
+echo "UT-27 a marker missing from the environment stops the module"
+printf '{"description": "Closes #1"}' > "$sandbox/ref.json"
+check UT-27 "issue-ref without FMT_MR_CLOSES" 2 \
+  "$(env -u FMT_MR_CLOSES python3 "$work/script/_review.py" issue-ref "$sandbox/ref.json" >/dev/null 2>&1; echo $?)"
+mkdir -p "$sandbox/ctx"
+check UT-27 "context without FMT_SUMMARY_HEADING" 2 \
+  "$(env -u FMT_SUMMARY_HEADING FMT_MR_PURPOSE=a FMT_MR_REVIEW_POINTS=b FMT_REVIEWED_HEAD=c FMT_INLINE_SEVERITIES=major \
+       python3 "$work/script/_review.py" context "$sandbox/ctx" 0 "" >/dev/null 2>&1; echo $?)"
+
+echo "UT-28 the review loop leaves no bytecode"
+check UT-28 "no script/__pycache__" no "$([ -e "$work/script/__pycache__" ] && echo yes || echo no)"
 
 # 리뷰 도구를 부를 때마다 지표에 에이전트 스팬이 남고, 벤더 형식에서 꺼낸 사용량이 같은 뜻으로 맞춰진다.
 # 스텁은 두 벤더 모두 입력(캐시 제외) 11 + 출력 7 = 18 을 낸다
