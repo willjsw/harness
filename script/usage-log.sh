@@ -22,7 +22,10 @@ set -u
 
 . "$(dirname "$0")/usage-vocab.sh"
 
-. "$(dirname "$0")/harness.env"
+# 설정을 읽지 못하면 판정할 값이 없으므로 아무것도 기록하지 않는다.
+_env="$(dirname "$0")/harness.env"
+[ -f "$_env" ] && [ -r "$_env" ] || exit 0
+. "$_env"
 
 eval "_override=\${$USAGE_ENV_VAR:-}"
 log=${_override:-$USAGE_LOG_PATH}

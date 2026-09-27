@@ -236,6 +236,23 @@ while printf '%s\n' "${tag_list[@]}" | grep -qxF "$outside"; do outside="${outsi
 check branch-type "prefix outside the configured tags" unknown "$(branch_type_on "$outside/x")"
 check branch-type "tag name alone without a slash" unknown "$(branch_type_on "${tag_list[0]}")"
 
+echo "a missing config logs nothing, prints nothing and exits 0"
+# 이 리포의 설정은 건드리지 않는다. 기록기만 설정 없는 임시 디렉터리에 둔다.
+noenv="$sandbox/noenv/script"
+mkdir -p "$noenv" || exit 2
+cp "$root/script/usage-log.sh" "$root/script/usage-vocab.sh" "$noenv/" || exit 2
+absent_log="$sandbox/noenv/absent/usage.log"
+noenv_out="$sandbox/noenv/stdout"
+noenv_err="$sandbox/noenv/stderr"
+with_log "$absent_log" "$noenv/usage-log.sh" note test-caller standalone >"$noenv_out" 2>"$noenv_err"
+check no-config "exit code 0" 0 "$?"
+check no-config "no log file created" no "$([ -e "$absent_log" ] && echo yes || echo no)"
+check no-config "no stdout" "" "$(cat "$noenv_out")"
+check no-config "no stderr" "" "$(cat "$noenv_err")"
+printf '%s\n' "2026-09-01T10:00:00|note|test-caller|standalone|-" > "$log"
+with_log "$log" "$noenv/usage-log.sh" note test-caller standalone >/dev/null 2>&1
+check no-config "no line added to an existing log" 1 "$(grep -c . "$log")"
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "usage log test failed: $pass passed, $fail failed" >&2
