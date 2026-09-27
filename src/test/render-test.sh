@@ -207,7 +207,7 @@ echo "UT-07c the harness source tree runs on itself and never vendors a copy of 
 # 사본을 고정하면 템플릿을 고칠 때마다 두 곳이 어긋나므로 소스 리포는 자기 src/bin/harness 로 돈다.
 # 이 리포 자신을 건드리지 않게 소스 트리를 임시 디렉터리에 복제해서 본다.
 src="$work/source"; rm -rf "$src"; mkdir -p "$src/src/bin"
-cp "$root/bin/harness" "$src/src/bin/harness"; cp -R "$root/templates" "$src/src/templates"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
 ( cd "$src" && git init -q . )
 "$src/src/bin/harness" install --target "$src" >/dev/null 2>&1; check "install on the source tree" "$?" "0"
 [ -e "$src/.harness/bin" ] && bad "the source tree vendored a copy of itself" || ok
@@ -215,6 +215,8 @@ cp "$root/bin/harness" "$src/src/bin/harness"; cp -R "$root/templates" "$src/src
 has "$src/harness.toml" 'name = "source"' "the seeded config is not the source tree's own"
 [ -f "$HARNESS_HOME/source/project.json" ] && ok || bad "the source tree was not registered"
 "$src/src/bin/harness" check --target "$src" >/dev/null 2>&1; check "check on the source tree" "$?" "0"
+"$src/src/bin/harness" metrics --target "$src" >"$work/source-metrics.out" 2>&1; check "metrics on the source tree" "$?" "0"
+[ -e "$src/src/bin/__pycache__" ] && bad "the metrics module left bytecode in src/bin" || ok
 # 다른 CLI(여기서는 $root 의 것)로 불러도 소스 리포 자신의 템플릿으로 돈다 — 템플릿을 바꿔 두면 드러난다.
 printf '\n<!-- source tree only -->\n' >> "$src/src/templates/generated/AGENTS.md"
 "$src/src/bin/harness" render --target "$src" >/dev/null
@@ -317,6 +319,13 @@ done
 check "verification bundle right after install" "$?" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
 ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
+
+echo "UT-58 the installed CLI carries its metrics module and leaves no bytecode"
+[ -f "$t/.harness/bin/harness_metrics.py" ] && ok || bad "install did not vendor the metrics module"
+python3 "$t/.harness/bin/harness" metrics --target "$t" >"$work/installed-metrics.out" 2>&1
+check "metrics in an installed repo" "$?" "0"
+has "$work/installed-metrics.out" '"summary"' "the installed metrics command printed no report"
+[ -e "$t/.harness/bin/__pycache__" ] && bad "the metrics module left bytecode in .harness/bin" || ok
 
 echo "UT-16 the forge self-test tells contract compliance apart"
 # 자체 검사는 실제 forge 를 상대로 도는 도구라 그 자신은 검사되지 않는다.
