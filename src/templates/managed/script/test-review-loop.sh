@@ -26,7 +26,7 @@ cap=5
 repeat=3
 # 누적 이력의 형식 판별자. 등록 스크립트가 갖는 값을 읽어 쓴다 — 박아 두면 둘이 갈린다.
 hist_format=$(sed -n 's/^HIST_FORMAT = .\(#format [0-9]*\).*/\1/p' \
-  "$repo_root/script/post-review.sh" | head -1)
+  "$repo_root/script/_review.py" | head -1)
 [ -n "$hist_format" ] || { echo "could not read the history format marker" >&2; exit 2; }
 ROUND=$REVIEW_ROUND_LABEL
 # 스텁으로 갈아끼울 리뷰 도구 — 실행 계획이 고른 CLI 다
@@ -167,245 +167,106 @@ STUB
 chmod +x "$stub/$reviewer_bin"
 
 # ── 리뷰 본문 ───────────────────────────────────────────────────────────────
-cat > "$sandbox/clean.md" <<'MD'
-## 요약
-
-변경은 목적에 맞고 문제를 찾지 못했다.
-
-## 발견 사항
-
-발견 사항 없음
-
-## 잘된 점
-
-- 종료 코드 규약을 지켰다
-
-REVIEW_VERDICT: PASS
-MD
-
-cat > "$sandbox/minor-only.md" <<'MD'
-## 요약
-
-동작에 문제는 없고 유지보수성 지적만 남았다.
-
-## 발견 사항
-
-- [minor] script/review-mr.sh:12 — 주석이 길다
-  권고: 줄인다
-- [minor] script/post-review.sh:30 — 변수명이 모호하다
-  권고: 바꾼다
-
-## 잘된 점
-
-- 테스트가 붙었다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/same-major.md" <<'MD'
-## 요약
-
-같은 결함이 남아 있다.
-
-## 발견 사항
-
-- [major] script/review-mr.sh:40 — 라벨 갱신 실패를 무시한다
-  문제: 회차가 기록되지 않는다
-  권고: 종료 코드 2 로 멈춘다
-
-## 잘된 점
-
-- 상한이 강제된다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/no-verdict.md" <<'MD'
-## 요약
-
-판정 선언을 빠뜨린 리뷰다.
-
-## 발견 사항
-
-- [major] script/post-review.sh:40 — 마지막 줄에 판정이 없다
-  문제: 계약이 요구하는 선언이 빠졌다
-  권고: 계약대로 선언한다
-
-## 잘된 점
-
-- 발견 형식은 지켰다
-MD
-
-cat > "$sandbox/no-location.md" <<'MD'
-## 요약
-
-위치를 특정하지 않은 지적이다.
-
-## 발견 사항
-
-- [major] 스크립트 전반 — 입력 검증이 없다
-  문제: 파일:라인으로 가리킬 수 있는 지점이 아니다
-  권고: 진입점에서 한 번 검증한다
-
-## 잘된 점
-
-- 요지는 분명하다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/praise-looks-like-finding.md" <<'MD'
-## 요약
-
-발견은 없고, 잘된 점에 등급 형식을 닮은 줄이 있다.
-
-## 발견 사항
-
-발견 사항 없음
-
-## 잘된 점
-
-- [major] 등급 발견은 인라인으로 분리했다
-- 종료 코드 규약을 지켰다
-
-REVIEW_VERDICT: PASS
-MD
-
-cat > "$sandbox/finding-with-praise-noise.md" <<'MD'
-## 요약
-
-발견 사항 안의 major 와, 잘된 점의 등급 형식 줄이 함께 있다.
-
-## 발견 사항
-
-- [major] script/post-review.sh:87 — 섹션 밖 줄을 집계한다
-  문제: 잘된 점의 항목이 발견으로 세어진다
-  권고: 발견 사항 섹션 안에서만 파싱한다
-
-## 잘된 점
-
-- [blocker] 이 줄은 발견이 아니다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/tail-example.md" <<'MD'
-## 요약
-
-재현 절차에 등급 형식 예시를 담은 발견이다.
-
-## 발견 사항
-
-- [major] script/post-review.sh:87 — 섹션 밖 줄을 집계한다
-  재현: 아래 줄을 잘된 점에 넣으면 major 로 센다
-    - [major] 등급 발견은 인라인으로 분리했다
-  권고: 발견 사항 섹션 안에서만 파싱한다
-
-## 잘된 점
-
-- 재현 절차가 구체적이다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/no-findings-section.md" <<'MD'
-## 요약
-
-발견 사항 섹션을 통째로 빠뜨린 리뷰다.
-
-- [major] script/post-review.sh:87 — 섹션 없이 나열한 발견
-  권고: 계약대로 섹션을 둔다
-
-## 잘된 점
-
-- 요약은 있다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/empty-findings-section.md" <<'MD'
-## 요약
-
-발견 사항 섹션이 비어 있다.
-
-## 발견 사항
-
-## 잘된 점
-
-- 요약은 있다
-
-REVIEW_VERDICT: PASS
-MD
-
-cat > "$sandbox/h1-findings-section.md" <<'MD'
-## 요약
-
-발견 사항 제목을 `#` 한 수준으로 쓴 리뷰다.
-
-# 발견 사항
-
-- [major] script/post-review.sh:109 — 제목 수준을 강제하지 않는다
-  문제: 계약이 요구하지 않은 수준의 제목이 절로 받아들여진다
-  권고: 정확히 `## 발견 사항` 만 절로 받는다
-
-## 잘된 점
-
-- 발견 형식 자체는 지켰다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/h3-findings-section.md" <<'MD'
-## 요약
-
-발견 사항 제목을 `###` 세 수준으로 쓴 리뷰다.
-
-### 발견 사항
-
-- [major] script/post-review.sh:109 — 제목 수준을 강제하지 않는다
-  문제: 계약이 요구하지 않은 수준의 제목이 절로 받아들여진다
-  권고: 정확히 `## 발견 사항` 만 절로 받는다
-
-## 잘된 점
-
-- 발견 형식 자체는 지켰다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/h2-findings-section.md" <<'MD'
-## 요약
-
-같은 내용을 계약대로 `## 발견 사항` 으로 쓴 리뷰다.
-
-## 발견 사항
-
-- [major] script/post-review.sh:109 — 제목 수준을 강제하지 않는다
-  문제: 계약이 요구하지 않은 수준의 제목이 절로 받아들여진다
-  권고: 정확히 `## 발견 사항` 만 절로 받는다
-
-## 잘된 점
-
-- 발견 형식 자체는 지켰다
-
-REVIEW_VERDICT: CHANGES_REQUESTED
-MD
-
-cat > "$sandbox/praise-as-subheading.md" <<'MD'
-## 요약
-
-잘된 점 제목을 하위 수준으로 쓴 리뷰다.
-
-## 발견 사항
-
-발견 사항 없음
-
-### 잘된 점
-
-- [major] 등급 발견은 인라인으로 분리했다
-
-REVIEW_VERDICT: PASS
-MD
+# 리뷰어 출력은 판정 데이터 블록 하나다. 표본은 아래 생성기가 만든다 — 발견 한 건은 한 줄에 쓰고
+# `"path": …, "line": …` 를 붙여 두어 케이스가 sed 로 위치만 바꿀 수 있게 한다.
+python3 - "$sandbox" "$FMT_REVIEW_BLOCK" <<'PY' || exit 2
+import json, os, sys
+out, tag = sys.argv[1], sys.argv[2]
+
+
+def finding(sev, path, line, title, **kw):
+    f = {"severity": sev, "path": path, "line": line, "title": title,
+         "problem": kw.get("problem", "문제 설명"), "repro": kw.get("repro", "입력 → 결과"),
+         "recommendation": kw.get("recommendation", "권고"),
+         "out_of_scope": kw.get("out_of_scope", False), "decision_basis": kw.get("decision_basis")}
+    return f
+
+
+def dump(data):
+    """발견 한 건을 한 줄에. 키 순서를 고정해 sed 로 위치를 바꿀 수 있게 한다."""
+    lines = ["{", '  "summary": %s,' % json.dumps(data["summary"], ensure_ascii=False), '  "findings": [']
+    fs = data["findings"]
+    for n, f in enumerate(fs):
+        lines.append("    " + json.dumps(f, ensure_ascii=False) + ("," if n < len(fs) - 1 else ""))
+    lines += ["  ],", '  "strengths": %s,' % json.dumps(data["strengths"], ensure_ascii=False),
+              '  "verdict": %s' % json.dumps(data["verdict"]), "}"]
+    return "\n".join(lines)
+
+
+def write(name, data=None, raw=None, before="리뷰를 마쳤다.\n", after=""):
+    body = raw if raw is not None else dump(data)
+    with open(os.path.join(out, name), "w", encoding="utf-8") as fp:
+        fp.write(f"{before}\n```{tag}\n{body}\n```\n{after}")
+
+
+def review(findings, verdict, strengths=("종료 코드 규약을 지켰다",), summary="전반 상태 요약."):
+    return {"summary": summary, "findings": list(findings), "strengths": list(strengths), "verdict": verdict}
+
+
+write("clean.md", review([], "PASS"))
+write("minor-only.md", review([
+    finding("minor", "script/review-mr.sh", 12, "주석이 길다"),
+    finding("minor", "script/post-review.sh", 30, "변수명이 모호하다")], "CHANGES_REQUESTED"))
+write("same-major.md", review([
+    finding("major", "script/review-mr.sh", 40, "라벨 갱신 실패를 무시한다",
+            problem="회차가 기록되지 않는다", recommendation="종료 코드 2 로 멈춘다")], "CHANGES_REQUESTED"))
+write("no-location.md", review([
+    finding("major", None, None, "입력 검증이 없다")], "CHANGES_REQUESTED"))
+write("no-line.md", review([
+    finding("major", "script/review-mr.sh", None, "파일 전반에 입력 검증이 없다")], "CHANGES_REQUESTED"))
+write("outside-text.md", review([], "PASS"),
+      before="## 발견 사항\n\n- [major] script/review-mr.sh:1 — 블록 밖의 발견 형식 줄\n",
+      after="\n## 발견 사항\n\n- [blocker] script/post-review.sh:2 — 블록 뒤의 발견 형식 줄\n")
+write("rendered.md", review([
+    finding("minor", "docs/a.md", 3, "결정 재검토 필요: 형식", decision_basis="docs/adr/0004-x.md 의 Consequences"),
+    finding("major", "script/review-mr.sh", 7, "범위 밖의 결함", out_of_scope=True,
+            problem="첫 줄\n# 제목처럼 보이는 줄", repro="입력 A → 결과 B", recommendation="이월한다"),
+    finding("blocker", "script/post-review.sh", 9, "등록 전에 검증하지 않는다"),
+], "CHANGES_REQUESTED", strengths=()))
+
+with open(os.path.join(out, "no-block.md"), "w", encoding="utf-8") as fp:
+    fp.write("판정 데이터 블록을 빠뜨렸다.\n\n## 발견 사항\n\n발견 사항 없음\n")
+clean = dump(review([], "PASS"))
+with open(os.path.join(out, "two-blocks.md"), "w", encoding="utf-8") as fp:
+    fp.write(f"```{tag}\n{clean}\n```\n\n```{tag}\n{clean}\n```\n")
+write("bad-json.md", raw='{"summary": "끝이 없다", "findings": [')
+
+# 스키마 위반 — 한 가지씩만 어긴다. 기대하는 지목 위치를 파일 이름 옆에 적어 둔다.
+base = review([finding("major", "script/review-mr.sh", 4, "요지")], "CHANGES_REQUESTED")
+cases = []
+
+
+def bad(name, where, mutate=None, raw=None):
+    d = json.loads(json.dumps(base))
+    if mutate:
+        mutate(d)
+    write(f"schema-{name}.md", raw=raw if raw is not None else json.dumps(d, ensure_ascii=False, indent=2))
+    cases.append(f"{name}\t{where}")
+
+
+bad("missing-key", "findings[0].repro", lambda d: d["findings"][0].pop("repro"))
+bad("missing-top", "verdict", lambda d: d.pop("verdict"))
+bad("undefined-key", "findings[0].extra", lambda d: d["findings"][0].update(extra=1))
+bad("undefined-top", "note", lambda d: d.update(note="x"))
+bad("duplicate-key", "duplicate key 'title'",
+    raw=dump(base).replace('"title": "요지"', '"title": "요지", "title": "둘째"'))
+bad("severity", "findings[0].severity", lambda d: d["findings"][0].update(severity="critical"))
+bad("verdict", "verdict", lambda d: d.update(verdict="REVIEW_VERDICT: PASS"))
+bad("line-string", "findings[0].line", lambda d: d["findings"][0].update(line="4"))
+bad("line-bool", "findings[0].line", lambda d: d["findings"][0].update(line=True))
+bad("line-zero", "findings[0].line", lambda d: d["findings"][0].update(line=0))
+bad("line-without-path", "findings[0].line", lambda d: d["findings"][0].update(path=None))
+bad("path-absolute", "findings[0].path", lambda d: d["findings"][0].update(path="/etc/passwd"))
+bad("path-dotdot", "findings[0].path", lambda d: d["findings"][0].update(path="script/../x.sh"))
+bad("title-blank", "findings[0].title", lambda d: d["findings"][0].update(title="  "))
+bad("title-multiline", "findings[0].title", lambda d: d["findings"][0].update(title="한 줄\n두 줄"))
+bad("decision-not-minor", "findings[0].decision_basis",
+    lambda d: d["findings"][0].update(decision_basis="docs/adr/0004-x.md"))
+bad("out-of-scope-type", "findings[0].out_of_scope", lambda d: d["findings"][0].update(out_of_scope="no"))
+bad("summary-blank", "summary", lambda d: d.update(summary=""))
+with open(os.path.join(out, "schema-cases.tsv"), "w", encoding="utf-8") as fp:
+    fp.write("\n".join(cases) + "\n")
+PY
 
 # ── 실행 도우미 ─────────────────────────────────────────────────────────────
 pass=0; fail=0
@@ -510,42 +371,54 @@ check UT-05 "exit code after the streak breaks" 1 "$(run_post 22 "$sandbox/same-
 check UT-05 "recounted round 2 exit code" 1 "$(run_post 22 "$sandbox/same-major.md")"
 check UT-05 "recounted round 3 exit code" 3 "$(run_post 22 "$sandbox/same-major.md")"
 
-# 판정 선언은 등급 집계로 바뀐 뒤에도 계약 준수 확인용으로 남는다 — 선언이 없으면 등록하지 않는다.
-echo "UT-06 no verdict declaration means nothing is posted"
+# 선언은 등급 집계로 판정한 뒤에도 계약 준수 확인용으로 남는다 — 선언이 없으면 등록하지 않는다.
+echo "UT-06 no verdict means nothing is posted"
 rm -f "$state/notes"
-check UT-06 "exit code" 2 "$(run_post 5 "$sandbox/no-verdict.md")"
+check UT-06 "exit code" 2 "$(run_post 5 "$sandbox/schema-missing-top.md")"
 check UT-06 "post calls" 0 "$(note_hits 'note:')"
 
 echo "UT-07 a declaration that disagrees with the tally is noted in the summary"
 rm -f "$state/notes"
 check UT-07 "minor only — exit code" 0 "$(run_post 6 "$sandbox/minor-only.md")"
-check UT-07 "mismatch recorded" 1 "$(note_hits '리뷰 본문의 선언은')"
+check UT-07 "mismatch recorded" 1 "$(note_hits '리뷰어가 선언한 판정은 .CHANGES_REQUESTED.')"
 rm -f "$state/notes"
 check UT-07 "declaration agrees — exit code" 0 "$(run_post 7 "$sandbox/clean.md")"
-check UT-07 "no mismatch recorded" 0 "$(note_hits '리뷰 본문의 선언은')"
+check UT-07 "no mismatch recorded" 0 "$(note_hits '리뷰어가 선언한 판정은')"
+check UT-07 "no findings marker" 1 "$(note_hits "^$FMT_NO_FINDINGS\$")"
 
 echo "UT-08 the repeat key looks at the file path only"
 # 파일이 다르면 독립 결함이다 — 요지가 같고 몰아서 3회 나와도 상한에 걸리지 않는다.
 for n in 1 2 3; do
-  sed "s#script/review-mr.sh:40#script/file-$n.sh:$((n * 10))#" "$sandbox/same-major.md" > "$sandbox/other-file-$n.md"
+  sed "s#\"path\": \"script/review-mr.sh\", \"line\": 40#\"path\": \"script/file-$n.sh\", \"line\": $((n * 10))#" \
+    "$sandbox/same-major.md" > "$sandbox/other-file-$n.md"
   check UT-08 "different file — round ${n} exit code" 1 "$(run_post 8 "$sandbox/other-file-$n.md")"
 done
 # 같은 파일이면 줄 번호가 달라도 같은 뿌리로 센다(코드가 밀리면 줄은 바뀐다).
 for n in 1 2; do
-  sed "s#review-mr.sh:40#review-mr.sh:$((n * 100))#" "$sandbox/same-major.md" > "$sandbox/moved-$n.md"
+  sed "s#\"line\": 40#\"line\": $((n * 100))#" "$sandbox/same-major.md" > "$sandbox/moved-$n.md"
   check UT-08 "same file, moved line — round ${n} exit code" 1 "$(run_post 9 "$sandbox/moved-$n.md")"
 done
 check UT-08 "same file — round 3 exit code" 3 "$(run_post 9 "$sandbox/same-major.md")"
 # 심각도가 달라도 같은 파일이면 연속을 잇는다 — 같은 뿌리가 등급만 바뀌어 돌아오는 것을 센다.
-sed 's#\[major\]#[blocker]#' "$sandbox/same-major.md" > "$sandbox/same-file-blocker.md"
+sed 's#"severity": "major"#"severity": "blocker"#' "$sandbox/same-major.md" > "$sandbox/same-file-blocker.md"
 check UT-08 "major — round 1 exit code" 1 "$(run_post 10 "$sandbox/same-major.md")"
 check UT-08 "major — round 2 exit code" 1 "$(run_post 10 "$sandbox/same-major.md")"
 check UT-08 "blocker — round 3 exit code" 3 "$(run_post 10 "$sandbox/same-file-blocker.md")"
 
-echo "UT-09 findings without file:line share one slot"
+echo "UT-09 findings without a path share one slot and get no inline comment"
+rm -f "$state/notes"
 check UT-09 "round 1 exit code" 1 "$(run_post 11 "$sandbox/no-location.md")"
+check UT-09 "no inline comment" 0 "$(note_hits '^note: inline')"
 check UT-09 "round 2 exit code" 1 "$(run_post 11 "$sandbox/no-location.md")"
 check UT-09 "round 3 exit code" 3 "$(run_post 11 "$sandbox/no-location.md")"
+check UT-09 "each round is keyed by the no-location marker" 3 "$(grep -cF "$FMT_NO_LOCATION" "$work/.git/work-loop/review-findings-11.tsv")"
+# 경로만 있고 줄이 없으면 그 경로로 누적하고 인라인에서 빠진다.
+rm -f "$state/notes"
+check UT-09 "path without a line — exit code" 1 "$(run_post 25 "$sandbox/no-line.md")"
+check UT-09 "path without a line — no inline comment" 0 "$(note_hits '^note: inline')"
+check UT-09 "path without a line — keyed by the path" "1	script/review-mr.sh" \
+  "$(sed -n 2p "$work/.git/work-loop/review-findings-25.tsv")"
+check UT-09 "path without a line — location in the summary" 1 "$(note_hits '`script/review-mr.sh` — 파일 전반에')"
 
 echo "UT-10 history in the old format is not continued"
 hist="$work/.git/work-loop/review-findings-12.tsv"
@@ -556,41 +429,85 @@ check UT-10 "format marker" "$hist_format" "$(head -1 "$hist")"
 check UT-10 "history line count — marker plus this round" 2 "$(wc -l < "$hist" | tr -d ' ')"
 check UT-10 "this round's number — old rounds not continued" 1 "$(sed -n '2p' "$hist" | cut -f1)"
 
-echo "UT-11 severity-shaped lines outside the findings section are not counted"
+echo "UT-11 text outside the block is neither counted nor posted"
 rm -f "$state/notes"
-check UT-11 "major in the praise section — exit code" 0 "$(run_post 13 "$sandbox/praise-looks-like-finding.md")"
-check UT-11 "major in the praise section — tally" 1 "$(note_hits '발견 blocker 0 · major 0 · minor 0')"
-rm -f "$state/notes"
-check UT-11 "major inside the section — exit code" 1 "$(run_post 14 "$sandbox/finding-with-praise-noise.md")"
-check UT-11 "major inside the section — tally" 1 "$(note_hits '발견 blocker 0 · major 1 · minor 0')"
-# 발견의 들여쓴 재현 절차에 등급 형식 예시가 있어도 새 발견으로 세지 않는다.
-rm -f "$state/notes"
-check UT-11 "indented example — exit code" 1 "$(run_post 15 "$sandbox/tail-example.md")"
-check UT-11 "indented example — tally" 1 "$(note_hits '발견 blocker 0 · major 1 · minor 0')"
+check UT-11 "exit code" 0 "$(run_post 13 "$sandbox/outside-text.md")"
+check UT-11 "tally" 1 "$(note_hits '발견 blocker 0 · major 0 · minor 0')"
+check UT-11 "outside lines are not posted" 0 "$(note_hits '블록 밖의 발견 형식 줄\|블록 뒤의 발견 형식 줄')"
+check UT-11 "no inline comment" 0 "$(note_hits '^note: inline')"
 
-echo "UT-12 no findings section means nothing is posted"
-rm -f "$state/notes"
-check UT-12 "missing section — exit code" 2 "$(run_post 16 "$sandbox/no-findings-section.md")"
-check UT-12 "missing section — post calls" 0 "$(note_hits 'note:')"
-rm -f "$state/notes"
-check UT-12 "empty section — exit code" 2 "$(run_post 17 "$sandbox/empty-findings-section.md")"
-check UT-12 "empty section — post calls" 0 "$(note_hits 'note:')"
+echo "UT-12 no block, two blocks or broken JSON means nothing is posted"
+for c in no-block two-blocks bad-json; do
+  rm -f "$state/notes"
+  check UT-12 "$c — exit code" 2 "$(run_post 16 "$sandbox/$c.md")"
+  check UT-12 "$c — post calls" 0 "$(note_hits 'note:')"
+  check UT-12 "$c — first line names the violation" 1 "$(head -1 "$state/last.log" | grep -c '^contract violation: ')"
+  check UT-12 "$c — help line" 1 "$(sed -n 2p "$state/last.log" | grep -c '^help: nothing was posted — the raw review follows$')"
+  check UT-12 "$c — the raw review follows" yes "$(tail -n +3 "$state/last.log" | cmp -s - "$sandbox/$c.md" && echo yes || echo no)"
+done
 
-echo 'UT-13 the findings heading must be exactly ## (level 2)'
+echo "UT-13 a schema violation names where it is and posts nothing"
+while IFS=$'\t' read -r name where; do
+  rm -f "$state/notes"
+  check UT-13 "$name — exit code" 2 "$(run_post 17 "$sandbox/schema-$name.md")"
+  check UT-13 "$name — post calls" 0 "$(note_hits 'note:')"
+  check UT-13 "$name — names $where" 1 "$(head -1 "$state/last.log" | grep -cF "contract violation: $where")"
+done < "$sandbox/schema-cases.tsv"
+
+echo "UT-29 the summary and inline comments are rendered from the data"
 rm -f "$state/notes"
-check UT-13 "h1 heading — exit code" 2 "$(run_post 18 "$sandbox/h1-findings-section.md")"
-check UT-13 "h1 heading — post calls" 0 "$(note_hits 'note:')"
-rm -f "$state/notes"
-check UT-13 "h3 heading — exit code" 2 "$(run_post 19 "$sandbox/h3-findings-section.md")"
-check UT-13 "h3 heading — post calls" 0 "$(note_hits 'note:')"
-# 같은 본문을 계약대로 쓰면 정상 집계된다 — 제목 수준만이 차이임을 보인다.
-rm -f "$state/notes"
-check UT-13 "h2 heading — exit code" 1 "$(run_post 20 "$sandbox/h2-findings-section.md")"
-check UT-13 "h2 heading — tally" 1 "$(note_hits '발견 blocker 0 · major 1 · minor 0')"
-# 절은 다음 제목에서 끝난다 — 뒤 제목이 하위 수준이어도 그 내용은 발견이 아니다.
-rm -f "$state/notes"
-check UT-13 "praise as a subheading — exit code" 0 "$(run_post 21 "$sandbox/praise-as-subheading.md")"
-check UT-13 "praise as a subheading — tally" 1 "$(note_hits '발견 blocker 0 · major 0 · minor 0')"
+check UT-29 "exit code" 1 "$(run_post 26 "$sandbox/rendered.md")"
+sed -n '/^note: summary/,$p' "$state/notes" > "$sandbox/summary.out"
+order=$(grep -n '^- \*\*\[' "$sandbox/summary.out" | sed 's/^\([0-9]*\):- \*\*\[\([a-z]*\)\].*/\2/' | tr '\n' ' ')
+check UT-29 "findings in severity order" "blocker major minor " "$order"
+check UT-29 "location, title" 1 "$(grep -cF -- '- **[blocker]** `script/post-review.sh:9` — 등록 전에 검증하지 않는다' "$sandbox/summary.out")"
+check UT-29 "problem, repro, recommendation" 3 "$(grep -cE '^  - (문제: 첫 줄|재현: 입력 A → 결과 B|권고: 이월한다)$' "$sandbox/summary.out")"
+check UT-29 "a multi-line value stays indented" 1 "$(grep -cxF '    # 제목처럼 보이는 줄' "$sandbox/summary.out")"
+check UT-29 "out of scope line" 1 "$(grep -cxF "  - $FMT_OUT_OF_SCOPE" "$sandbox/summary.out")"
+check UT-29 "decision basis line" 1 "$(grep -cxF '  - 결정 재검토 근거: docs/adr/0004-x.md 의 Consequences' "$sandbox/summary.out")"
+check UT-29 "no strengths section when empty" 0 "$(grep -c '^### 잘된 점' "$sandbox/summary.out")"
+check UT-29 "summary section" 1 "$(grep -c '^### 요약' "$sandbox/summary.out")"
+check UT-29 "inline comments for blocker and major only" 2 "$(note_hits '^note: inline')"
+check UT-29 "inline body starts with the severity" 1 "$(note_hits '^note: inline 26 script/post-review.sh:9 \*\*\[blocker\]\*\* 등록 전에 검증하지 않는다$')"
+check UT-29 "inline carries the out-of-scope line" 1 "$(grep -cxF "$FMT_OUT_OF_SCOPE" "$state/notes")"
+
+echo "UT-30 the next round reads what this round rendered"
+# 이번 회차가 등록한 요약·인라인 본문을 그대로 다음 회차의 스레드로 준다. 알아보는 표지가 만드는
+# 코드와 어긋나면 직전 회차 절과 증분 기준이 조용히 사라진다.
+rm -f "$state/notes" "$state/labels"
+reviewed=$(git -C "$work" rev-parse HEAD)
+check UT-30 "this round — exit code" 1 "$(run_post 27 "$sandbox/rendered.md" "$reviewed")"
+python3 - "$state/notes" "$state/threads.json" <<'PY'
+import json, re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+parts = re.split(r"^note: ", text, flags=re.M)[1:]
+threads, t = [], 0
+for p in parts:
+    t += 1
+    at = "2026-09-23T10:%02d:00.000+09:00" % t
+    if p.startswith("inline "):
+        m = re.match(r"inline \S+ (\S+?):(\d+) ", p)
+        body = p[m.end():].rstrip("\n")
+        threads.append({"inline": True, "path": m.group(1), "line": int(m.group(2)),
+                        "notes": [{"body": body, "created_at": at},
+                                  {"body": "이번 회차 발견에 단 답글이다.", "created_at": "2026-09-23T11:00:00.000+09:00"}]})
+    else:
+        body = p.split("\n", 1)[1]
+        threads.append({"notes": [{"body": body, "created_at": at}]})
+json.dump(threads, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+echo "증분 확인" > "$work/next-round.txt"
+git -C "$work" add -A
+git -C "$work" -c core.hooksPath="$sandbox/nohooks" -c user.email=test@example.invalid \
+  -c user.name=test commit -qm "next round"
+echo "$ROUND:1" > "$state/labels"
+rm -f "$state/reviewer-input"
+check UT-30 "next round — exit code" 0 "$(run_review "$sandbox/clean.md")"
+check UT-30 "previous summary in the input" 1 "$(input_hits '^> ### 요약')"
+check UT-30 "previous finding in the input" 1 "$(input_hits '^> \*\*\[blocker\]\*\* 등록 전에 검증하지 않는다')"
+check UT-30 "reply in the input" 2 "$(input_hits '이번 회차 발견에 단 답글이다')"
+check UT-30 "increment from the rendered revision" 1 "$(input_hits "^## 증분 diff (직전 리뷰 ${reviewed:0:12}")"
+rm -f "$state/threads.json"
 
 echo "UT-14 the review input carries the MR body, issue body and previous round"
 cat > "$state/mr-description" <<'MD'
@@ -735,18 +652,35 @@ check UT-20 "ancestor — incremental section" 1 "$(input_hits '^## 증분 diff'
 check UT-20 "increment holds only the post-review change" 1 "$(incr_hits '^+리뷰 이후 변경')"
 check UT-20 "the rebased-in change is left out" 0 "$(incr_hits '리베이스로 들어온 변경')"
 
-echo "UT-21 marker strings agree between the contract document and the parser"
-# 쓰는 쪽(역할 계약)과 읽는 쪽(파서)이 서로 다른 문자열을 보면, 리뷰는 정상인데 등록이
-# 계약 위반으로 멈춘다. 둘을 잇는 것은 이 검사뿐이다.
-contract="$work/.ai/templates/code-reviewer.md"
-for m in "$FMT_FINDINGS_HEADING" "$FMT_NO_FINDINGS" "$FMT_VERDICT_PASS" "$FMT_VERDICT_CHANGES" \
-         "$FMT_OUT_OF_SCOPE"; do
-  check UT-21 "present in the contract: $m" 1 "$(grep -cF -- "$m" "$contract" >/dev/null 2>&1 && echo 1 || echo 0)"
+echo "UT-21 the judgment data schema agrees between the module and the role contracts"
+# 쓰는 쪽(역할 계약)과 읽는 쪽(모듈)이 서로 다른 키를 보면, 리뷰는 정상인데 등록이 계약 위반으로
+# 멈춘다. 둘을 잇는 것은 이 검사뿐이다.
+python3 - "$repo_root/script/_review.py" > "$sandbox/schema-terms" <<'PY'
+import runpy, sys
+sys.dont_write_bytecode = True
+m = runpy.run_path(sys.argv[1], run_name="schema")
+for k in m["TOP_KEYS"] + m["FINDING_KEYS"] + m["SEVERITIES"]:
+    print(k)
+PY
+for contract in "$repo_root/.ai/templates/code-reviewer.md" "$repo_root/.ai/templates/security-guard.md"; do
+  # 역할을 뺀 설정에서는 그 계약이 깔리지 않는다. 있는 계약만 본다.
+  [ -f "$contract" ] || continue
+  name=$(basename "$contract")
+  while read -r term; do
+    check UT-21 "$name names \`$term\`" 1 "$(grep -cF -- "\`$term\`" "$contract" >/dev/null 2>&1 && echo 1 || echo 0)"
+  done < "$sandbox/schema-terms"
+  for m in "$FMT_REVIEW_BLOCK" "$FMT_VERDICT_PASS" "$FMT_VERDICT_CHANGES"; do
+    check UT-21 "$name names \`$m\`" 1 "$(grep -cF -- "\`$m\`" "$contract" >/dev/null 2>&1 && echo 1 || echo 0)"
+  done
+  check UT-21 "$name has no findings-heading rule" 0 "$(grep -c '## 발견 사항' "$contract")"
+  check UT-21 "$name has no REVIEW_VERDICT rule" 0 "$(grep -c 'REVIEW_VERDICT' "$contract")"
 done
+[ ! -e "$repo_root/script/__pycache__" ] && [ ! -e "$work/script/__pycache__" ] && ok_pyc=yes || ok_pyc=no
+check UT-21 "reading the schema leaves no bytecode" yes "$ok_pyc"
 
 echo "UT-24 the review scripts carry no embedded python"
 # 파이썬은 script/_review.py 한 곳에 둔다. 스크립트 본문에 흩어지면 같은 규칙이 두 번 적힌다.
-for f in review-mr.sh; do
+for f in review-mr.sh post-review.sh; do
   check UT-24 "$f — python3 -c" 0 "$(grep -c 'python3 -c' "$work/script/$f")"
   check UT-24 "$f — python heredoc" 0 "$(grep -cE 'python3 +-( |$)' "$work/script/$f")"
 done
