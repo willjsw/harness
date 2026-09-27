@@ -18,4 +18,4 @@
 
 | 문서 | 다루는 것 |
 |---|---|
-| — | 아직 없다 |
+| [`63-usage-log-config-values.md`](63-usage-log-config-values.md) | 사용 기록의 브랜치 유형 분류 — 설정 값으로 판정, 설정 누락 시 기록하지 않음 |
