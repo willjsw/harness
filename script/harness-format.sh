@@ -30,7 +30,7 @@ FMT_SUMMARY_HEADING='## 자동 리뷰 결과'
 FMT_REVIEWED_HEAD='리뷰 시점 head'
 
 # ── MR 본문 (`.ai/templates/mr.md` 의 절 제목. review-mr.sh 가 리뷰 맥락으로 넘긴다) ──
-FMT_MR_PURPOSE='변경 목적'
+FMT_MR_PURPOSE='작업 목적'
 FMT_MR_REVIEW_POINTS='리뷰 요청 포인트'
 # 종료 참조와 참조-only. **구현 MR 만 이슈를 닫는다** — spec+plan MR 이 닫으면 승인 단계에서
 # 요구사항이 사라진다. 어느 MR 이 어느 것을 쓰는지는 `.ai/templates/mr-guide.md` 가 정한다.
