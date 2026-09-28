@@ -59,7 +59,8 @@ fenced 코드 블록 하나, 같은 스키마, 같은 계약 위반 조건이다
 - 발견 객체의 키는 `severity` · `path` · `line` · `title` · `problem` · `repro` · `recommendation` ·
   `out_of_scope` · `decision_basis` 이고 전부 필수다. 값이 없는 자리는 `null` 이다
 - `severity` 는 `blocker` · `major` · `minor` 중 하나다 (등급 절)
-- `verdict` 는 `PASS`(blocker·major 0건) 또는 `CHANGES_REQUESTED`(blocker·major 1건 이상)
+- `verdict` 는 `PASS` 또는 `CHANGES_REQUESTED` 다. 판정은 등급 집계를 따르고, 선언이 집계와 어긋나도
+  계약 위반이 아니다 (`.ai/templates/code-reviewer.md` 의 "판정의 정본은 등급 집계다")
 - 발견이 없으면 `findings` 는 빈 배열이다
 
 필드의 뜻은 이렇게 옮긴다.
