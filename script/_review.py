@@ -304,8 +304,8 @@ def validate(data, verdicts):
     if not isinstance(data["strengths"], list):
         raise Violation("strengths: must be an array of strings")
     for i, s in enumerate(data["strengths"]):
-        if not _text(s):
-            raise Violation(f"strengths[{i}]: must be a non-blank string")
+        if not isinstance(s, str):
+            raise Violation(f"strengths[{i}]: must be a string")
     if data["verdict"] not in verdicts:
         raise Violation("verdict: must be one of %s" % " · ".join(verdicts))
     if not isinstance(data["findings"], list):
@@ -526,9 +526,10 @@ def cmd_render(args):
             out.append(f"  - {out_of_scope}")
         if f["decision_basis"] is not None:
             out.append("  - 결정 재검토 근거: " + indent_rest(f["decision_basis"], "    "))
-    if data["strengths"]:
+    strengths = [s for s in data["strengths"] if s.strip()]
+    if strengths:
         out += ["", "### 잘된 점", ""]
-        out += ["- " + indent_rest(s, "  ") for s in data["strengths"]]
+        out += ["- " + indent_rest(s, "  ") for s in strengths]
 
     with open(os.path.join(work, "note.md"), "w", encoding="utf-8") as fp:
         fp.write("\n".join(out) + "\n")

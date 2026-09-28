@@ -244,6 +244,9 @@ with open(os.path.join(out, "fence-crlf.md"), "w", encoding="utf-8", newline="")
 # 줄을 가르지 않는 제어 문자는 title 에 있어도 한 줄이다.
 write("title-inline-control.md", review([
     finding("major", "script/review-mr.sh", 5, "요지\u0007와\t탭")], "CHANGES_REQUESTED"))
+# strengths 의 원소 값은 검증하지 않는다. 공백만인 원소는 받되 댓글에 쓰지 않는다.
+write("strengths-blank.md", review([], "PASS", strengths=("  ", "\t")))
+write("strengths-mixed.md", review([], "PASS", strengths=(" ", "남는 원소")))
 
 # 스키마 위반 — 한 가지씩만 어긴다. 기대하는 지목 위치를 파일 이름 옆에 적어 둔다.
 base = review([finding("major", "script/review-mr.sh", 4, "요지")], "CHANGES_REQUESTED")
@@ -276,6 +279,7 @@ bad("path-newline", "findings[0].path", lambda d: d["findings"][0].update(path="
 bad("path-delete", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u007f.py"))
 bad("path-c1-control", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u009b.py"))
 bad("path-line-separator", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u2028.py"))
+bad("path-paragraph-separator", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u2029.py"))
 bad("path-bidi-override", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u202e.py"))
 bad("title-blank", "findings[0].title", lambda d: d["findings"][0].update(title="  "))
 bad("title-multiline", "findings[0].title", lambda d: d["findings"][0].update(title="한 줄\n두 줄"))
@@ -491,6 +495,18 @@ echo "UT-13 a control character that does not break the line is allowed in the t
 rm -f "$state/notes"
 check UT-13 "title-inline-control — exit code" 1 "$(run_post 17 "$sandbox/title-inline-control.md")"
 check UT-13 "title-inline-control — inline posted" 1 "$(note_hits '^note: inline')"
+
+echo "UT-29 blank strengths are accepted and left out of the summary"
+rm -f "$state/notes"
+check UT-29 "strengths-blank — exit code" 0 "$(run_post 28 "$sandbox/strengths-blank.md")"
+check UT-29 "strengths-blank — summary posted" 1 "$(note_hits '^note: summary')"
+check UT-29 "strengths-blank — no strengths section" 0 "$(note_hits '^### 잘된 점')"
+rm -f "$state/notes"
+check UT-29 "strengths-mixed — exit code" 0 "$(run_post 28 "$sandbox/strengths-mixed.md")"
+check UT-29 "strengths-mixed — strengths section" 1 "$(note_hits '^### 잘된 점')"
+check UT-29 "strengths-mixed — only the non-blank element" 1 \
+  "$(sed -n '/^### 잘된 점/,$p' "$state/notes" | grep -c '^- ')"
+check UT-29 "strengths-mixed — the element is written" 1 "$(note_hits '^- 남는 원소$')"
 
 echo "UT-12 CRLF line endings around the block are accepted"
 rm -f "$state/notes"
