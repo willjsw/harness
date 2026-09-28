@@ -1465,6 +1465,66 @@ WT_ACT=keep wtrun "$mono/sub" work 8 --worktree; check "monorepo run --worktree 
 [ -f "$wd2/8/sub/.claude/settings.local.json" ] && [ ! -e "$wd2/8/.claude/settings.local.json" ] && ok \
   || bad "in a monorepo the include file was not copied under the harness root's place"
 
+echo "UT-73 a worktree run carries only its issue number, and session import attributes each worktree's records to its run"
+wtrun "$t" work 9 --worktree; check "run --worktree for the span exit code" "$?" "0"
+wtrun "$t" work 9; check "run without --worktree for the span exit code" "$?" "0"
+python3 - "$t.records/metrics" > "$work/wtspan.sum" <<'PY2'
+import glob, json, sys
+st = [json.loads(l) for f in sorted(glob.glob(sys.argv[1] + "/spans-*.jsonl")) for l in open(f)]
+runs = [e["attrs"] for e in st if e["ev"] == "start" and e["name"] == "run/work" and e["attrs"].get("issue") == "9"]
+print(len(runs), runs[0].get("worktree"), runs[1].get("worktree", "none"))
+PY2
+has "$work/wtspan.sum" "2 9 none" "the run span's worktree attribute is wrong (runs, with the flag, without)"
+grep -rqF "wtrun-trees" "$t.records/metrics" && bad "a worktree path reached the spans" || ok
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); sys.dont_write_bytecode = True; import metric; print(metric.clean_attrs(["worktree=../x", "issue=1"]), metric.clean_attrs(["worktree=12"]))' "$t/script" > "$work/wtattr.sum"
+has "$work/wtattr.sum" "{'issue': '1'} {'worktree': '12'}" "metric.py does not keep only a numeric worktree attribute"
+for wtcase in present removed; do
+  ti="$work/wtimp-$wtcase"; setup "$ti"; wdi="$work/wtimp-$wtcase-trees"; cl="$work/wtimp-$wtcase-claude"; cx="$work/wtimp-$wtcase-codex"
+  "$root/bin/harness" set --target "$ti" worktree.dir "$wdi" >/dev/null 2>&1
+  [ "$wtcase" = present ] && mkdir -p "$wdi/7" "$wdi/8"
+  python3 - "$ti" "$wdi" "$cl" "$cx" <<'PY2'
+import datetime, json, os, re, sys
+t, wd, cl, cx = sys.argv[1:5]
+sys.path.insert(0, t + "/script"); sys.dont_write_bytecode = True
+import metric
+now = datetime.datetime.now(datetime.timezone.utc)
+at = lambda m: now - datetime.timedelta(minutes=m)
+ts = lambda m: at(m).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+for tr, vendor, wt in (("t-c7", "claude", "7"), ("t-c8", "claude", "8"), ("t-x7", "codex", "7"), ("t-x8", "codex", "8"), ("t-root", "claude", "")):
+    attrs = {"workflow": "work", "vendor": vendor, **({"worktree": wt, "issue": wt} if wt else {})}
+    _, run = metric.start("run/work", "command", attrs, trace=tr, parent="", source="runner", t=at(10))
+    metric.end(run, "ok", 0, t=at(1))
+def claude(path, n):
+    d = os.path.join(cl, re.sub(r"[^A-Za-z0-9]", "-", path)); os.makedirs(d)
+    open(d + "/s%d.jsonl" % n, "w").write(json.dumps({"type": "assistant", "sessionId": "s%d" % n, "timestamp": ts(5),
+        "message": {"id": "m%d" % n, "model": "claude-x", "usage": {"input_tokens": n, "output_tokens": 0}}}) + "\n")
+def codex(name, cwd, n):
+    os.makedirs(cx, exist_ok=True)
+    open(os.path.join(cx, "rollout-%s.jsonl" % name), "w").write("\n".join([
+        json.dumps({"timestamp": ts(5), "type": "session_meta", "payload": {"id": name, "cwd": cwd}}),
+        json.dumps({"timestamp": ts(5), "type": "token_usage_record", "payload": {"response_id": name, "usage": {"input_tokens": n, "output_tokens": 0}}})]) + "\n")
+# 실행 디렉터리는 적힌 경로와 실제 경로 어느 쪽으로도 기록될 수 있다
+claude(os.path.join(wd, "7"), 11)
+claude(os.path.join(os.path.realpath(wd), "8"), 22)
+codex("x7", os.path.join(wd, "7", "deeper"), 33)
+codex("x8", os.path.join(os.path.realpath(wd), "8"), 44)
+claude(os.path.realpath(t), 55)
+codex("other", "/elsewhere", 66)
+PY2
+  HARNESS_CLAUDE_DIR="$cl" HARNESS_CODEX_DIR="$cx" "$root/bin/harness" metrics import --target "$ti" --since 1d > "$work/wtimp.json"
+  check "metrics import with worktree runs ($wtcase)" "$?" "0"
+  python3 - "$work/wtimp.json" "$HARNESS_HOME/my-project/state/import-cursor.json" "$cx" > "$work/wtimp.sum" <<'PY2'
+import json, os, sys
+d = json.load(open(sys.argv[1])); cur = json.load(open(sys.argv[2])); cx = sys.argv[3]
+tok = {x["trace"]: x["tokens"] for x in d["traces"]}
+other = lambda n: cur.get("codex:" + os.path.join(cx, "rollout-%s.jsonl" % n), {}).get("other")
+print(tok.get("t-c7"), tok.get("t-c8"), tok.get("t-x7"), tok.get("t-x8"), tok.get("t-root"),
+      d["diagnostics"]["imported"]["unattributed"], other("x7"), other("x8"), other("other"))
+PY2
+  has "$work/wtimp.sum" "11 22 33 44 55 0 False False True" "worktree records are not attributed to their own runs ($wtcase): c7 c8 x7 x8 root unattributed other-flags"
+  rm -rf "$HARNESS_HOME/my-project/state"
+done
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

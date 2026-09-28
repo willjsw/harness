@@ -1925,6 +1925,7 @@ def cmd_run(cfg, target, args):
     # 대화 기록을 이 실행에 붙인다. 대화형으로 끝날 때까지 기다려 끝 기록도 남긴다
     m = metrics_module().load_metric(target)
     attrs = {"workflow": name, "vendor": who, **({"issue": issue} if issue.isdigit() else {}),
+             **({"worktree": issue} if wt else {}),
              **({"model": cfg["harness"]["model"]} if cfg["harness"]["model"] else {})}
     trace, span = m.start("run/%s" % name, "command", attrs, source="runner") if m else ("", "")
     env = dict(os.environ, HARNESS_WORKFLOW=name, **({"HARNESS_TRACE_ID": trace, "HARNESS_PARENT_SPAN": span} if m else {}))
@@ -2281,7 +2282,8 @@ def cmd_metrics(cfg, target, args):
         r = subprocess.run([sys.executable, str(target / "script" / "metric.py"), "prune"], cwd=target)
         return r.returncode
     hm = metrics_module()
-    imported = (hm.metrics_import(target, m, registry() / cfg["project"]["name"] / "state", set(cfg["roles"]))
+    imported = (hm.metrics_import(target, m, registry() / cfg["project"]["name"] / "state", set(cfg["roles"]),
+                                  worktree_dir(cfg), git(target, "rev-parse", "--show-prefix").stdout.strip())
                 if args.args[:1] == ["import"] else None)
     mt = re.fullmatch(r"(\d+)([hd])", args.since or "7d")
     if not mt:
