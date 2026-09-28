@@ -24,8 +24,24 @@ ok()   { pass=$((pass + 1)); }
 bad()  { fail=$((fail + 1)); echo "  FAIL: $1" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok; else bad "$1 — expected '$3', actual '$2'"; fi; }
 has()  { if grep -qF -- "$2" "$1"; then ok; else bad "$3"; fi; }
+# 제자리 편집. BSD sed 는 `-i ''`, GNU sed 는 `-i` 만 받으므로 두 쪽이 같이 받는 `-i.bak` 을 쓰고 지운다.
+sedi() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
 hasnt(){ if grep -qF -- "$2" "$1"; then bad "$3"; else ok; fi; }
 
+
+records_under_work() { # records_under_work <리포> — 두 기록 경로가 $work 아래를 가리키는지 본다
+  local md ul
+  md=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$1/script/harness.plan.json")
+  case "$md" in "$work"/*) ok ;; *) bad "$1: the plan's metrics dir is outside \$work: $md" ;; esac
+  ul=$(sed -n 's/^USAGE_LOG_PATH=//p' "$1/script/harness.env" | tr -d "\"'")
+  case "$ul" in "$work"/*) ok ;; *) bad "$1: the usage log path is outside \$work: $ul" ;; esac
+}
+
+isolate_records() { # isolate_records <리포> — install 한 리포의 기록 경로를 테스트 작업 디렉터리로 옮긴다
+  "$root/bin/harness" set --target "$1" metrics.dir "$1.records/metrics" usage.log_path "$1.records/usage.log" >/dev/null \
+    || bad "$1: could not move the record paths"
+  records_under_work "$1"
+}
 
 setup() {          # setup <대상> — 기본 설정으로 렌더한 대상 하나를 만든다
   rm -rf "$1"; mkdir -p "$1"
@@ -35,9 +51,10 @@ setup() {          # setup <대상> — 기본 설정으로 렌더한 대상 하
   # 고정하지 않으면 기본값이 그 값과 같아지는 순간 치환이 아무것도 바꾸지 않고, 테스트는
   # 통과하면서 아무것도 검사하지 않는 상태가 된다 — 실패보다 나쁘다. 배포되는 기본값 자체는
   # UT-00 이 따로 본다.
-  python3 - "$1/harness.toml" <<'PY'
+  # 기록 경로(지표·사용 기록)는 대상 옆의 테스트 작업 디렉터리로 둔다 — 기본값은 실제 홈 아래다.
+  python3 - "$1/harness.toml" "$1.records" <<'PY'
 import pathlib, re, sys
-p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8"); rec = sys.argv[2]
 for pat, repl in [
     (r'^base = .*$',            'base = "development"'),
     (r'^protected = \[.*\]$',  'protected = ["main", "development"]'),
@@ -47,10 +64,23 @@ for pat, repl in [
     (r'^review_host = .*$',     'review_host = "gitlab"'),
     (r'^style = .*$',           'style = "nygard"'),
     (r'^tool = .*$',            'tool = "adr-tools"'),
-    (r'^dir = .*$',             'dir = "docs/adr"'),
     (r'^deletion_forbidden = .*$', 'deletion_forbidden = true'),
 ]:
     s = re.sub(pat, repl, s, count=1, flags=re.M)
+# 같은 키 이름이 여러 절에 있으므로 절 안에서만 바꾼다.
+def in_section(s, section, pat, repl):
+    m = re.search(r'^\[' + re.escape(section) + r'\]\s*$', s, flags=re.M)
+    if not m:
+        sys.exit("setup: no [%s] section" % section)
+    nxt = re.search(r'^\[', s[m.end():], flags=re.M)
+    end = m.end() + (nxt.start() if nxt else len(s) - m.end())
+    body, n = re.subn(pat, lambda _: repl, s[m.end():end], count=1, flags=re.M)
+    if n != 1:
+        sys.exit("setup: no match for %s in [%s]" % (pat, section))
+    return s[:m.end()] + body + s[end:]
+s = in_section(s, "adr", r'^dir = .*$', 'dir = "docs/adr"')
+s = in_section(s, "metrics", r'^dir = .*$', 'dir = "%s/metrics"' % rec)
+s = in_section(s, "usage", r'^log_path = .*$', 'log_path = "%s/usage.log"' % rec)
 p.write_text(s, encoding="utf-8")
 PY
   "$root/bin/harness" render --target "$1" >/dev/null
@@ -76,6 +106,18 @@ for p in pathlib.Path(sys.argv[1]).glob('.codex/agents/*.toml'):
     tomllib.load(p.open('rb'))
 " "$t"
 check "codex toml parses" "$?" "0"
+
+echo "UT-57 the test setup keeps its records under the test work directory"
+# 기본 설정의 기록 경로는 실제 홈 아래다. 테스트가 만든 대상이 거기 쌓으면 안 된다.
+t="$work/recpath"; setup "$t"
+python3 - "$t/harness.toml" > "$work/recpath.out" <<'PY'
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+print(c["adr"]["dir"]); print(c["metrics"]["dir"]); print(c["usage"]["log_path"])
+PY
+check "the adr dir in the adr section" "$(sed -n 1p "$work/recpath.out")" "docs/adr"
+[ "$(sed -n 2p "$work/recpath.out")" != "docs/adr" ] && ok || bad "the adr dir value landed in the metrics dir"
+records_under_work "$t"
 
 echo "UT-02 changing the commit subject format changes the pattern and the guidance together"
 # 값 하나를 바꿨는데 한쪽만 따라오면 훅이 거부하며 보여 주는 예시가 통과하지 못하는 형식이 된다.
@@ -125,6 +167,18 @@ echo "UT-05 check catches a missing generated file"
 rm "$t/.claude/settings.json"
 "$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check exit code" "$?" "1"
 
+echo "UT-59 check and doctor see the same drift"
+t="$work/drift"; setup "$t"
+"$root/bin/harness" doctor --target "$t" >"$work/drift-ok.log" 2>&1
+has "$work/drift-ok.log" "files match the config" "doctor right after render does not report a match"
+echo "# hand edit" >> "$t/AGENTS.md"
+rm "$t/.claude/settings.json"
+"$root/bin/harness" check --target "$t" >"$work/drift-check.log" 2>&1; check "check exit code on drift" "$?" "1"
+grep -E '^  AGENTS.md +differs from the config$' "$work/drift-check.log" >/dev/null && ok || bad "check did not name the edited file with its reason"
+grep -E '^  .claude/settings.json +missing$' "$work/drift-check.log" >/dev/null && ok || bad "check did not name the deleted file with its reason"
+"$root/bin/harness" doctor --target "$t" >"$work/drift-doc.log" 2>&1
+has "$work/drift-doc.log" "2 files differ from the config" "doctor does not count the same two files"
+
 echo "UT-06 render refuses when the implementer and the reviewer share a runner"
 # 같은 모델이 자기 코드를 리뷰하면 같은 맹점을 두 번 지나간다. 문서가 아니라 도구가 막아야 한다.
 t="$work/samerunner"; setup "$t"
@@ -142,21 +196,21 @@ case "$out" in *distinct_reviewer*) ok ;; *) bad "the refusal does not say how t
 echo "UT-07 a config that breaks the rules is refused before render"
 # 티켓 접두사형인데 키가 없으면 검사식을 만들 수 없다.
 t="$work/invalid"; setup "$t"
-sed -i '' 's/issue_ref = "suffix"/issue_ref = "prefix"/' "$t/harness.toml"
+sedi 's/issue_ref = "suffix"/issue_ref = "prefix"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "prefix form without a ticket key" "$?" "2"
-sed -i '' 's/^runner = "codex"$/runner = "unknown-runner"/' "$t/harness.toml"
+sedi 's/^runner = "codex"$/runner = "unknown-runner"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "unknown runner" "$?" "2"
 
 echo "UT-07d a branch list written as one comma-joined string is refused"
 # 브랜치 이름은 훅의 case 패턴에 그대로 들어가므로, 쉼표·공백이 섞이면 훅이 문법 오류로 깨진다.
 t="$work/branchname"; setup "$t"
-sed -i '' 's/^protected = \["main", "development"\]$/protected = ["main, development"]/' "$t/harness.toml"
+sedi 's/^protected = \["main", "development"\]$/protected = ["main, development"]/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "comma-joined branch list" "$?" "2"
 
 echo "UT-07b the integration branch is protected even when it is not listed"
 # 거기로 직접 push 할 수 있으면 승인 게이트가 우회된다. 선택지가 아니므로 채운다.
 t="$work/autoprotect"; setup "$t"
-sed -i '' 's/^protected = \["main", "development"\]$/protected = ["main"]/' "$t/harness.toml"
+sedi 's/^protected = \["main", "development"\]$/protected = ["main"]/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1
 check "render exit code" "$?" "0"
 has "$t/script/githooks/pre-push" "refs/heads/development" "the integration branch did not reach the hook"
@@ -167,7 +221,7 @@ echo "UT-07c the harness source tree runs on itself and never vendors a copy of 
 # 사본을 고정하면 템플릿을 고칠 때마다 두 곳이 어긋나므로 소스 리포는 자기 src/bin/harness 로 돈다.
 # 이 리포 자신을 건드리지 않게 소스 트리를 임시 디렉터리에 복제해서 본다.
 src="$work/source"; rm -rf "$src"; mkdir -p "$src/src/bin"
-cp "$root/bin/harness" "$src/src/bin/harness"; cp -R "$root/templates" "$src/src/templates"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
 ( cd "$src" && git init -q . )
 "$src/src/bin/harness" install --target "$src" >/dev/null 2>&1; check "install on the source tree" "$?" "0"
 [ -e "$src/.harness/bin" ] && bad "the source tree vendored a copy of itself" || ok
@@ -175,6 +229,8 @@ cp "$root/bin/harness" "$src/src/bin/harness"; cp -R "$root/templates" "$src/src
 has "$src/harness.toml" 'name = "source"' "the seeded config is not the source tree's own"
 [ -f "$HARNESS_HOME/source/project.json" ] && ok || bad "the source tree was not registered"
 "$src/src/bin/harness" check --target "$src" >/dev/null 2>&1; check "check on the source tree" "$?" "0"
+"$src/src/bin/harness" metrics --target "$src" >"$work/source-metrics.out" 2>&1; check "metrics on the source tree" "$?" "0"
+[ -e "$src/src/bin/__pycache__" ] && bad "the metrics module left bytecode in src/bin" || ok
 # 다른 CLI(여기서는 $root 의 것)로 불러도 소스 리포 자신의 템플릿으로 돈다 — 템플릿을 바꿔 두면 드러난다.
 printf '\n<!-- source tree only -->\n' >> "$src/src/templates/generated/AGENTS.md"
 "$src/src/bin/harness" render --target "$src" >/dev/null
@@ -216,7 +272,7 @@ hasnt "$t/.ai/templates/developer.md" "사람이 끼워 넣은 줄" "the managed
 
 echo "UT-11 changing the forge changes the adapter choice and the command glossary together"
 t="$work/forge"; setup "$t"
-sed -i '' 's/tracker = "gitlab"/tracker = "github"/; s/review_host = "gitlab"/review_host = "github"/' "$t/harness.toml"
+sedi 's/tracker = "gitlab"/tracker = "github"/; s/review_host = "gitlab"/review_host = "github"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 has   "$t/script/forge.sh" "script/forge/github.sh" "the adapter choice did not follow"
 hasnt "$t/script/forge.sh" "script/forge/gitlab.sh" "the old adapter is still there"
@@ -230,7 +286,7 @@ echo "UT-12 changing the ADR style switches the doc set and the old one disappea
 t="$work/adr"; setup "$t"
 [ -f "$t/docs/adr/README.md" ] && ok || bad "the nygard doc set is missing"
 [ -f "$t/.adr-dir" ] && ok || bad "the adr-tools target file is missing"
-sed -i '' 's/style = "nygard"/style = "madr"/; s/tool = "adr-tools"/tool = "manual"/; s|dir = "docs/adr"|dir = "docs/decisions"|' "$t/harness.toml"
+sedi 's/style = "nygard"/style = "madr"/; s/tool = "adr-tools"/tool = "manual"/; s|dir = "docs/adr"|dir = "docs/decisions"|' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 [ -f "$t/docs/decisions/README.md" ] && ok || bad "the madr doc set was not created"
 [ -e "$t/docs/adr" ] && bad "docs from the old style are still there" || ok
@@ -241,7 +297,7 @@ has "$t/.ai/adr.md" "front matter" "the decision-record glossary did not follow 
 echo "UT-13 render refuses a style and tool combination that cannot hold"
 # adr-tools 는 상태와 대체 표기를 Nygard 절 구조에서 찾는다. MADR 에 쓰면 조용히 아무 일도 안 한다.
 t="$work/adrbad"; setup "$t"
-sed -i '' 's/^style = .*/style = "madr"/; s/^tool = .*/tool = "adr-tools"/' "$t/harness.toml"
+sedi 's/^style = .*/style = "madr"/; s/^tool = .*/tool = "adr-tools"/' "$t/harness.toml"
 out=$("$root/bin/harness" render --target "$t" 2>&1); rc=$?
 check "render exit code" "$rc" "2"
 case "$out" in *madr*) ok ;; *) bad "the refusal does not say the combination is the problem" ;; esac
@@ -261,6 +317,7 @@ echo "UT-15 every managed script's regression test passes in an installed repo"
 t="$work/installed"; rm -rf "$t"; mkdir -p "$t"
 ( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
+isolate_records "$t"
 # 목록을 적지 않고 설치된 것을 센다 — 적어 두면 새 테스트가 여기서 빠진 채 지나간다.
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
@@ -275,6 +332,14 @@ done
 ( cd "$t" && ./script/run-lint-test.sh >"$work/lint.log" 2>&1 )
 check "verification bundle right after install" "$?" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
+ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
+
+echo "UT-58 the installed CLI carries its metrics module and leaves no bytecode"
+[ -f "$t/.harness/bin/harness_metrics.py" ] && ok || bad "install did not vendor the metrics module"
+python3 "$t/.harness/bin/harness" metrics --target "$t" >"$work/installed-metrics.out" 2>&1
+check "metrics in an installed repo" "$?" "0"
+has "$work/installed-metrics.out" '"summary"' "the installed metrics command printed no report"
+[ -e "$t/.harness/bin/__pycache__" ] && bad "the metrics module left bytecode in .harness/bin" || ok
 
 echo "UT-16 the forge self-test tells contract compliance apart"
 # 자체 검사는 실제 forge 를 상대로 도는 도구라 그 자신은 검사되지 않는다.
@@ -314,7 +379,7 @@ echo "UT-17 the rule prose does not state config values as fact"
 # 설정에 있는 값을 산문에 박아 두면 그 값을 바꾼 프로젝트에서 규칙이 거짓말을 한다.
 t="$work/prose"; setup "$t"
 has "$t/.ai/AI_AGENT.md" "이슈 삭제를 **금지**한다" "the deletion ban rule was not rendered"
-sed -i '' 's/deletion_forbidden = true/deletion_forbidden = false/' "$t/harness.toml"
+sedi 's/deletion_forbidden = true/deletion_forbidden = false/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 hasnt "$t/.ai/AI_AGENT.md" "이슈 삭제를 **금지**한다" "deletion is allowed, yet the ban rule is still there"
 has   "$t/.ai/AI_AGENT.md" "지울 수 있다"             "the allowing sentence did not appear"
@@ -405,12 +470,14 @@ has "$work/doctor.log" "git hooks"   "did not report the hook state"
 echo "UT-24 running a workflow launches the orchestrator interactively"
 # 승인 게이트가 있으므로 비대화형으로 돌리면 그 지점이 통과된 것처럼 지나간다.
 t="$work/run"; setup "$t"
-out=$("$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
+# 실행 기기에 오케스트레이터가 없어도 돌도록 가짜를 PATH 앞에 둔다. --dry-run 도 설치 여부는 확인한다.
+orch24="$work/orch24"; mkdir -p "$orch24"; printf '#!/bin/sh\nexit 0\n' > "$orch24/claude"; chmod +x "$orch24/claude"
+out=$(PATH="$orch24:$PATH" "$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
 check "run exit code" "$?" "0"
 case "$out" in *claude*"/work 12"*) ok ;; *) bad "the command to launch is not what is expected: $out" ;; esac
 case "$out" in *-p*|*--print*) bad "launches non-interactively — the approval gate is skipped" ;; *) ok ;; esac
 "$root/bin/harness" set --target "$t" harness.model opus >/dev/null 2>&1
-out=$("$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
+out=$(PATH="$orch24:$PATH" "$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
 case "$out" in *"claude --model opus"*) ok ;; *) bad "the orchestrator model is not passed at launch: $out" ;; esac
 "$root/bin/harness" run --target "$t" nosuch 12 --dry-run >/dev/null 2>&1
 check "exit code for an unknown workflow" "$?" "2"
@@ -442,7 +509,7 @@ check "pinned version after install" "$(cat "$t/.harness/VERSION")" "0.1.0"
 echo "UT-27 the decision-record procedure follows the tool setting"
 # 도구를 바꿨는데 절차가 그대로면 없는 명령을 지시한다.
 t="$work/adrtool"; setup "$t"
-sed -i '' 's/^tool = .*/tool = "manual"/' "$t/harness.toml"
+sedi 's/^tool = .*/tool = "manual"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 has   "$t/.ai/adr.md" "도구를 쓰지 않는다" "manual, yet there is no by-hand procedure"
 hasnt "$t/.ai/adr.md" "adr new"            "manual, yet it prescribes a command that does not exist"
@@ -507,6 +574,7 @@ echo "UT-34 the pre-commit hook blocks a credential from being committed"
 t="$work/secret"; rm -rf "$t"; mkdir -p "$t"
 ( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
+isolate_records "$t"
 # 훅은 생성물 일치도 본다. 하네스를 먼저 커밋해 두어야 시크릿 층까지 도달한다.
 gitq() { git -C "$t" -c user.name=t -c user.email=t@example.invalid "$@"; }
 gitq add -A >/dev/null && gitq commit -q -m "chore: 하네스" >/dev/null
@@ -658,6 +726,8 @@ check "set a directory" "$?" "0"
 has "$t/.claude/settings.json" '"Edit(.ai/project/scope.md)"' "a base document lost its protection when dropped from the list"
 has "$t/.claude/settings.json" '"Edit(docs/spec/**)"' "a directory rule does not cover the files under it"
 hasnt "$t/.claude/settings.json" '"Edit(docs/spec/)"' "a directory rule was left in a form that matches nothing"
+hasnt "$t/.claude/settings.json" '"Write(' "a Write rule is left, which file permission checks never match"
+hasnt "$t/.claude/settings.json" '"NotebookEdit(' "a NotebookEdit rule is left, which file permission checks never match"
 for p in "/etc/passwd" "../x.md" "docs/../x.md" "docs/a b.md"; do
   "$root/bin/harness" set --target "$t" docs.protected "$p," >/dev/null 2>&1
   check "refuse protected path '$p'" "$?" "2"
@@ -716,6 +786,26 @@ has "$work/ra.out" "runs as a subagent" "the runner does not say why"
 check "an agent step for a role with its own script" "$?" "2"
 has "$work/entry.out" "script/review-mr.sh" "the refusal does not name the role's script"
 
+echo "UT-60 a missing or incomplete adapter body stops render with its message"
+frontmatter_case() { # <이름> <기대 메시지> <템플릿을 바꾸는 파이썬 한 줄>
+  local h="$work/fm-$1" t="$work/fm-$1-target"
+  rm -rf "$h"; mkdir -p "$h"; cp -R "$root/bin" "$root/templates" "$h/"
+  python3 -c "import pathlib, re; p = pathlib.Path('$h/templates/agents/planner.md'); s = p.read_text(encoding='utf-8'); $3" \
+    || { bad "$1: could not prepare the template"; return; }
+  setup "$t"
+  "$h/bin/harness" render --target "$t" >"$work/fm-$1.out" 2>&1
+  [ "$?" -ne 0 ] && ok || bad "$1: render did not stop"
+  has "$work/fm-$1.out" "$2" "$1: render did not say '$2'"
+}
+frontmatter_case nobody "no adapter body for role \`planner\`" "p.unlink()"
+for c in schema metrics; do
+  "$work/fm-nobody/bin/harness" "$c" --target "$work/fm-nobody-target" >"$work/fm-nobody-$c.out" 2>&1
+  check "$c stops on a role without an adapter body" "$?" "2"
+  has "$work/fm-nobody-$c.out" "no adapter body for role \`planner\`" "$c did not say which role has no adapter body"
+done
+frontmatter_case nosummary "frontmatter has no \`summary\`" "p.write_text(re.sub(r'(?m)^summary:.*\\n', '', s, count=1), encoding='utf-8')"
+frontmatter_case nodescription "frontmatter has no \`description\`" "p.write_text(re.sub(r'(?m)^description:.*\\n', '', s, count=1), encoding='utf-8')"
+
 echo "UT-52 a role may forbid CLI runners, and orchestrator gaps show in doctor"
 h="$work/harness-copy"; rm -rf "$h"; mkdir -p "$h"; cp -R "$root/bin" "$root/templates" "$h/"
 python3 - "$h/templates/agents/planner.md" <<'PY'
@@ -751,7 +841,7 @@ hasnt "$t/.claude/agents/planner.md" "## 이 프로젝트에서" "removing the n
 echo "UT-43 steps use type, and a config that still says kind reads the same"
 t="$work/wfnotes"; setup "$t"
 has "$t/harness.toml" 'type = "prompt"' "the shipped steps still use kind"
-sed -i '' 's/type = "/kind = "/g' "$t/harness.toml"
+sedi 's/type = "/kind = "/g' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "an old config with kind still renders" "$?" "0"
 
 echo "UT-44 workflow notes reach that procedure only, and stay protected"
@@ -918,8 +1008,8 @@ check "wrap keeps the exit code" "$?" "3"
 has "$work/m.out" "out-line" "wrap swallowed stdout"
 has "$work/m.err" "token=abc123" "wrap swallowed stderr"
 f=$(ls "$md"/spans-*.jsonl | head -1)
-[ "$(stat -f %Lp "$md" 2>/dev/null || stat -c %a "$md")" = "700" ] && ok || bad "the metrics dir is not 0700"
-[ "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" = "600" ] && ok || bad "a span file is not 0600"
+[ "$(stat -c %a "$md" 2>/dev/null || stat -f %Lp "$md")" = "700" ] && ok || bad "the metrics dir is not 0700"
+[ "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")" = "600" ] && ok || bad "a span file is not 0600"
 hasnt "$f" "abc123" "a token reached the log"
 hasnt "$f" "me@x.com" "an email reached the log"
 hasnt "$f" "$HOME/" "the home path reached the log"
@@ -1074,7 +1164,7 @@ PY
 imp > "$work/imp3.json"; sum "$work/imp3.json" > "$work/imp3.sum"
 has "$work/imp3.sum" "1 25 130 10 [16] 1" "the completed line was not imported exactly once"
 cur="$HARNESS_HOME/my-project/state/import-cursor.json"   # setup 의 설정은 project.name 을 바꾸지 않는다
-[ "$(stat -f %Lp "$cur" 2>/dev/null || stat -c %a "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
+[ "$(stat -c %a "$cur" 2>/dev/null || stat -f %Lp "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
 
 echo
 if [ "$fail" -eq 0 ]; then

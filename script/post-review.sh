@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
-# 리뷰 본문을 리뷰 요청에 등록하고 판정을 종료 코드로 돌려준다.
+# 리뷰어의 판정 데이터를 검증해 리뷰 요청에 등록하고 판정을 종료 코드로 돌려준다.
 #
 #   script/post-review.sh <리뷰요청번호> <리뷰본문파일> [작성자표시] [리뷰한리비전]
 #
 # 종료 코드: 0 = PASS(blocker·major 0건) · 1 = CHANGES_REQUESTED · 2 = 등록·계약 실패
 #            3 = 한 파일에 blocker·major 가 상한 회차 연속 — 코드가 아니라 명세를 다시 본다
 #
-# **판정은 발견 등급 집계로 한다.** 본문 마지막 줄의 판정 선언은 계약 준수 여부를 보는 용도이고,
-# 루프를 끝낼지는 blocker·major 건수가 정한다 — minor 만 남았는데 루프가 계속 도는 일을 막는다.
+# 리뷰어 출력은 판정 데이터(info string 이 표지 `FMT_REVIEW_BLOCK` 인 JSON 블록 하나)다.
+# **판정은 발견 등급 집계로 한다.** 데이터의 `verdict` 는 계약 준수 확인용이고, 루프를 끝낼지는
+# `findings` 의 blocker·major 건수가 정한다 — minor 만 남았는데 루프가 계속 도는 일을 막는다.
+# 등록하는 요약·인라인 댓글은 리뷰어 출력 원문이 아니라 그 데이터로 렌더링한다.
 #
 # blocker·major 는 해당 diff 라인에 인라인으로, 전체 요약은 댓글 1건으로 등록한다.
 # minor 는 인라인으로 달지 않는다 — 소음이 판정을 묻는다.
@@ -26,14 +28,12 @@
 # 다시 센다. 그래도 회차 상한이 루프를 끝낸다. 원격에서 복원하지 않는다 — 댓글을 파싱해
 # 이력을 되살리는 방식은 형식 변경에 취약하고, 틀린 상한은 없는 것보다 나쁘다.
 #
-# 이 스크립트는 리뷰 본문의 형식을 읽기만 하고 계약을 새로 정의하지 않는다.
-# 형식 문자열의 정본은 `script/harness-format.sh` 이고 계약 문서가 같은 값을 쓴다.
+# 이 스크립트는 판정 데이터를 읽기만 하고 계약을 새로 정의하지 않는다. 검증·집계·렌더링은
+# `script/_review.py` 의 `judge` · `render` 가 하고, 형식 문자열의 정본은 `script/harness-format.sh` 다.
 #
-# **발견은 발견 절 안에서만 읽는다.** 판정이 등급 집계이므로 절 밖의 등급 형식 줄
-# (잘된 점의 `- [major] …` 같은 것)을 세면 그대로 판정이 뒤집힌다. 절 제목은 수준까지 정확해야
-# 한다. 절이 없거나 절 안에 발견도 없음 표기도 없으면 계약 위반이다 — 판정 선언 누락과 같이
-# 등록하지 않고 종료 코드 2 다. 형식을 지키지 못한 출력은 발견 목록도 믿을 수 없으므로,
-# 여기서 추측해 읽지 않고 리뷰를 다시 돌린다.
+# **블록 밖의 텍스트는 읽지 않는다.** 블록이 없거나 둘 이상이거나 JSON 이 아니거나 스키마를
+# 하나라도 어기면 계약 위반이다 — 아무것도 등록하지 않고 종료 코드 2 다. 형식을 지키지 못한
+# 출력은 발견 목록도 믿을 수 없으므로, 여기서 추측해 읽지 않고 리뷰를 다시 돌린다.
 #
 # 이 스크립트가 존재하는 이유: 등록에는 원격 쓰기 권한이 필요하지만 리뷰어는 읽기 전용이어야
 # 한다. 등록을 여기로 분리해 리뷰 수행 주체에게 쓰기 도구를 주지 않는다.
@@ -41,8 +41,12 @@ set -euo pipefail
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 . script/harness.env
+# 표지는 script/_review.py 가 환경에서 읽으므로 export 한다.
+set -a
 . script/harness-format.sh
+set +a
 . script/forge.sh
+REVIEW_PY=script/_review.py
 
 if [ $# -lt 2 ]; then echo "usage: script/post-review.sh <review-request-number> <review-body-file> [author-label] [reviewed-revision]" >&2; exit 2; fi
 mr="$1"
@@ -62,18 +66,6 @@ if [ -n "$reviewed" ] && ! printf '%s' "$reviewed" | grep -qE '^[0-9a-f]{7,40}$'
   exit 2
 fi
 
-# 계약: 마지막 비공백 줄이 정확히 판정 문자열이어야 한다. 본문 중간의 언급은 판정이 아니다.
-declared=$(grep -v '^[[:space:]]*$' "$body" | tail -1 | tr -d '\r' || true)
-case "$declared" in
-  "$FMT_VERDICT_PASS"|"$FMT_VERDICT_CHANGES") ;;
-  *)
-    echo "contract violation: the last line is not a verdict declaration, got '$declared'" >&2
-    echo "help: nothing was posted — the raw review follows" >&2
-    cat "$body" >&2
-    exit 2
-    ;;
-esac
-
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -88,150 +80,10 @@ hist_dir="$(git rev-parse --git-dir)/work-loop"
 hist="$hist_dir/review-findings-$mr.tsv"
 mkdir -p "$hist_dir"
 
-# 본문을 한 번만 읽어 인라인 대상·등급 집계·반복 횟수를 함께 낸다. 파서가 둘이면
+# 판정 데이터를 한 번만 검증해 인라인 대상·등급 집계·반복 횟수를 함께 낸다. 읽는 곳이 둘이면
 # "발견 하나"의 기준이 갈라져 인라인과 판정이 서로 다른 것을 센다.
 parse_rc=0
-python3 - "$body" "$hist" "$REVIEW_REPEAT_FILE_MAX" "$work" \
-         "$FMT_FINDINGS_HEADING" "$FMT_FINDINGS_LEVEL" "$FMT_NO_FINDINGS" "$FMT_NO_LOCATION" \
-         "$FMT_INLINE_SEVERITIES" <<'PY' || parse_rc=$?
-import os, re, sys
-
-(body_path, hist_path, repeat_max, work,
- section_heading, section_level, no_findings, no_location, inline_sev) = sys.argv[1:10]
-repeat_max = int(repeat_max)
-section_level = int(section_level)
-section = section_heading.lstrip('#').strip()
-inline_sev = inline_sev.split()
-
-# 누적 파일 첫 줄의 형식 판별자. 반복 키 구성이 바뀌면 숫자를 올린다 — 옛 형식 줄은 새 키와
-# 비교할 수 없어, 이어 쓰면 회수가 틀린다. 판별자가 다르면 이전 기록을 버리고 다시 센다.
-HIST_FORMAT = '#format 1'
-# blocker·major 가 없던 회차의 자리표시자. 회차 번호를 잇고 연속을 끊는 역할만 한다.
-NO_FINDING = '-'
-
-heading = re.compile(r'^(#{1,6})\s+(.*?)\s*#*\s*$')
-# 머리글은 행 첫 칸에서 시작한다. 들여쓴 줄은 앞 발견의 설명이지 새 발견이 아니다 —
-# 재현 절차에 담은 등급 형식 예시가 발견으로 세어지는 것을 막는다.
-head = re.compile(r'^-\s*\[(blocker|major|minor)\]\s*(.*)$')
-loc = re.compile(r'^`?([^`\s:]+):(\d+)`?\s*[—\-–]\s*(.*)$')
-none_mark = re.compile(r'^-?\s*%s[.]?$' % re.escape(no_findings))
-
-lines = open(body_path, encoding='utf-8').read().splitlines()
-
-# 본문 전체가 아니라 절 안만 본다. 판정이 등급 집계라서, 요약·잘된 점의 등급 형식 줄을 세면
-# 그것만으로 PASS 가 CHANGES_REQUESTED 로 바뀌고 반복 지적 이력까지 남는다.
-start = end = None
-for i, ln in enumerate(lines):
-    m = heading.match(ln)
-    if not m:
-        continue
-    lv, title = len(m.group(1)), m.group(2).strip()
-    if title == section and lv != section_level:
-        sys.stderr.write(
-            f"contract violation: the findings heading must be '{section_heading}', "
-            f"got '{'#' * lv} {title}'\n")
-        sys.exit(2)
-    if start is None:
-        if title == section:
-            start = i + 1
-    elif end is None:
-        end = i
-
-if start is None:
-    sys.stderr.write(f"contract violation: no '{section_heading}' section, so the findings have no boundary\n")
-    sys.exit(2)
-
-body_lines = lines[start:end if end is not None else len(lines)]
-
-# 발견 하나 = 머리글 줄 + 뒤따르는 들여쓴 줄. 들여쓰지 않은 줄에서 끊는다.
-findings, cur = [], None
-for ln in body_lines:
-    m = head.match(ln)
-    if m:
-        if cur:
-            findings.append(cur)
-        cur = {'sev': m.group(1), 'rest': m.group(2).strip(), 'tail': []}
-    elif cur is not None:
-        if ln.strip() == '' or ln[:1] in (' ', '\t'):
-            cur['tail'].append(ln.strip())
-        else:
-            findings.append(cur)
-            cur = None
-if cur:
-    findings.append(cur)
-
-# 발견도 없음 표기도 없는 절은 계약 위반이다. 형식이 어긋나 발견을 놓친 것과
-# 정말 발견이 없는 것을 구분할 수 없고, 구분하지 못한 채 PASS 를 내면 루프가 조용히 끝난다.
-if not findings and not any(none_mark.match(ln.strip()) for ln in body_lines):
-    sys.stderr.write(f"contract violation: the '{section_heading}' section has neither findings nor the '{no_findings}' marker\n")
-    sys.exit(2)
-
-
-def repeat_key(f):
-    """반복 판정에 쓰는 키 — 파일 경로 하나."""
-    m = loc.match(f['rest'])
-    return m.group(1) if m else no_location
-
-
-counts = {'blocker': 0, 'major': 0, 'minor': 0}
-inline, keys = [], []
-for f in findings:
-    counts[f['sev']] += 1
-    if f['sev'] not in inline_sev:
-        continue
-    keys.append(repeat_key(f))
-    m = loc.match(f['rest'])
-    if m:  # 형식을 어긴 발견은 인라인에서 빠지되 요약 본문에는 그대로 남는다.
-        note = f"**[{f['sev']}]** " + "\n".join([m.group(3).strip()] + f['tail']).strip()
-        inline.append((m.group(1), m.group(2), note))
-
-with open(os.path.join(work, 'inline'), 'w', encoding='utf-8') as fp:
-    for file, line, note in inline:
-        fp.write(f"{file}\t{line}\t{note}\0")
-
-with open(os.path.join(work, 'counts'), 'w', encoding='utf-8') as fp:
-    fp.write("{blocker} {major} {minor}\n".format(**counts))
-
-# 회차별 누적. 이번 회차의 같은 키는 중복을 접어 한 번만 센다.
-hist_lines = []
-if os.path.exists(hist_path):
-    hist_lines = open(hist_path, encoding='utf-8').read().splitlines()
-compatible = bool(hist_lines) and hist_lines[0].strip() == HIST_FORMAT
-
-prev, last_run = {}, 0
-for ln in (hist_lines[1:] if compatible else []):
-    run, _, key = ln.partition('\t')
-    if not key:
-        continue
-    try:
-        run = int(run)
-    except ValueError:
-        continue
-    last_run = max(last_run, run)
-    prev.setdefault(key, set()).add(run)
-
-this_run = last_run + 1
-with open(os.path.join(work, 'append'), 'w', encoding='utf-8') as fp:
-    if not compatible:
-        fp.write(HIST_FORMAT + "\n")
-    for key in (list(dict.fromkeys(keys)) or [NO_FINDING]):
-        fp.write(f"{this_run}\t{key}\n")
-
-if not compatible:
-    # 누적은 등록에 성공한 뒤에만 한다. 여기서는 갈아엎어야 한다는 사실만 남긴다.
-    open(os.path.join(work, 'reset'), 'w', encoding='utf-8').close()
-
-# 연속한 회차만 센다. 중간에 한 회차라도 그 파일에서 blocker·major 가 나오지 않았으면
-# 직전 수정이 그 파일을 닫았다는 뜻이라, 다시 1 회차부터다.
-with open(os.path.join(work, 'repeat'), 'w', encoding='utf-8') as fp:
-    for key in dict.fromkeys(keys):
-        runs = prev.get(key, set()) | {this_run}
-        streak = 0
-        while this_run - streak in runs:
-            streak += 1
-        if streak >= repeat_max:
-            fp.write(f"{streak}\t{key}\n")
-PY
+python3 "$REVIEW_PY" judge "$body" "$hist" "$REVIEW_REPEAT_FILE_MAX" "$work" || parse_rc=$?
 
 if [ "$parse_rc" -ne 0 ]; then
   echo "help: nothing was posted — the raw review follows" >&2
@@ -240,8 +92,7 @@ if [ "$parse_rc" -ne 0 ]; then
 fi
 
 read -r n_blocker n_major n_minor < "$work/counts"
-blocking=$((n_blocker + n_major))
-if [ "$blocking" -gt 0 ]; then computed="CHANGES_REQUESTED"; else computed="PASS"; fi
+computed=$(cat "$work/computed")
 
 inline_ok=0
 inline_fail=0
@@ -256,36 +107,8 @@ while IFS=$'\t' read -r -d '' file line note; do
   fi
 done < "$work/inline"
 
-{
-  echo "$FMT_SUMMARY_HEADING ($label)"
-  echo
-  echo "> \`script/post-review.sh\` 가 등록했다. 판정은 참고용이며 머지 승인은 사람이 한다."
-  echo ">"
-  echo "> 발견 blocker $n_blocker · major $n_major · minor $n_minor → **판정 $computed**"
-  echo "> (minor 는 판정에 넣지 않는다.)"
-  # 다음 회차의 증분 기준. 로컬이 아니라 원격 노트에 남겨야 클론이 바뀌어도 살아남는다.
-  if [ -n "$head_sha" ]; then
-    echo ">"
-    echo "> $FMT_REVIEWED_HEAD \`$head_sha\`"
-  fi
-  if [ "$declared" != "REVIEW_VERDICT: $computed" ]; then
-    echo ">"
-    echo "> 리뷰 본문의 선언은 \`$declared\` 였다. 판정은 발견 등급 집계를 따른다."
-  fi
-  if [ -s "$work/repeat" ]; then
-    echo ">"
-    echo "> **한 파일에 blocker·major 가 ${REVIEW_REPEAT_FILE_MAX}회차 연속 나왔다. 루프를 여기서 멈춘다** — 코드가 아니라 명세를 다시 본다."
-    while IFS=$'\t' read -r seen key; do
-      echo "> - ${seen}회차 연속: \`$key\`"
-    done < "$work/repeat"
-  fi
-  if [ "$inline_fail" -gt 0 ]; then
-    echo ">"
-    echo "> 인라인 $inline_fail 건은 해당 줄이 이번 diff 에 없어 달지 못했다. 아래 본문을 참조한다."
-  fi
-  echo
-  cat "$body"
-} > "$work/note.md"
+python3 "$REVIEW_PY" render "$work" "$label" "$head_sha" "$inline_fail" "$REVIEW_REPEAT_FILE_MAX" \
+  || { echo "error: could not render the summary — nothing was posted" >&2; exit 2; }
 
 review_mr_note_summary "$mr" "$work/note.md" \
   || { echo "error: posting the summary failed — the review body follows:" >&2; cat "$work/note.md" >&2; exit 2; }
@@ -303,4 +126,4 @@ if [ -s "$work/repeat" ]; then
   exit 3
 fi
 
-[ "$computed" = "PASS" ] && exit 0 || exit 1
+[ "$computed" = "$FMT_VERDICT_PASS" ] && exit 0 || exit 1

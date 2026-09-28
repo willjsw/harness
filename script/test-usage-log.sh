@@ -244,6 +244,8 @@ stage_recorder() { # <디렉터리> <보호 브랜치> <커밋 태그>
   mkdir -p "$1" || return 2
   cp "$root/script/usage-log.sh" "$root/script/usage-vocab.sh" "$root/script/harness.env" "$1/" || return 2
   printf "PROTECTED_BRANCHES='%s'\nCOMMIT_TAGS='%s'\n" "$2" "$3" >> "$1/harness.env"
+  # 배치한 설정의 기록 경로도 샌드박스로 덮는다 — 덮어쓰기 변수를 빠뜨린 호출이 실제 기록에 닿지 않게 한다.
+  printf "USAGE_LOG_PATH='%s'\n" "$sandbox/staged-usage.log" >> "$1/harness.env"
 }
 alt="$sandbox/alt-config/script"
 stage_recorder "$alt" 'release trunk' 'work|hotfix|spike' || exit 2

@@ -6,26 +6,28 @@
 # 여기 두고 양쪽이 같은 것을 보게 한다. `script/test-review-loop.sh` 가 계약 문서와의 일치를 검사한다.
 #
 # **설정이 아니다.** 프로젝트마다 달라지는 값이 아니라 하네스의 형식 규약이다.
-# 바꾸려면 여기와 `.ai/templates/code-reviewer.md`·`.ai/templates/mr.md`·
+# 바꾸려면 여기와 `.ai/templates/code-reviewer.md`·`.ai/templates/security-guard.md`·`.ai/templates/mr.md`·
 # `.ai/templates/issue-task.md` 를 같은 커밋에서 함께 고친다.
 #
 # 이 파일은 source 전용이다. 직접 실행하지 않는다.
 
-# ── 리뷰 본문 (리뷰어가 쓰고 post-review.sh 가 읽는다) ───────────────────────
-FMT_FINDINGS_HEADING='## 발견 사항'
-FMT_FINDINGS_LEVEL=2
-FMT_NO_FINDINGS='발견 사항 없음'
-FMT_VERDICT_PASS='REVIEW_VERDICT: PASS'
-FMT_VERDICT_CHANGES='REVIEW_VERDICT: CHANGES_REQUESTED'
-FMT_OUT_OF_SCOPE='범위 밖 — 이월 필요'
+# ── 리뷰 본문 (리뷰어가 쓰고 `_review.py` 가 읽는다) ─────────────────────────
+# 판정 데이터 블록의 info string. 리뷰어는 ```json 으로 여는 블록 하나에 판정 데이터를 담는다.
+FMT_REVIEW_BLOCK='json'
+# 판정 데이터의 `verdict` 값.
+FMT_VERDICT_PASS='PASS'
+FMT_VERDICT_CHANGES='CHANGES_REQUESTED'
 
-# 판정에 넣고 인라인으로 다는 심각도. minor 는 소음이 판정을 묻으므로 뺀다.
+# 판정에 넣고 인라인으로 다는 심각도. 반복 지적의 키도 이 심각도만 센다.
+# minor 는 소음이 판정을 묻으므로 뺀다.
 FMT_INLINE_SEVERITIES='blocker major'
 
-# 파일:라인을 적지 않은 발견이 반복 집계에서 차지하는 자리.
+# 파일을 지목하지 않은 발견(`path: null`)이 반복 집계와 요약 댓글의 위치에서 차지하는 자리.
 FMT_NO_LOCATION='(파일 미지정)'
 
-# ── 등록 노트 (post-review.sh 가 쓰고 review-mr.sh 가 다음 회차에 읽는다) ────
+# ── 등록 댓글 (`_review.py` 가 등록 댓글에 쓰고 다음 회차와 구현자가 읽는다) ──
+FMT_NO_FINDINGS='발견 사항 없음'
+FMT_OUT_OF_SCOPE='범위 밖 — 이월 필요'
 FMT_SUMMARY_HEADING='## 자동 리뷰 결과'
 FMT_REVIEWED_HEAD='리뷰 시점 head'
 

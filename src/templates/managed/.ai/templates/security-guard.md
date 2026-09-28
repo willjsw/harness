@@ -51,13 +51,37 @@
 
 ## 출력 계약
 
-`.ai/templates/code-reviewer.md` 와 **같은 형식**을 쓴다. 등록 스크립트가 같은 파서를 쓰므로
-형식을 바꾸면 조용히 빈 결과가 된다.
+`.ai/templates/code-reviewer.md` "출력 계약" 과 **같은 판정 데이터**를 낸다 — info string 이 `json` 인
+fenced 코드 블록 하나, 같은 스키마, 같은 계약 위반 조건이다. 등록 스크립트가 같은 검증을 쓰므로
+형식을 어기면 아무것도 등록되지 않는다. 블록 밖에 적은 글은 판정에도 등록 댓글에도 닿지 않는다.
 
-- `## 발견 사항` 절 안에만 발견을 적는다. 절 밖의 등급 형식 줄은 세어지지 않는다
-- 발견 한 건은 `**[<등급>]** <파일>:<줄> — <요지>` 로 시작한다
-- 발견이 없으면 그 절에 `발견 사항 없음` 한 줄
-- 마지막 줄에 판정을 선언한다
+- 최상위 키는 `summary` · `findings` · `strengths` · `verdict` 이고 전부 필수다
+- 발견 객체의 키는 `severity` · `path` · `line` · `title` · `problem` · `repro` · `recommendation` ·
+  `out_of_scope` · `decision_basis` 이고 전부 필수다. 값이 없는 자리는 `null` 이다
+- `severity` 는 `blocker` · `major` · `minor` 중 하나다 (등급 절)
+- `verdict` 는 `PASS` 또는 `CHANGES_REQUESTED` 다. 판정은 등급 집계를 따르고, 선언이 집계와 어긋나도
+  계약 위반이 아니다 (`.ai/templates/code-reviewer.md` 의 "판정의 정본은 등급 집계다")
+- 발견이 없으면 `findings` 는 빈 배열이다
+- `strengths` 는 문자열 배열이다. 빈 배열을 허용한다. 원소 값은 검증하지 않는다 — 공백만인 문자열도 받는다
+- `path` 는 리포 기준 상대 경로다. `/` 로 시작하지 않고, `..` 경로 조각이 없고, Unicode 일반 범주
+  Cc(제어)·Zl(줄 구분)·Zp(문단 구분)·Cf(서식) 문자가 없다. 파일을 지목할 수 없으면 `null`
+- `title` 은 공백만이 아니고, Python `str.splitlines()` 가 줄 경계로 보는 문자 10종
+  (LF·CR·VT·FF·FS·GS·RS·NEL·U+2028·U+2029)이 없다. 그 밖의 제어 문자(탭·BEL 등)는 허용한다
+
+**검증은 `.ai/templates/code-reviewer.md` 스키마 절의 두 표(최상위 객체·발견 객체)의 형·규칙 열과 그 아래
+목록의 규칙만 한다. 적히지 않은 제약을 더하지 않는다.**
+
+필드의 뜻은 이렇게 옮긴다.
+
+| 필드 | 보안 검토자가 적는 것 |
+|---|---|
+| `problem` | 무엇이 취약한가 |
+| `repro` | 악용 경로 — 무엇을 입력하면 무엇이 일어나는가 |
+| `recommendation` | 조치 |
+| `summary` | 무엇을 보았고 어느 경로를 따라갔는지, 그리고 이번 변경과 무관해 보지 않은 것 |
+| `strengths` | 빈 배열 |
+| `out_of_scope` | 이번 변경이 도달 가능하게 만든 경로 밖의 결함이라 이월이 필요하면 `true` |
+| `decision_basis` | 리포가 이미 정한 사안의 재검토 요청이면 그 근거. 그때 `severity` 는 `minor`. 그 밖에는 `null` |
 
 ## 자격증명을 발견했을 때
 
@@ -70,20 +94,25 @@
 
 ## 출력
 
-```
-## 요약
-
-<무엇을 보았고 어느 경로를 따라갔는지 2~4줄>
-
-## 발견 사항
-
-**[blocker]** src/config/Client.java:31 — 접속 토큰이 소스에 박혀 있다
-- 악용: 리포 읽기 권한만 있으면 그대로 외부 API 를 호출할 수 있다
-- 조치: 값을 폐기·재발급하고 `.ai/project/environment.md` 가 정한 취득 경로로 옮긴다
-
-## 범위 밖
-
-<이번 변경과 무관해 보지 않은 것. 없으면 "해당 없음">
+```json
+{
+  "summary": "변경된 설정 로더에서 출발해 토큰을 읽는 경로를 따라갔다. 로그 모듈은 이번 변경과 무관해 보지 않았다.",
+  "findings": [
+    {
+      "severity": "blocker",
+      "path": "src/config/Client.java",
+      "line": 31,
+      "title": "접속 토큰이 소스에 박혀 있다",
+      "problem": "외부 API 접속 토큰이 소스 상수로 들어갔다",
+      "repro": "리포 읽기 권한만 있으면 그 값으로 외부 API 를 호출할 수 있다",
+      "recommendation": "값을 폐기·재발급하고 .ai/project/environment.md 가 정한 취득 경로로 옮긴다",
+      "out_of_scope": false,
+      "decision_basis": null
+    }
+  ],
+  "strengths": [],
+  "verdict": "CHANGES_REQUESTED"
+}
 ```
 
 ## 규칙
@@ -91,5 +120,5 @@
 - **코드를 고치지 않는다.** 조치는 적고 실행은 하지 않는다
 - **원격에 등록하지 않는다.** 등록은 호출자가 `script/post-review.sh` 로 한다
 - **취약점 재현 코드·익스플로잇을 쓰지 않는다.** 악용 경로는 문장으로 설명한다
-- 발견을 만들어내지 않는다. 볼 것이 없으면 `발견 사항 없음` 이다
+- 발견을 만들어내지 않는다. 볼 것이 없으면 `findings` 는 빈 배열이다
 - 확인하지 못한 것을 사실처럼 적지 않는다. 근거를 대지 못하면 등급을 내리거나 범위 밖으로 둔다

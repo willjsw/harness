@@ -35,7 +35,7 @@
 | 리뷰 요청 | GitHub 의 PR, GitLab 의 MR. 문서에서는 forge 에 중립적으로 이렇게 부른다 |
 | 회차 라벨 | 리뷰 요청에 붙는 `<prefix>:<N>` 라벨. `review-mr.sh` 만 올린다 |
 | 이월 이슈 | 범위 밖으로 넘긴 지적을 담는 이슈. `create-carryover-issue.sh` 가 만든다 |
-| 표지 | 기계가 읽는 문자열 (`script/harness-format.sh`). `REVIEW_VERDICT` · `harness:allow-secret` 등 |
+| 표지 | 기계가 읽는 문자열 (`script/harness-format.sh`). 판정 데이터 블록의 info string(`FMT_REVIEW_BLOCK`) · `harness:allow-secret` 등 |
 | forge | 이슈 추적기와 코드 리뷰 호스트를 묶어 부르는 말 (GitHub · GitLab · Jira) |
 | 어댑터 | forge 명령을 감싸는 스크립트(`script/forge/<kind>.sh`), 또는 역할 계약을 CLI 별 형식으로 옮긴 정의 파일(`.claude/agents/` · `.codex/agents/`) |
 | 자체 검사 | 어댑터가 계약을 지키는지 실제 forge 로 확인하는 것 (`script/forge-selftest.sh`) |
