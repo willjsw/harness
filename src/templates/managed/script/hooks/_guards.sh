@@ -85,6 +85,19 @@ unquote_word() {
   printf '%s' "$1" | tr -d '\032' | tr '\037\036\035\034\033\031' ' \t|;&~'
 }
 
+# 토큰 $1 을 셸이 넘기는 값에 가깝게 되돌린다 — 빈 따옴표를 지우고 구획 문자 자리표를 원래 글자로 둔다.
+# 공백·탭·물결표 자리표는 남긴다. 줄을 다시 토큰으로 끊을 때 그 글자에서 끊지 않고, 인용된 물결표를
+# 홈으로 풀지 않기 위해서다. 빈 따옴표만으로 된 토큰은 빈 인수이므로 Q_EMPTY 로 남긴다.
+# 결과는 _nw 에 둔다. 자리표가 없는 토큰은 하위 프로세스 없이 그대로 지난다.
+Q_JOIN=$(printf '\032\035\034\033')
+norm_word() {
+  _nw=$1
+  case "$_nw" in
+    "$Q_EMPTY") ;;
+    *["$Q_JOIN"]*) _nw=$(printf '%s' "$_nw" | tr -d '\032' | tr '\035\034\033' '|;&') ;;
+  esac
+}
+
 # 명령 문자열의 경로 토큰 $2 를 기준 디렉터리 $1 에서 푼다.
 # 기준이 비었으면 훅 작업 디렉터리, `?` 이면 풀지 못한 상태다. 결과도 같은 표기로 낸다.
 # 셸이 실행 때에야 정하는 값(변수·명령 치환·glob·중괄호·괄호)이 섞이면 풀지 않는다 —
@@ -148,8 +161,10 @@ cd_target() {
 #
 # 단순한 따옴표 구간은 quote_words 가 한 낱말로 묶어 두므로, 그 안의 공백·구분자에서 끊지 않는다.
 #
+# 낸 인수는 토큰마다 norm_word 를 거친다. 명령 자리의 낱말도 같은 값으로 맞춘 뒤 비교한다.
+#
 # 작업 디렉터리는 앞선 구획의 `cd` 가 옮겨 놓은 곳이다. 비었으면 훅 작업 디렉터리, `?` 이면
-# 풀지 못한 경로다. 자리표는 되돌리지 않은 채로 낸다 — 경로를 쓰는 branch_at 이 되돌린다.
+# 풀지 못한 경로다. 남은 공백·물결표 자리표는 경로를 쓰는 branch_at 이 되돌린다.
 invocations_at() {
   _prog=$1
   _dir=
@@ -167,6 +182,8 @@ invocations_at() {
           *) break ;;
         esac
       done
+      norm_word "$_w"
+      _w=$_nw
       case "$_w" in
         "$_prog" | */"$_prog")
           shift
@@ -187,7 +204,12 @@ invocations_at() {
     done
     [ "$_hit" -eq 1 ] || continue
     [ $# -gt 0 ] || continue
-    printf '%s\t%s\n' "$_dir" "$*"
+    _args=
+    for _a in "$@"; do
+      norm_word "$_a"
+      _args="$_args${_args:+ }$_nw"
+    done
+    printf '%s\t%s\n' "$_dir" "$_args"
   done
 }
 
@@ -261,7 +283,7 @@ branch_at() {
   git branch --show-current 2>/dev/null
 }
 
-# push 인수에서 목적지 브랜치 후보를 한 줄씩 낸다.
+# push 인수에서 목적지 브랜치 후보를 한 줄씩 낸다. 후보는 자리표를 모두 되돌린 값이다.
 # 인수가 없거나 원격만 있으면 작업 디렉터리 $_AT 의 현재 브랜치가 목적지다. --tags 처럼 브랜치 refspec 을 보내지
 # 않는 모드에서는 현재 브랜치로 대체하지 않는다. --all·--mirror 는 모든 브랜치를 보내므로
 # 목적지를 하나로 지목할 수 없고, 보호 브랜치가 그 안에 든다.
@@ -310,6 +332,7 @@ push_destinations() {
     fi
     _t=${1#+} # +feat:main 의 강제 표기
     case "$_t" in *:*) _t=${_t#*:} ;; esac
+    _t=$(unquote_word "$_t")
     _t=${_t#refs/heads/}
     if [ -n "$_t" ]; then
       printf '%s\n' "$_t"
@@ -339,7 +362,11 @@ guard_protected_branch() {
     case "$1" in
       push)
         shift
-        for _dest in $(push_destinations "$@"); do
+        _dests=$(push_destinations "$@")
+        IFS='
+'
+        for _dest in $_dests; do
+          IFS=$_ifs
           if [ "$_dest" = '*all*' ]; then
             block "push that sends every branch at once" \
               "a protected branch is among the destinations, and protected branches take changes only through a review request" \
@@ -350,6 +377,7 @@ guard_protected_branch() {
               "help: push a ${BRANCH_PATTERN:-topic} branch and open a review request onto ${BASE_BRANCH:-the integration branch}"
           fi
         done
+        IFS=$_ifs
         ;;
       commit)
         _cur=$(branch_at "$_AT")
@@ -473,8 +501,9 @@ guard_no_verify() {
 guard_remote_delete() {
   GUARD_LABEL=remote-delete
   [ "${ISSUE_DELETE_FORBIDDEN:-0}" = 1 ] || return 0
+  _plain=$(quote_words | tr -d "$Q_EMPTY")
   for _cli in ${FORGE_CLIS:-}; do
-    case "$CMD" in *"$_cli"*) ;; *) continue ;; esac
+    case "$_plain" in *"$_cli"*) ;; *) continue ;; esac
     _invs=$(invocations_of "$_cli")
     _ifs=$IFS
     IFS='

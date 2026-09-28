@@ -277,6 +277,72 @@ else
   echo "fail: could not create the temp work trees with a space, so the quoted path rulings went unchecked" >&2
 fi
 
+# ── 따옴표 안의 구획 문자와 빈 따옴표는 셸이 넘기는 값으로 되돌려 판정한다 ──
+# git ref 에는 `&` · `;` · `|` 가 들어갈 수 있다. 그런 이름을 보호 목록에 둔 사본 레이아웃에서
+# 인용된 목적지가 실제로 가는 브랜치로 비교되는지 본다.
+punct="$sandbox/punct/script/hooks"
+mkdir -p "$punct"
+cp "$repo_root/script/hooks/bash-guard.sh" "$repo_root/script/hooks/_guards.sh" "$punct/"
+chmod +x "$punct"/*.sh
+p_amp="$protected_a&prod"
+p_semi="rel;x"
+p_bar="ops|y"
+{
+  cat "$repo_root/script/harness.env"
+  printf "PROTECTED_BRANCHES='%s %s %s'\n" "$p_amp" "$p_semi" "$p_bar"
+} >"$sandbox/punct/script/harness.env"
+# punct_is <기대코드> <명령> <설명>
+punct_is() {
+  local expect=$1 cmd=$2 note=$3 rc
+  rc=$(probe "$punct/bash-guard.sh" "$cmd")
+  if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1))
+    echo "fail: $note — want=$expect got=$rc  $cmd" >&2
+  fi
+}
+punct_is 2 "git push origin '$p_amp'" "a single-quoted destination with & is the protected branch it names"
+punct_is 2 "git push origin \"$p_semi\"" "a double-quoted destination with ; is the protected branch it names"
+punct_is 2 "git push origin '$p_bar'" "a single-quoted destination with | is the protected branch it names"
+punct_is 2 "git push origin HEAD:'$p_amp'" "a quoted refspec right side with & is the protected branch it names"
+punct_is 2 "git push origin $protected_a'&prod'" "a quoted part with & joins the rest of the destination"
+punct_is 2 "git push origin '$p_amp' $work_branch" "a quoted protected destination among several is found"
+punct_is 0 "git push origin '$p_amp-2'" "a quoted destination that only starts with a protected name passes"
+punct_is 0 "git push origin $work_branch" "a work branch push passes under a punctuated protected list"
+
+# 빈 따옴표는 셸이 지운다. 낱말에 붙은 빈 따옴표가 명령·옵션·목적지 판정을 비껴가지 않는다.
+case_is 2 "g''it push origin $protected_a"
+case_is 2 "git pu\"\"sh origin $protected_a"
+case_is 2 "git push origin $protected_b''"
+case_is 2 "git push --for''ce origin $work_branch"
+case_is 2 "git push origin --del''ete $work_branch"
+case_is 2 "git commit --no-''verify -m x"
+case_is 2 "${forge_cli%?}''${forge_cli#"${forge_cli%?}"} issue delete 100"
+case_is 2 "$forge_cli issue de''lete 100"
+case_is 0 "git push origin '' $work_branch"
+case_is 0 "echo g''it push origin $protected_a"
+
+# 보호 목록과 비교되는 값에 자리표(제어 문자)가 남지 않는다. 비교 함수를 기록하는 것으로 바꿔
+# 인용이 섞인 명령마다 비교된 값을 모으고, 제어 문자가 하나라도 있으면 실패다.
+seen="$sandbox/compared"
+for c in "git push origin '$p_amp'" "git push origin \"$p_semi\" '$p_bar'" \
+  "git push origin HEAD:\"$protected_a\"''" "git push origin 'a b~c'" \
+  "git -C 'x&y' push origin" "cd 'p;q' && git commit -m x" "git push origin ''"; do
+  (
+    CMD=$c
+    PROTECTED_BRANCHES=$protected_a
+    . "$repo_root/script/hooks/_guards.sh"
+    is_protected_branch() { printf '%s\n' "$1" >>"$seen"; return 1; }
+    guard_protected_branch
+  ) >/dev/null 2>&1
+done
+if [ -s "$seen" ] && ! LC_ALL=C grep -q '[[:cntrl:]]' "$seen"; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "fail: a value compared against the protected list still carries a quote placeholder" >&2
+  LC_ALL=C od -c "$seen" >&2 2>/dev/null || true
+fi
+
 # ── 망가진 가드를 이 표가 잡는가 ───────────────────────────────────────────
 # force push 가드만 무력화한 사본에 차단 케이스 표를 그대로 돌린다.
 # force 케이스가 전부 통과(코드 0)로 뒤집히고 다른 계열은 그대로 차단이어야,
