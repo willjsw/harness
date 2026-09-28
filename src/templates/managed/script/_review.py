@@ -30,6 +30,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 
 def die(msg, code=2):
@@ -233,7 +234,8 @@ class Violation(Exception):
 
 def extract_block(text, info):
     """info string 이 정확히 info 인 fenced 블록 하나의 내용. 없거나 둘 이상이면 위반."""
-    lines = text.splitlines()
+    # LF 로만 자른다. splitlines 는 JSON 문자열 안의 U+2028·U+0085 에서도 잘라 블록을 깨뜨린다.
+    lines = text.split("\n")
     blocks, i = [], 0
     while i < len(lines):
         m = FENCE.match(lines[i])
@@ -273,6 +275,17 @@ def _no_constant(name):
 
 def _text(v):
     return isinstance(v, str) and v.strip() != ""
+
+
+# 제어 문자(Cc)와 줄·문단 구분자(Zl·Zp). 한 줄 문자열에 들어오면 등록 댓글의 줄 구조와
+# 누적 파일의 한 줄 기록이 깨진다. str.splitlines 가 줄바꿈으로 보는 문자는 전부 이 안에 든다.
+LINE_BREAKING = ("Cc", "Zl", "Zp")
+# 경로에는 서식 문자(Cf — 양방향 재정렬 등)도 받지 않는다. 보이는 경로와 실제 경로가 달라진다.
+PATH_FORBIDDEN = LINE_BREAKING + ("Cf",)
+
+
+def _has_category(s, categories):
+    return any(unicodedata.category(c) in categories for c in s)
 
 
 def validate(data, verdicts):
@@ -316,16 +329,16 @@ def validate(data, verdicts):
                 raise Violation(f"{at}.path: must be relative to the repo, not absolute")
             if ".." in re.split(r"[/\\]", path):
                 raise Violation(f"{at}.path: must not contain a '..' segment")
-            if re.search(r"[\x00-\x1f]", path):
-                raise Violation(f"{at}.path: must not contain a line break or control character")
+            if _has_category(path, PATH_FORBIDDEN):
+                raise Violation(f"{at}.path: must not contain a line break, control or format character")
         line = f["line"]
         if line is not None:
             if isinstance(line, bool) or not isinstance(line, int) or line < 1:
                 raise Violation(f"{at}.line: must be an integer of 1 or more, or null")
             if path is None:
                 raise Violation(f"{at}.line: must be null when path is null")
-        if not _text(f["title"]) or "\n" in f["title"] or "\r" in f["title"]:
-            raise Violation(f"{at}.title: must be one non-blank line")
+        if not _text(f["title"]) or _has_category(f["title"], LINE_BREAKING):
+            raise Violation(f"{at}.title: must be one non-blank line without control characters")
         for k in ("problem", "repro", "recommendation"):
             if not _text(f[k]):
                 raise Violation(f"{at}.{k}: must be a non-blank string")

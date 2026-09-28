@@ -223,6 +223,9 @@ write("rendered.md", review([
             problem="첫 줄\n# 제목처럼 보이는 줄", repro="입력 A → 결과 B", recommendation="이월한다"),
     finding("blocker", "script/post-review.sh", 9, "등록 전에 검증하지 않는다"),
 ], "CHANGES_REQUESTED", strengths=()))
+write("separator-in-text.md", review([
+    finding("major", "script/review-mr.sh", 5, "여러 줄 필드의 구분자",
+            problem="첫 줄\u2028둘째 줄\u0085셋째 줄")], "CHANGES_REQUESTED"))
 
 with open(os.path.join(out, "no-block.md"), "w", encoding="utf-8") as fp:
     fp.write("판정 데이터 블록을 빠뜨렸다.\n\n## 발견 사항\n\n발견 사항 없음\n")
@@ -258,8 +261,18 @@ bad("line-zero", "findings[0].line", lambda d: d["findings"][0].update(line=0))
 bad("line-without-path", "findings[0].line", lambda d: d["findings"][0].update(path=None))
 bad("path-absolute", "findings[0].path", lambda d: d["findings"][0].update(path="/etc/passwd"))
 bad("path-dotdot", "findings[0].path", lambda d: d["findings"][0].update(path="script/../x.sh"))
+bad("path-newline", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\n.sh"))
+bad("path-delete", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u007f.py"))
+bad("path-c1-control", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u009b.py"))
+bad("path-line-separator", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u2028.py"))
+bad("path-bidi-override", "findings[0].path", lambda d: d["findings"][0].update(path="script/x\u202e.py"))
 bad("title-blank", "findings[0].title", lambda d: d["findings"][0].update(title="  "))
 bad("title-multiline", "findings[0].title", lambda d: d["findings"][0].update(title="한 줄\n두 줄"))
+bad("title-carriage-return", "findings[0].title", lambda d: d["findings"][0].update(title="한 줄\r두 줄"))
+bad("title-line-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u2028# 삽입"))
+bad("title-paragraph-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u2029# 삽입"))
+bad("title-next-line", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u0085# 삽입"))
+bad("title-control", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u0007"))
 bad("decision-not-minor", "findings[0].decision_basis",
     lambda d: d["findings"][0].update(decision_basis="docs/adr/0004-x.md"))
 bad("out-of-scope-type", "findings[0].out_of_scope", lambda d: d["findings"][0].update(out_of_scope="no"))
@@ -453,6 +466,11 @@ while IFS=$'\t' read -r name where; do
   check UT-13 "$name — post calls" 0 "$(note_hits 'note:')"
   check UT-13 "$name — names $where" 1 "$(head -1 "$state/last.log" | grep -cF "contract violation: $where")"
 done < "$sandbox/schema-cases.tsv"
+
+echo "UT-13 a line separator inside a multi-line field is not a violation"
+rm -f "$state/notes"
+check UT-13 "separator-in-text — exit code" 1 "$(run_post 17 "$sandbox/separator-in-text.md")"
+check UT-13 "separator-in-text — inline posted" 1 "$(note_hits '^note: inline')"
 
 echo "UT-29 the summary and inline comments are rendered from the data"
 rm -f "$state/notes"
