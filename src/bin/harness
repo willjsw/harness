@@ -1238,11 +1238,72 @@ def registry() -> Path:
     return Path(os.environ.get("HARNESS_HOME") or Path.home() / ".harness")
 
 
-def register(cfg, target: Path):
-    # ponytail: 이름이 키다. 같은 이름의 프로젝트 둘이면 나중에 설치한 쪽이 이긴다
-    d = registry() / cfg["project"]["name"]
+def registered_path(name: str):
+    """등록부에서 이 이름이 가리키는 경로. 등록이 없거나 읽히지 않거나 경로가 없으면 None."""
+    try:
+        data = json.loads((registry() / name / "project.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    path = data.get("path") if isinstance(data, dict) else None
+    return path if isinstance(path, str) and path else None
+
+
+def registration(cfg, target: Path):
+    """같은 이름의 기존 등록을 가른다 — (판정, 옛 경로).
+
+    판정: free(등록 없음) · same(재설치) · stale(옛 경로가 더는 이 프로젝트가 아니다) ·
+    taken(옛 경로의 설정이 같은 이름을 쓴다) · unreadable(옛 경로의 설정을 읽지 못한다).
+    옛 설정은 이름을 보려고 읽기만 한다. 검증하지 않고 바꾸지 않는다.
+    """
+    name = cfg["project"]["name"]
+    old = registered_path(name)
+    if old is None:
+        return "free", None
+    if Path(old).resolve() == target:
+        return "same", old
+    conf = Path(old) / "harness.toml"
+    try:
+        if not conf.exists():
+            return "stale", old
+        with conf.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, ValueError):
+        return "unreadable", old
+    project = data.get("project")
+    other = project.get("name") if isinstance(project, dict) else None
+    if not isinstance(other, str):
+        return "unreadable", old
+    return ("taken" if other == name else "stale"), old
+
+
+def refuse_taken(cfg, target: Path):
+    """같은 이름이 아직 쓰이는 다른 경로에 등록돼 있으면 안내문을 내고 None. 아니면 (판정, 옛 경로)."""
+    verdict, old = registration(cfg, target)
+    name = cfg["project"]["name"]
+    fix = ("help: run `harness uninstall` in that repository, "
+           "or change `project.name` in this repository's harness.toml")
+    if verdict == "taken":
+        print("error: project name `%s` is already registered to another repository\n  --> %s\n\n%s"
+              % (name, old, fix), file=sys.stderr)
+        return None
+    if verdict == "unreadable":
+        print("error: project name `%s` is registered to a repository whose config could not be read\n"
+              "  --> %s\n\n%s" % (name, Path(old) / "harness.toml", fix), file=sys.stderr)
+        return None
+    return verdict, old
+
+
+def register(cfg, target: Path, claim=("free", None)):
+    """이 하네스 루트를 이름 하나로 등록한다. 이 루트를 가리키던 다른 이름의 등록은 지운다."""
+    name = cfg["project"]["name"]
+    unregister(target)
+    d = registry() / name
     d.mkdir(parents=True, exist_ok=True)
     (d / "project.json").write_text(json.dumps({"path": str(target)}) + "\n", encoding="utf-8")
+    verdict, old = claim
+    if verdict == "stale":
+        print("install: `%s` was registered to %s, which no longer holds this project — registered here instead"
+              % (name, old))
 
 
 def unregister(target: Path):
@@ -1261,6 +1322,10 @@ def source_tree(p: Path) -> bool:
 
 def cmd_install(cfg, target, _args):
     dst = target / ".harness"
+    # 아무것도 바꾸기 전에 등록을 가른다 — 거부되면 대상 리포와 등록부가 그대로여야 한다.
+    claim = refuse_taken(cfg, target)
+    if claim is None:
+        return 2
     if source_tree(target):
         # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
         # 생성물이 작업 트리가 아니라 지난 사본을 따라간다. 훅과 검증 스크립트는 `.harness/bin/harness`
@@ -1271,7 +1336,7 @@ def cmd_install(cfg, target, _args):
             elif stale.is_file():
                 stale.unlink()
         print("install: %s is the harness source tree — it runs its own src/bin/harness, nothing to vendor" % target)
-        register(cfg, target)
+        register(cfg, target, claim)
         return cmd_render(cfg, target, _args)
     if dst.exists():
         shutil.rmtree(dst)
@@ -1281,7 +1346,7 @@ def cmd_install(cfg, target, _args):
     shutil.copytree(TEMPLATES, dst / "templates")
     (dst / "VERSION").write_text(cfg["harness"]["version"] + "\n", encoding="utf-8")
     print("install: %s (harness %s)" % (dst, cfg["harness"]["version"]))
-    register(cfg, target)
+    register(cfg, target, claim)
     return cmd_render(cfg, target, _args)
 
 

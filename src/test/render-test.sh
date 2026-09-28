@@ -1548,6 +1548,105 @@ hasnt "$work/wtdoc.log" "Traceback" "doctor failed outside a git repository"
 "$root/bin/harness" set --target "$work/base" worktree.dir "$work/base-trees" >/dev/null 2>&1
 doc "$work/base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
 
+echo "UT-62 one project name points to one path: install refuses a name still in use elsewhere"
+# 이름이 등록부의 키다. 같은 이름의 두 번째 클론이 등록을 덮으면 UI 와 실행 기록이 조용히 다른 리포를 가리킨다.
+dup="$work/dup"; A="$dup/a/twin"; B="$dup/b/twin"
+mkrepo() { rm -rf "$1"; mkdir -p "$1"; ( cd "$1" && git init -q . ); }
+regpath() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$HARNESS_HOME/$1/project.json" 2>/dev/null || echo "(none)"; }
+real() { ( cd "$1" && pwd -P ); }
+n=0
+inst() { n=$((n + 1)); "$1" install --target "$2" >"$work/dup-$n.out" 2>"$work/dup-$n.err"; }
+fresh() { # A 를 twin 으로 설치하고, B 에 같은 이름의 설정만 둔다
+  rm -rf "$dup" "$HARNESS_HOME"/twin*
+  mkrepo "$A"; mkrepo "$B"
+  inst "$root/bin/harness" "$A" || bad "could not install A"
+  cp "$A/harness.toml" "$B/harness.toml"
+  rA=$(real "$A"); rB=$(real "$B")
+}
+
+fresh
+inst "$root/bin/harness" "$B"; check "same name at another path" "$?" "2"
+has "$work/dup-$n.err" "error:" "the refusal is not an error line"
+has "$work/dup-$n.err" "$rA" "the refusal does not name the registered path"
+has "$work/dup-$n.err" "harness uninstall" "the refusal does not suggest uninstalling there"
+has "$work/dup-$n.err" "project.name" "the refusal does not suggest renaming"
+check "registry after the refusal" "$(regpath twin)" "$rA"
+[ -e "$B/.harness" ] && bad "the refused install left .harness/" || ok
+[ -e "$B/.ai/AI_AGENT.md" ] && bad "the refused install rendered" || ok
+
+inst "$root/bin/harness" "$A"; check "reinstall at the same path" "$?" "0"
+check "registry after the reinstall" "$(regpath twin)" "$rA"
+
+sedi 's/^name = "twin"$/name = "twin-b"/' "$B/harness.toml"
+inst "$root/bin/harness" "$B"; check "a second clone under another name" "$?" "0"
+check "the first name keeps its path" "$(regpath twin)" "$rA"
+check "the second name points to the clone" "$(regpath twin-b)" "$rB"
+
+fresh
+echo keep > "$HARNESS_HOME/twin/marker"
+rm "$A/harness.toml"
+inst "$root/bin/harness" "$B"; check "old path without a config" "$?" "0"
+check "registry after taking over" "$(regpath twin)" "$rB"
+has "$work/dup-$n.out" "which no longer holds this project" "the takeover was not reported"
+[ -f "$HARNESS_HOME/twin/marker" ] && ok || bad "taking over removed the records under the name"
+
+fresh
+rm -rf "$A"
+inst "$root/bin/harness" "$B"; check "old path gone" "$?" "0"
+check "registry after the old path is gone" "$(regpath twin)" "$rB"
+
+fresh
+sedi 's/^name = "twin"$/name = "twin-renamed"/' "$A/harness.toml"
+inst "$root/bin/harness" "$B"; check "old path now under another name" "$?" "0"
+check "registry after the old path was renamed" "$(regpath twin)" "$rB"
+
+fresh
+printf 'this is = [not toml\n' >> "$A/harness.toml"
+inst "$root/bin/harness" "$B"; check "old config unreadable" "$?" "2"
+has "$work/dup-$n.err" "could not be read" "the refusal does not say the config could not be read"
+has "$work/dup-$n.err" "$rA/harness.toml" "the refusal does not name the unreadable config"
+check "registry after the unreadable refusal" "$(regpath twin)" "$rA"
+
+fresh
+echo '{}' > "$HARNESS_HOME/twin/project.json"
+inst "$root/bin/harness" "$B"; check "a registration without a path" "$?" "0"
+check "registry after an empty registration" "$(regpath twin)" "$rB"
+
+fresh
+sedi 's/^name = "twin"$/name = "twin-new"/' "$A/harness.toml"
+inst "$root/bin/harness" "$A"; check "reinstall under a new name" "$?" "0"
+[ -e "$HARNESS_HOME/twin/project.json" ] && bad "the old name still points to the renamed repo" || ok
+check "the new name points to the repo" "$(regpath twin-new)" "$rA"
+
+# 소스 리포 분기도 옛 사본을 걷어내기 전에 같은 판정을 거친다.
+rm -rf "$HARNESS_HOME"/srcdup
+for s in "$dup/s1/srcdup" "$dup/s2/srcdup"; do
+  rm -rf "$s"; mkdir -p "$s/src/bin"
+  cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s/src/bin/"; cp -R "$root/templates" "$s/src/templates"
+  ( cd "$s" && git init -q . )
+done
+s2="$dup/s2/srcdup"
+inst "$dup/s1/srcdup/src/bin/harness" "$dup/s1/srcdup"; check "first source tree install" "$?" "0"
+mkdir -p "$s2/.harness/bin"; echo 0.0.1 > "$s2/.harness/VERSION"
+inst "$s2/src/bin/harness" "$s2"; check "second source tree under the same name" "$?" "2"
+[ -d "$s2/.harness/bin" ] && [ -f "$s2/.harness/VERSION" ] && ok || bad "the refused source install cleared the old copy"
+[ -e "$s2/.ai/AI_AGENT.md" ] && bad "the refused source install rendered" || ok
+
+cat "$work"/dup-*.out "$work"/dup-*.err > "$work/dup.log"
+python3 - "$work/dup.log" > "$work/dup.hits" <<'HANGUL'
+import re, sys
+for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
+    if re.search(r"[가-힣]", line):
+        print(f"{n}: {line.rstrip()}")
+HANGUL
+if [ -s "$work/dup.hits" ]; then
+  bad "Korean is in the registry output"
+  head -3 "$work/dup.hits" >&2
+else
+  ok
+fi
+unset -f mkrepo regpath real inst fresh
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
