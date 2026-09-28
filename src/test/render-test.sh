@@ -1271,6 +1271,44 @@ check "Jira: a thread reply is refused" "$?" "2"
 has "$work/jira-reply.err" "not supported" "Jira: the refusal does not say it is unsupported"
 unset FAKE_CALLS
 
+echo "UT-70 the worktree section: defaults, unknown keys and paths that are not relative are refused"
+t="$work/wtcfg"; setup "$t"
+has "$t/harness.toml" 'dir = "$HOME/.harness/{project}/worktrees"' "the default config has no worktree.dir default"
+has "$t/harness.toml" 'include = [".claude/settings.local.json"]' "the default config has no worktree.include default"
+cp "$t/harness.toml" "$work/wtcfg.orig"
+wt_render() { "$root/bin/harness" render --target "$t" > "$work/wtcfg.log" 2>&1; }
+python3 - "$t/harness.toml" <<'PY'
+import sys; p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace('include = [".claude/settings.local.json"]', 'include = [".claude/settings.local.json"]\nenabled = true'))
+PY
+wt_render; check "render with an unknown worktree key" "$?" "2"
+has "$work/wtcfg.log" "unknown key(s) in [worktree]: enabled" "the unknown worktree key is not named"
+has "$work/wtcfg.log" "the keys are dir, include" "the worktree keys are not listed"
+for bad_path in "/etc/x" "../x" "a/../b" "a b" "*.json" "a?" "[ab]"; do
+  cp "$work/wtcfg.orig" "$t/harness.toml"
+  python3 - "$t/harness.toml" "$bad_path" <<'PY'
+import json, sys; p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace('include = [".claude/settings.local.json"]', 'include = [".env", %s]' % json.dumps(sys.argv[2])))
+PY
+  wt_render; check "render with worktree.include item $bad_path" "$?" "2"
+  has "$work/wtcfg.log" "worktree.include[2] must be a path relative to the harness root" "the bad include item $bad_path is not named"
+done
+cp "$work/wtcfg.orig" "$t/harness.toml"
+sedi 's|^dir = "\$HOME/.harness/{project}/worktrees"$|dir = "  "|' "$t/harness.toml"
+wt_render; check "render with a blank worktree.dir" "$?" "2"
+has "$work/wtcfg.log" "worktree.dir must be" "the blank worktree.dir is not named"
+# 절이 없는 옛 설정은 기본값으로 돈다
+cp "$work/wtcfg.orig" "$t/harness.toml"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[worktree\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[worktree]" not in s
+open(p, "w").write(s)
+PY
+wt_render; check "render without a worktree section" "$?" "0"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check without a worktree section" "$?" "0"
+cp "$work/wtcfg.orig" "$t/harness.toml"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

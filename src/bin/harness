@@ -97,6 +97,18 @@ METRICS_DEFAULTS = {"dir": "$HOME/.harness/{project}/metrics", "retention_days":
                     "max_total_mb": 100, "stale_after_hours": 6, "capture_logs": "errors"}
 
 
+# 이슈별 작업 트리. dir 의 확장은 쓰는 시점에 한다 — 값이 실행 환경에 달려 있다.
+WORKTREE_DEFAULTS = {"dir": "$HOME/.harness/{project}/worktrees", "include": [".claude/settings.local.json"]}
+# 하네스 루트 기준 상대 경로: `/` 로 시작하지 않고, `..` 조각·공백·glob 문자가 없다
+INCLUDE_PATH = re.compile(r"(?!/)(?!(.*/)?\.\.(/|$))[^\s*?\[]+")
+
+
+def worktree_dir(cfg: dict) -> str:
+    """[worktree].dir 에 프로젝트 이름을 채우고 `~` 와 환경 변수를 확장한 것."""
+    d = cfg["worktree"]["dir"].replace("{project}", cfg["project"]["name"])
+    return os.path.expandvars(os.path.expanduser(d))
+
+
 def metrics_cfg(cfg: dict) -> dict:
     """[metrics] 에 프로젝트 이름을 채운 것. dir 이 "off" 면 기록하지 않는다."""
     m = dict(cfg["metrics"])
@@ -180,6 +192,8 @@ def normalize(cfg: dict):
     cfg.setdefault("verify", {}).setdefault("checks", [])
     for k, x in METRICS_DEFAULTS.items():
         cfg.setdefault("metrics", {}).setdefault(k, x)
+    for k, x in WORKTREE_DEFAULTS.items():   # 이슈별 작업 트리 — 옛 설정에는 없다
+        cfg.setdefault("worktree", {}).setdefault(k, list(x) if isinstance(x, list) else x)
     b = cfg["branches"]
     if b["base"] not in b["protected"]:
         b["protected"] = b["protected"] + [b["base"]]
@@ -393,6 +407,18 @@ def validate(cfg: dict):
         die("error: metrics.max_file_mb (%d) is larger than metrics.max_total_mb (%d)" % (m["max_file_mb"], m["max_total_mb"]))
     if m["capture_logs"] not in ("errors", "off"):
         die("error: metrics.capture_logs must be `errors` or `off` (got %r)" % m["capture_logs"])
+
+    w = cfg["worktree"]
+    unknown = sorted(set(w) - set(WORKTREE_DEFAULTS))
+    if unknown:
+        die("error: unknown key(s) in [worktree]: %s\n\nhelp: the keys are %s" % (", ".join(unknown), ", ".join(WORKTREE_DEFAULTS)))
+    if not isinstance(w["dir"], str) or not w["dir"].strip() or "\n" in w["dir"]:
+        die("error: worktree.dir must be a one-line directory path (got %r)" % (w["dir"],))
+    if not isinstance(w["include"], list):
+        die("error: worktree.include must be a list of paths relative to the harness root (got %r)" % (w["include"],))
+    for n, x in enumerate(w["include"], 1):
+        if not isinstance(x, str) or not INCLUDE_PATH.fullmatch(x):
+            die("error: worktree.include[%d] must be a path relative to the harness root (got %r)" % (n, x))
 
     validate_workflows(cfg)
 
