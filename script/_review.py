@@ -382,7 +382,8 @@ def location(f):
 
 def inline_note(f):
     lines = [f"{inline_prefix(f['severity'])} {f['title']}", "",
-             f"문제: {f['problem']}", f"재현: {f['repro']}", f"권고: {f['recommendation']}"]
+             "문제: " + indent_rest(f["problem"], "    "), "재현: " + indent_rest(f["repro"], "    "),
+             "권고: " + indent_rest(f["recommendation"], "    ")]
     if f["out_of_scope"]:
         lines.append(fmt("FMT_OUT_OF_SCOPE"))
     return "\n".join(lines)
@@ -472,9 +473,19 @@ def indent_rest(text, pad):
     return "\n".join([lines[0]] + [(pad + ln).rstrip() for ln in lines[1:]])
 
 
-def escape_heading(text):
-    """행 첫 칸의 제목 문법을 글자로 바꾼다."""
-    return "\n".join(("\\" + ln) if ln.startswith("#") else ln for ln in text.strip("\n").splitlines())
+# 행 첫 칸에서 뒤따르는 절까지 삼킬 수 있는 블록 문법. 제목, 코드 펜스, 빈 줄에서 끝나지 않는 HTML 블록.
+BLOCK_OPENER = re.compile(r"#|`{3}|~{3}|<(?:pre|script|style|textarea)(?:[\s>]|$)|<!--|<\?|<![A-Za-z]|<!\[CDATA\[",
+                          re.IGNORECASE)
+
+
+def lead_block(text, pad):
+    """첫 칸에서 시작하는 여러 줄 값. 첫 줄의 블록 문법은 글자로 바꾸고 둘째 줄부터 pad 만큼 들여 써서
+    값 안의 제목·코드 펜스·HTML 블록이 뒤따르는 절이나 항목을 삼키지 않게 한다."""
+    first, _, rest = indent_rest(text, pad).partition("\n")
+    first = first.lstrip()
+    if BLOCK_OPENER.match(first):
+        first = "\\" + first
+    return first + ("\n" + rest if rest else "")
 
 
 def cmd_render(args):
@@ -512,7 +523,7 @@ def cmd_render(args):
     if inline_fail > 0:
         out += [">", f"> 인라인 {inline_fail} 건은 해당 줄이 이번 diff 에 없어 달지 못했다. 아래 본문을 참조한다."]
 
-    out += ["", "### 요약", "", escape_heading(data["summary"]), "", "### 발견 사항", ""]
+    out += ["", "### 요약", "", lead_block(data["summary"], "    "), "", "### 발견 사항", ""]
     order = {s: i for i, s in enumerate(SEVERITIES)}
     findings = sorted(enumerate(data["findings"]), key=lambda p: (order[p[1]["severity"]], p[0]))
     if not findings:
@@ -529,7 +540,7 @@ def cmd_render(args):
     strengths = [s for s in data["strengths"] if s.strip()]
     if strengths:
         out += ["", "### 잘된 점", ""]
-        out += ["- " + indent_rest(s, "  ") for s in strengths]
+        out += ["- " + lead_block(s, "  ") for s in strengths]
 
     with open(os.path.join(work, "note.md"), "w", encoding="utf-8") as fp:
         fp.write("\n".join(out) + "\n")

@@ -226,6 +226,11 @@ write("rendered.md", review([
 write("separator-in-text.md", review([
     finding("major", "script/review-mr.sh", 5, "여러 줄 필드의 구분자",
             problem="첫 줄\u2028둘째 줄\u0085셋째 줄")], "CHANGES_REQUESTED"))
+# 값 안의 코드 펜스·HTML 블록은 뒤따르는 절이나 항목을 삼키지 못한다.
+write("fence-in-text.md", review([
+    finding("major", "script/review-mr.sh", 5, "여러 줄 값의 코드 펜스",
+            problem="첫 줄\n```", repro="재현\n~~~", recommendation="권고\n\n```\n코드")],
+    "CHANGES_REQUESTED", summary="```\n정상\n~~~", strengths=("```\n잘된 점", "   <pre>\n둘째")))
 
 with open(os.path.join(out, "no-block.md"), "w", encoding="utf-8") as fp:
     fp.write("판정 데이터 블록을 빠뜨렸다.\n\n## 발견 사항\n\n발견 사항 없음\n")
@@ -529,6 +534,18 @@ check UT-29 "summary section" 1 "$(grep -c '^### 요약' "$sandbox/summary.out")
 check UT-29 "inline comments for blocker and major only" 2 "$(note_hits '^note: inline')"
 check UT-29 "inline body starts with the severity" 1 "$(note_hits '^note: inline 26 script/post-review.sh:9 \*\*\[blocker\]\*\* 등록 전에 검증하지 않는다$')"
 check UT-29 "inline carries the out-of-scope line" 1 "$(grep -cxF "$FMT_OUT_OF_SCOPE" "$state/notes")"
+
+echo "UT-29 a code fence or HTML block inside a value stays inside it"
+rm -f "$state/notes"
+check UT-29 "fence-in-text — exit code" 1 "$(run_post 26 "$sandbox/fence-in-text.md")"
+check UT-29 "no fence or HTML block at the first column" 0 "$(note_hits '^\(```\|~~~\|<pre\)')"
+sed -n '/^### 요약$/,/^### 발견 사항$/p' "$state/notes" > "$sandbox/fence-summary.out"
+sed -n '/^### 잘된 점$/,/^note: /p' "$state/notes" > "$sandbox/fence-strengths.out"
+check UT-29 "summary first line is escaped" 1 "$(grep -cxF '\```' "$sandbox/fence-summary.out")"
+check UT-29 "summary continuation is indented" 2 "$(grep -cxE '    (정상|~~~)' "$sandbox/fence-summary.out")"
+check UT-29 "strength first lines are escaped" 2 "$(grep -cxE -e '- \\(```|<pre>)' "$sandbox/fence-strengths.out")"
+check UT-29 "strength continuation is indented" 2 "$(grep -cxE '  (잘된 점|둘째)' "$sandbox/fence-strengths.out")"
+check UT-29 "finding and inline field continuations are indented" 4 "$(grep -cxF '    ```' "$state/notes")"
 
 echo "UT-30 the next round reads what this round rendered"
 # 이번 회차가 등록한 요약·인라인 본문을 그대로 다음 회차의 스레드로 준다. 알아보는 표지가 만드는
