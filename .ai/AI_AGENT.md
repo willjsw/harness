@@ -140,7 +140,7 @@
 - `src/ui/` — Next.js 앱. `harness start-server` 가 루프백에 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
 - 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다
-- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치)
+- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치). 설치 등록부는 프로젝트 이름 하나에 경로 하나다 — `install` 은 같은 이름이 아직 쓰이는 다른 경로에 등록돼 있으면 거부한다
 
 ### 데이터 흐름
 
