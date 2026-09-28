@@ -1607,6 +1607,23 @@ has "$work/dup-$n.err" "could not be read" "the refusal does not say the config 
 has "$work/dup-$n.err" "$rA/harness.toml" "the refusal does not name the unreadable config"
 check "registry after the unreadable refusal" "$(regpath twin)" "$rA"
 
+# 권한으로 막힌 설정은 없는 설정이 아니다. root 는 권한을 무시하므로 이 두 경우를 만들 수 없다.
+if [ "$(id -u)" != 0 ]; then
+  fresh
+  chmod 000 "$A/harness.toml"
+  inst "$root/bin/harness" "$B"; check "old config without read permission" "$?" "2"
+  has "$work/dup-$n.err" "could not be read" "a config without read permission was not refused as unreadable"
+  check "registry after the permission refusal" "$(regpath twin)" "$rA"
+  chmod 644 "$A/harness.toml"
+
+  fresh
+  chmod 000 "$A"
+  inst "$root/bin/harness" "$B"; check "old path that cannot be searched" "$?" "2"
+  has "$work/dup-$n.err" "could not be read" "a path that cannot be searched was taken over as stale"
+  check "registry after the search-permission refusal" "$(regpath twin)" "$rA"
+  chmod 755 "$A"
+fi
+
 fresh
 echo '{}' > "$HARNESS_HOME/twin/project.json"
 inst "$root/bin/harness" "$B"; check "a registration without a path" "$?" "0"
