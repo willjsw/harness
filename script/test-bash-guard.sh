@@ -15,6 +15,9 @@
 # 망가뜨린 가드의 케이스가 통과로 뒤집히고 나머지 계열은 그대로 차단이어야 한다 —
 # 뒤집히지 않으면 표가 무력화를 못 잡는 것이고, 다른 계열까지 뚫리면 판정이 얽힌 것이다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 2
