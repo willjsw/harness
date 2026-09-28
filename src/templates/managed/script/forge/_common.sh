@@ -23,13 +23,15 @@
 #   review_mr_threads <n>                   리뷰 스레드 전수를 정규화 JSON 배열로
 #   review_mr_note_inline <n> <파일> <줄> <본문>
 #   review_mr_note_summary <n> <본문파일>
+#   review_mr_thread_reply <n> <스레드id> <본문>   기존 스레드에 답글 1건. 없는 id 면 0 이 아닌 코드
 #   review_mr_list_open                     열린 리뷰 요청 전부를 정규화 JSON 배열로
 #   review_mr_close <n>                     리뷰 요청을 닫는다. **머지하지 않는다**
 #
 # ── 정규화 JSON ──────────────────────────────────────────────────────────────
 #   이슈   {"iid","title","state","description","labels":[],"assignee","milestone"}
 #   리뷰   {"iid","source_branch","head_sha","description","labels":[],"state"}
-#   스레드 [{"inline":bool,"path","line","notes":[{"body","created_at"}]}]
+#   스레드 [{"id","inline":bool,"path","line","notes":[{"body","created_at"}]}]
+#          id 는 답글을 달 수 있는 스레드의 식별자(문자열)이고, 답글을 받지 않는 노트는 null 이다.
 #          시스템 노트(라벨 변경·커밋 추가 안내)는 어댑터가 이미 걸러낸다.
 #          페이지네이션도 어댑터가 끝까지 돈다 — 호출부는 전수를 받는다고 가정한다.
 #

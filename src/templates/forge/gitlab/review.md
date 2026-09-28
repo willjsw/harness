@@ -5,6 +5,7 @@
 | MR 조회 | `glab mr view <번호>` |
 | MR diff | `glab mr diff <번호> --color=never` |
 | MR 라벨 | `glab mr update <번호> --label <라벨>` |
+| MR 스레드 답글 | `glab api --method POST projects/:id/merge_requests/<번호>/discussions/<스레드id>/notes -f body=<본문>` |
 
 MR 번호는 `!N` 으로 적는다.
 

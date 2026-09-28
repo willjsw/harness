@@ -149,8 +149,10 @@ for d in json.load(sys.stdin):
     if not notes:
         continue
     pos = notes[0].get("position") or {}
+    threaded = d.get("individual_note") is False
     out.append({
-        "inline": d.get("individual_note") is False and bool(pos),
+        "id": str(d.get("id")) if threaded and d.get("id") else None,
+        "inline": threaded and bool(pos),
         "path": pos.get("new_path") or pos.get("old_path") or "",
         "line": pos.get("new_line") or pos.get("old_line") or "",
         "notes": [{"body": n.get("body") or "", "created_at": n.get("created_at") or ""} for n in notes],
@@ -166,6 +168,13 @@ review_mr_note_inline() {
 
 review_mr_note_summary() {
   "$GITLAB_CLI" mr note create "$1" --resolvable=false -m "$(cat "$2")"
+}
+
+# 스레드 id 는 discussion id 다. 단독 노트(individual_note)는 답글을 받지 않아 threads 가 null 로 낸다.
+# 미검증: 실제 GitLab 으로 이 호출을 돌려보지 않았다.
+review_mr_thread_reply() {
+  "$GITLAB_CLI" api --method POST "projects/:id/merge_requests/$1/discussions/$2/notes" \
+    -f "body=$3" >/dev/null
 }
 
 review_mr_list_open() {

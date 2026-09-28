@@ -168,3 +168,13 @@ fi
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────
 # 없다. Jira 는 코드 리뷰를 호스팅하지 않는다 — `forge.review_host` 가 gitlab·github 중
 # 하나여야 하고, 설정 검증이 jira 를 거부한다. 여기서 빈 함수를 두면 그 거부가 무력해진다.
+# 스레드 답글 하나만은 지원하지 않는다는 오류를 내는 함수로 둔다 — 호출이 성공처럼 지나가지 않는다.
+
+if [ "${_FORGE_WANT_REVIEW:-0}" = 1 ]; then
+
+review_mr_thread_reply() {
+  echo "error: jira does not host code review — review thread replies are not supported" >&2
+  return 2
+}
+
+fi
