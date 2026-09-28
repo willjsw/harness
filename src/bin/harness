@@ -1627,6 +1627,17 @@ def cmd_doctor(cfg, target, _args):
     hp = hooks_path(target)
     line("ok" if hp == "script/githooks" else "bad", "git hooks enabled",
          "" if hp == "script/githooks" else "run `git config core.hooksPath script/githooks`")
+    if git(target, "rev-parse", "--show-toplevel").returncode == 0:
+        left = left_worktrees(cfg, target)
+        for name, path in left:
+            state = worktree_state(path) if os.path.isdir(path) else "missing"
+            line("warn", "worktree %s" % name, {
+                "uncommitted": "uncommitted changes at %s" % path,
+                "unpushed": "unpushed commits at %s" % path,
+                "clean": "clean at %s — rerun its workflow or remove it with `git worktree remove`" % path,
+                "missing": "missing — run `git worktree prune`"}[state])
+        if not left:
+            line("ok", "no worktrees left")
 
     print()
     sys.stdout.flush()
@@ -1775,6 +1786,16 @@ def registered_worktrees(top):
     """git 에 등록된 worktree 경로 목록 (실제 경로로 푼 것)."""
     r = git(top, "worktree", "list", "--porcelain")
     return [os.path.realpath(ln[len("worktree "):]) for ln in r.stdout.splitlines() if ln.startswith("worktree ")]
+
+
+def left_worktrees(cfg, target):
+    """worktree.dir 바로 아래에 등록된 이 리포의 worktree — (이름, 경로). 경로가 지워진 것도 든다."""
+    d = worktree_dir(cfg)
+    if not os.path.isabs(d):
+        return []
+    real = os.path.realpath(d)
+    return sorted((os.path.basename(w), os.path.join(d, os.path.basename(w)))
+                  for w in registered_worktrees(target) if os.path.dirname(w) == real)
 
 
 def issue_worktree(cfg, target, issue):

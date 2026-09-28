@@ -1525,6 +1525,29 @@ PY2
   rm -rf "$HARNESS_HOME/my-project/state"
 done
 
+echo "UT-74 doctor reports the issue worktrees left under worktree.dir with their state"
+doc() { "$root/bin/harness" doctor --target "$1" > "$work/wtdoc.log" 2>&1; }
+doc "$t"; has "$work/wtdoc.log" "no worktrees left" "doctor does not say no worktrees are left"
+WT_ACT=edit wtrun "$t" work 1 --worktree
+WT_ACT=commit wtrun "$t" work 2 --worktree
+wtg "$t" worktree add -q --detach "$wd/3" origin/development && wtg "$t" worktree add -q --detach "$wd/4" origin/development \
+  && wtg "$t" worktree add -q --detach "$work/wtoutside" origin/development || bad "could not make the doctor worktrees"
+rm -rf "$wd/4"
+doc "$t"
+has "$work/wtdoc.log" "worktree 1  — uncommitted changes at $wd/1" "doctor does not report the worktree with uncommitted changes"
+has "$work/wtdoc.log" "worktree 2  — unpushed commits at $wd/2" "doctor does not report the worktree with unpushed commits"
+has "$work/wtdoc.log" "worktree 3  — clean at $wd/3 — rerun its workflow or remove it with \`git worktree remove\`" "doctor does not report the clean worktree"
+has "$work/wtdoc.log" "worktree 4  — missing — run \`git worktree prune\`" "doctor does not report the missing worktree"
+check "doctor reports each left worktree as a warning" "$(grep -c '^  warn worktree ' "$work/wtdoc.log")" "4"
+hasnt "$work/wtdoc.log" "wtoutside" "doctor reported a worktree outside worktree.dir"
+hasnt "$work/wtdoc.log" "no worktrees left" "doctor says no worktrees are left while some are"
+grep -qi "ignore" "$work/wtdoc.log" && bad "doctor checks the worktree directory's gitignore" || ok
+doc "$work/base"; code=$?
+hasnt "$work/wtdoc.log" "worktree" "doctor looked at worktrees outside a git repository"
+hasnt "$work/wtdoc.log" "Traceback" "doctor failed outside a git repository"
+"$root/bin/harness" set --target "$work/base" worktree.dir "$work/base-trees" >/dev/null 2>&1
+doc "$work/base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
