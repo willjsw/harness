@@ -1829,6 +1829,34 @@ def open_worktree(cfg, wt) -> int:
     return 0
 
 
+def copy_include(cfg, target, wt):
+    """새 worktree 에 하네스 루트의 로컬 파일을 복사한다. git 이 무시하는 경로만 — 복사한 것이 커밋에 끌려들지 않는다.
+
+    복사한 경로는 출력하지 않는다. 개인 설정이나 로컬 자격증명일 수 있다.
+    """
+    run = wt["run_dir"]
+    for rel in cfg["worktree"]["include"]:
+        src = target / rel
+        if not os.path.lexists(src):
+            continue
+        if git(run, "ls-files", "--error-unmatch", "--", rel).returncode == 0:
+            continue   # checkout 이 이미 갖고 있다
+        probe = rel.rstrip("/") + ("/" if src.is_dir() and not src.is_symlink() else "")
+        if git(run, "check-ignore", "-q", "--", probe).returncode != 0:
+            print("warn: %s is not ignored by git — not copied" % rel, file=sys.stderr)
+            continue
+        dst = Path(run) / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_symlink():
+            if os.path.lexists(dst):
+                dst.unlink()
+            os.symlink(os.readlink(src), dst)
+        elif src.is_dir():
+            shutil.copytree(src, dst, symlinks=True, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst, follow_symlinks=False)
+
+
 def close_worktree(wt):
     """오케스트레이터가 끝난 worktree 를 정리한다. 미커밋 변경·미push 커밋이 있으면 남긴다."""
     path = wt["path"]
@@ -1883,6 +1911,13 @@ def cmd_run(cfg, target, args):
         code = open_worktree(cfg, wt)
         if code:
             return code
+    if wt and not os.path.isdir(wt["run_dir"]):
+        print("error: %s is not in the worktree — commit the harness to %s first"
+              % (wt["run_dir"], cfg["branches"]["base"]), file=sys.stderr)
+        close_worktree(wt)
+        return 2
+    if wt and wt["new"]:
+        copy_include(cfg, target, wt)
     if wt:
         print("worktree: %s (%s)" % (wt["path"], "new" if wt["new"] else "reopened"), flush=True)
     os.chdir(wt["run_dir"] if wt else target)

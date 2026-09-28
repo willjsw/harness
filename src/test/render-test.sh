@@ -1321,8 +1321,10 @@ wtg "$t" add -A && wtg "$t" commit -q -m "chore: 하네스" && wtg "$t" remote a
 mkdir -p "$work/wtorch" && cat > "$work/wtorch/claude" <<'SH'
 #!/bin/sh
 { pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached; } > "$WT_OUT"
+git status --porcelain > "$WT_OUT.status"
 top=$(git rev-parse --show-toplevel)
 case "$WT_ACT" in
+  keep)   touch "$top/keep.me" ;;
   edit)   echo b >> "$top/tracked.txt" ;;
   commit) echo c >> "$top/tracked.txt"; git -c user.name=t -c user.email=t@example.invalid commit -qam "feat: x(#7)" --no-verify ;;
 esac
@@ -1416,6 +1418,52 @@ wtg "$mono" add -A && wtg "$mono" commit -q -m "chore: 하네스" && wtg "$mono"
   && wtg "$mono" push -q origin development || bad "could not set up the monorepo worktree test repo"
 wtrun "$mono/sub" work 7 --worktree; check "monorepo run --worktree exit code" "$?" "0"
 check "in a monorepo the orchestrator runs at the harness root's place in the worktree" "$(called 1)" "$(cd "$wd2" && pwd -P)/7/sub"
+
+echo "UT-72 a new worktree gets the ignored local files, and its hooks and guard are its own"
+# UT-71 의 리포를 이어 쓴다. 무시 규칙은 checkout 이 가져가야 하므로 원격에 올린다
+printf '.claude/settings.local.json\nlocal-dir/\n' >> "$t/.gitignore"
+wtg "$t" add .gitignore && wtg "$t" commit -q -m "chore: 무시 규칙" && wtg "$t" push -q origin development || bad "could not push the ignore rules"
+( cd "$t" && printf 'local\n' > .claude/settings.local.json && chmod 600 .claude/settings.local.json \
+  && mkdir -p local-dir && echo d > local-dir/a && ln -sf a local-dir/ln && echo n > notignored.txt && echo changed > tracked.txt )
+"$root/bin/harness" set --target "$t" worktree.include ".claude/settings.local.json,local-dir,notignored.txt,missing.txt,tracked.txt" >/dev/null 2>&1 \
+  || bad "could not set worktree.include"
+WT_ACT=keep wtrun "$t" work 8 --worktree; check "run --worktree with include exit code" "$?" "0"
+cmp -s "$t/.claude/settings.local.json" "$wd/8/.claude/settings.local.json" && ok || bad "an ignored include file was not copied"
+check "the copied file keeps its permission bits" "$(stat -c %a "$wd/8/.claude/settings.local.json" 2>/dev/null || stat -f %Lp "$wd/8/.claude/settings.local.json")" "600"
+[ -f "$wd/8/local-dir/a" ] && [ -L "$wd/8/local-dir/ln" ] && ok || bad "an ignored directory was not copied whole with its symlink"
+[ ! -e "$wd/8/notignored.txt" ] && ok || bad "a file git does not ignore was copied"
+has "$work/wt.log" "warn: notignored.txt is not ignored by git — not copied" "the file git does not ignore was not warned about"
+[ ! -e "$wd/8/missing.txt" ] && ok || bad "a missing include path appeared in the worktree"
+hasnt "$work/wt.log" "missing.txt" "a missing include path was reported"
+check "a tracked include path keeps the checkout's content" "$(cat "$wd/8/tracked.txt")" "a"
+check "git status is clean after the copy" "$(wc -c < "$work/wt.cwd.status" | tr -d ' ')" "0"
+hasnt "$work/wt.log" "settings.local.json" "run printed a copied path"
+has "$work/wt.log" "kept worktree $wd/8 — uncommitted changes" "the kept worktree is not reported"
+# 다시 열 때는 복사하지 않는다
+rm -f "$wd/8/keep.me" "$wd/8/.claude/settings.local.json"
+WT_ACT=keep wtrun "$t" work 8 --worktree; check "reopen with include exit code" "$?" "0"
+has "$work/wt.log" "worktree: $wd/8 (reopened)" "the worktree was not reopened"
+[ ! -e "$wd/8/.claude/settings.local.json" ] && ok || bad "a reopened worktree got the include files again"
+# worktree 의 git 훅: core.hooksPath 의 상대 경로가 worktree 최상위 기준으로 풀린다
+git -C "$t" config core.hooksPath script/githooks
+rm -f "$wd/8/keep.me"; echo hook >> "$wd/8/tracked.txt"
+wtg "$wd/8" commit -qam "not the commit form" > "$work/wthook.log" 2>&1; check "commit-msg in a worktree refuses a bad subject" "$?" "1"
+has "$work/wthook.log" "commit subject does not match the required form" "the worktree's commit-msg hook did not run"
+git -C "$t" config --unset core.hooksPath
+# worktree 의 명령 가드: settings.json 의 훅 명령이 그 worktree 의 가드와 harness.env 를 부른다
+gcmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][0]["hooks"][0]["command"])' "$wd/8/.claude/settings.json")
+case "$gcmd" in '$CLAUDE_PROJECT_DIR/script/hooks/bash-guard.sh') ok ;; *) bad "the guard command is not under CLAUDE_PROJECT_DIR: $gcmd" ;; esac
+printf '{"tool_input":{"command":"git push origin development"}}' | CLAUDE_PROJECT_DIR="$wd/8" sh -c "$gcmd" > "$work/wtguard.log" 2>&1
+check "the worktree's guard blocks a push to a protected branch" "$?" "2"
+wtg "$wd/8" checkout -q -- tracked.txt && wtg "$t" worktree remove "$wd/8" || bad "could not remove the include worktree"
+"$root/bin/harness" set --target "$t" worktree.include ".claude/settings.local.json" >/dev/null 2>&1
+# 모노레포: 실행 디렉터리 아래로 복사한다
+printf '.claude/settings.local.json\n' > "$mono/sub/.gitignore"
+wtg "$mono" add sub/.gitignore && wtg "$mono" commit -q -m "chore: 무시 규칙" && wtg "$mono" push -q origin development || bad "could not push the monorepo ignore rule"
+echo local > "$mono/sub/.claude/settings.local.json"
+WT_ACT=keep wtrun "$mono/sub" work 8 --worktree; check "monorepo run --worktree with include exit code" "$?" "0"
+[ -f "$wd2/8/sub/.claude/settings.local.json" ] && [ ! -e "$wd2/8/.claude/settings.local.json" ] && ok \
+  || bad "in a monorepo the include file was not copied under the harness root's place"
 
 echo
 if [ "$fail" -eq 0 ]; then
