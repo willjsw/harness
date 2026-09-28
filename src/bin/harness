@@ -631,8 +631,8 @@ def deny_rules(cfg: dict) -> list:
     for doc in cfg["docs"]["protected"]:
         # 디렉터리는 그 아래 전부다. 권한 규칙은 `dir/` 로는 그 아래 파일에 걸리지 않는다.
         rule = doc.rstrip("*").rstrip("/") + "/**" if doc.endswith(("/", "/**")) else doc
-        for tool in ("Edit", "Write", "NotebookEdit"):
-            out.append("%s(%s)" % (tool, rule))
+        # Edit 규칙이 Write · NotebookEdit 를 포함한 파일 편집 도구 전부에 걸린다.
+        out.append("Edit(%s)" % rule)
     return out
 
 

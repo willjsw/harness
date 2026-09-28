@@ -722,6 +722,8 @@ check "set a directory" "$?" "0"
 has "$t/.claude/settings.json" '"Edit(.ai/project/scope.md)"' "a base document lost its protection when dropped from the list"
 has "$t/.claude/settings.json" '"Edit(docs/spec/**)"' "a directory rule does not cover the files under it"
 hasnt "$t/.claude/settings.json" '"Edit(docs/spec/)"' "a directory rule was left in a form that matches nothing"
+hasnt "$t/.claude/settings.json" '"Write(' "a Write rule is left, which file permission checks never match"
+hasnt "$t/.claude/settings.json" '"NotebookEdit(' "a NotebookEdit rule is left, which file permission checks never match"
 for p in "/etc/passwd" "../x.md" "docs/../x.md" "docs/a b.md"; do
   "$root/bin/harness" set --target "$t" docs.protected "$p," >/dev/null 2>&1
   check "refuse protected path '$p'" "$?" "2"

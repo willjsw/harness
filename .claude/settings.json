@@ -45,23 +45,11 @@
       "Bash(git commit*--no-verify*)",
       "Bash(git commit -n:*)",
       "Edit(.ai/project/scope.md)",
-      "Write(.ai/project/scope.md)",
-      "NotebookEdit(.ai/project/scope.md)",
       "Edit(.ai/project/architecture.md)",
-      "Write(.ai/project/architecture.md)",
-      "NotebookEdit(.ai/project/architecture.md)",
       "Edit(.ai/project/glossary.md)",
-      "Write(.ai/project/glossary.md)",
-      "NotebookEdit(.ai/project/glossary.md)",
       "Edit(.ai/project/testing.md)",
-      "Write(.ai/project/testing.md)",
-      "NotebookEdit(.ai/project/testing.md)",
       "Edit(.ai/project/roles/**)",
-      "Write(.ai/project/roles/**)",
-      "NotebookEdit(.ai/project/roles/**)",
-      "Edit(.ai/project/workflows/**)",
-      "Write(.ai/project/workflows/**)",
-      "NotebookEdit(.ai/project/workflows/**)"
+      "Edit(.ai/project/workflows/**)"
     ]
   }
 }
