@@ -103,7 +103,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness set <절.키> <값> ...` | 설정 값을 (여러 쌍이면 함께) 바꾸고 렌더까지. 성립하지 않으면 되돌린다 |
 | `harness steps [<절차> <JSON>]` | 절차의 단계를 JSON 으로 보거나, 한 절차의 단계를 통째로 바꾸고 렌더까지. `--dry-run` 이면 검사만 |
 | `harness checks [<JSON>]` | 검증 검사(`[verify]`)를 JSON 으로 보거나 통째로 바꾸고 렌더까지 |
-| `harness run <워크플로> <이슈>` | 설정된 오케스트레이터로 절차를 시작한다 |
+| `harness run <워크플로> <이슈> [--worktree]` | 설정된 오케스트레이터로 절차를 시작한다. `--worktree` 면 원격 통합 브랜치에서 이슈 번호 이름의 worktree(`worktree.dir` 아래)를 만들거나 남은 것을 열어 그 안에서 띄우고, 끝나면 미커밋 변경·미push 커밋이 없을 때 지운다 |
 | `harness start-server` | 설정·절차·에이전트·프로젝트 문서를 고치는 웹 UI 를 `localhost:7777` 에 띄운다 |
 | `harness tools [--sync]` | 이 기기에 설치된 에이전트 CLI·결정 기록 도구. 결과는 `~/.harness/tools.json` |
 | `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). UI 가 선택지를 그린다 |

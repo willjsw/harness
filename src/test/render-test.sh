@@ -1309,6 +1309,114 @@ wt_render; check "render without a worktree section" "$?" "0"
 "$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check without a worktree section" "$?" "0"
 cp "$work/wtcfg.orig" "$t/harness.toml"
 
+echo "UT-71 harness run --worktree makes a worktree per issue, reopens a clean one and removes it when nothing is left"
+t="$work/wtrun"; setup "$t"; wd="$work/wtrun-trees"
+"$root/bin/harness" set --target "$t" worktree.dir "$wd" >/dev/null 2>&1 || bad "could not set worktree.dir"
+wtg() { git -C "$1" -c user.name=t -c user.email=t@example.invalid "${@:2}"; }
+git init -q --bare -b development "$work/wtrun-origin.git"
+( cd "$t" && git init -q -b development . && echo a > tracked.txt )
+wtg "$t" add -A && wtg "$t" commit -q -m "chore: 하네스" && wtg "$t" remote add origin "$work/wtrun-origin.git" \
+  && wtg "$t" push -q origin development || bad "could not set up the worktree test repo"
+# 가짜 오케스트레이터: 불린 자리와 HEAD 를 적고, 케이스에 따라 추적 파일을 고치거나 커밋한다
+mkdir -p "$work/wtorch" && cat > "$work/wtorch/claude" <<'SH'
+#!/bin/sh
+{ pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached; } > "$WT_OUT"
+top=$(git rev-parse --show-toplevel)
+case "$WT_ACT" in
+  edit)   echo b >> "$top/tracked.txt" ;;
+  commit) echo c >> "$top/tracked.txt"; git -c user.name=t -c user.email=t@example.invalid commit -qam "feat: x(#7)" --no-verify ;;
+esac
+exit "${WT_CODE:-0}"
+SH
+chmod +x "$work/wtorch/claude"
+wtrun() { # wtrun <하네스 루트> <인자...> — 가짜 오케스트레이터로 harness run 을 돌린다. 출력은 wt.log, 불린 자리는 wt.cwd
+  local dir="$1"; shift; rm -f "$work/wt.cwd"
+  ( cd "$dir" && PATH="$work/wtorch:$PATH" WT_OUT="$work/wt.cwd" "$root/bin/harness" run "$@" ) > "$work/wt.log" 2>&1
+}
+called() { [ -f "$work/wt.cwd" ] && sed -n "${1}p" "$work/wt.cwd"; }
+base_head=$(git -C "$t" rev-parse origin/development)
+
+wtrun "$t" work 7 --worktree; check "run --worktree exit code" "$?" "0"
+real_wd=$(cd "$wd" && pwd -P)
+check "the orchestrator runs inside the new worktree" "$(called 1)" "$real_wd/7"
+check "the new worktree starts at the remote integration branch" "$(called 2)" "$base_head"
+check "the new worktree's HEAD is detached" "$(called 3)" "detached"
+has "$work/wt.log" "worktree: $wd/7 (new)" "run --worktree did not name the new worktree"
+has "$work/wt.log" "removed worktree $wd/7" "a worktree left clean was not removed"
+[ ! -e "$wd/7" ] && ok || bad "the clean worktree is still on disk"
+git -C "$t" worktree list | grep -qF "wtrun-trees/7" && bad "the clean worktree is still registered" || ok
+
+wtrun "$t" work 7; check "run without --worktree exit code" "$?" "0"
+check "without --worktree the orchestrator runs at the harness root" "$(called 1)" "$(cd "$t" && pwd -P)"
+[ ! -e "$wd/7" ] && ok || bad "a worktree was made without --worktree"
+
+WT_ACT=edit WT_CODE=3 wtrun "$t" work 7 --worktree; check "exit code is the orchestrator's when the worktree is kept" "$?" "3"
+has "$work/wt.log" "kept worktree $wd/7 — uncommitted changes" "a worktree with uncommitted changes was not kept"
+[ -d "$wd/7" ] && ok || bad "the worktree with uncommitted changes was removed"
+
+wtrun "$t" work 7 --worktree; check "exit code for a worktree with uncommitted changes" "$?" "1"
+[ -f "$work/wt.cwd" ] && bad "the orchestrator launched in a worktree with uncommitted changes" || ok
+has "$work/wt.log" "stop: worktree $wd/7 has uncommitted changes" "the stop does not name the worktree"
+has "$work/wt.log" " M tracked.txt" "the stop does not show the status lines"
+wtg "$wd/7" checkout -q -- tracked.txt
+
+WT_ACT=commit wtrun "$t" work 7 --worktree; check "run that commits exit code" "$?" "0"
+has "$work/wt.log" "worktree: $wd/7 (reopened)" "a clean worktree was not reopened"
+has "$work/wt.log" "kept worktree $wd/7 — unpushed commits" "a worktree with unpushed commits was not kept"
+wtg "$wd/7" push -q origin HEAD:refs/heads/wt7 || bad "could not push the worktree commit"
+head7=$(git -C "$wd/7" rev-parse HEAD)
+wtrun "$t" work 7 --worktree; check "reopening a clean worktree exit code" "$?" "0"
+has "$work/wt.log" "worktree: $wd/7 (reopened)" "a clean worktree was not reopened"
+check "the reopened worktree keeps its HEAD" "$(called 2)" "$head7"
+check "the orchestrator runs inside the reopened worktree" "$(called 1)" "$real_wd/7"
+[ ! -e "$wd/7" ] && ok || bad "the pushed worktree was not removed"
+
+o="$work/wtother"; rm -rf "$o"; mkdir -p "$o"; ( cd "$o" && git init -q . && echo o > o.txt )
+wtg "$o" add -A && wtg "$o" commit -q -m init && wtg "$o" worktree add -q --detach "$wd/7" || bad "could not make another repo's worktree"
+ohead=$(git -C "$wd/7" rev-parse HEAD)
+wtrun "$t" work 7 --worktree; check "exit code for another repository's worktree" "$?" "2"
+[ -f "$work/wt.cwd" ] && bad "the orchestrator launched in another repository's worktree" || ok
+has "$work/wt.log" "error: $wd/7 is not a worktree of this repository" "the path conflict is not named"
+check "another repository's worktree is left as it was" "$(git -C "$wd/7" rev-parse HEAD) $(git -C "$wd/7" status --porcelain | wc -l | tr -d ' ')" "$ohead 0"
+wtg "$o" worktree remove "$wd/7"
+
+mkdir -p "$wd/7" && echo x > "$wd/7/f"
+wtrun "$t" work 7 --worktree; check "exit code for a directory that is not a git tree" "$?" "2"
+[ -f "$wd/7/f" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "a plain directory was touched or the orchestrator launched"
+rm -f "$wd/7/f"
+wtrun "$t" work 7 --worktree; check "an empty directory becomes the worktree" "$?" "0"
+check "the orchestrator runs inside the worktree made in an empty directory" "$(called 1)" "$real_wd/7"
+
+wtrun "$t" retro x --worktree; check "exit code for an issue that is not a number" "$?" "2"
+has "$work/wt.log" "error: --worktree needs an issue number (got x)" "the bad issue is not named"
+[ ! -e "$wd/x" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "something was made for an issue that is not a number"
+
+for inside in "$t/trees" "rel/trees"; do
+  "$root/bin/harness" set --target "$t" worktree.dir "$inside" >/dev/null 2>&1
+  wtrun "$t" work 7 --worktree; check "exit code for worktree.dir $inside" "$?" "2"
+  [ ! -e "$t/trees" ] && [ ! -e "$t/rel" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "worktree.dir $inside made something or launched"
+done
+"$root/bin/harness" set --target "$t" worktree.dir "$wd" >/dev/null 2>&1
+
+wtg "$t" remote rename origin upstream
+wtrun "$t" work 7 --worktree; check "exit code when the fetch fails" "$?" "2"
+[ ! -e "$wd/7" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "a failed fetch made a worktree or launched"
+wtg "$t" remote rename upstream origin
+
+wtrun "$t" work 7 --worktree --dry-run; check "run --worktree --dry-run exit code" "$?" "0"
+[ ! -e "$wd/7" ] && ok || bad "--dry-run made a worktree"
+has "$work/wt.log" "worktree: $wd/7 (new)" "--dry-run does not show the worktree"
+has "$work/wt.log" "/work 7" "--dry-run does not show the command"
+
+mono="$work/wtmono"; rm -rf "$mono"; mkdir -p "$mono"; setup "$mono/sub"; wd2="$work/wtmono-trees"
+"$root/bin/harness" set --target "$mono/sub" worktree.dir "$wd2" >/dev/null 2>&1
+git init -q --bare -b development "$work/wtmono-origin.git"
+( cd "$mono" && git init -q -b development . && echo a > tracked.txt )
+wtg "$mono" add -A && wtg "$mono" commit -q -m "chore: 하네스" && wtg "$mono" remote add origin "$work/wtmono-origin.git" \
+  && wtg "$mono" push -q origin development || bad "could not set up the monorepo worktree test repo"
+wtrun "$mono/sub" work 7 --worktree; check "monorepo run --worktree exit code" "$?" "0"
+check "in a monorepo the orchestrator runs at the harness root's place in the worktree" "$(called 1)" "$(cd "$wd2" && pwd -P)/7/sub"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

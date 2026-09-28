@@ -1733,14 +1733,127 @@ def cmd_set(_cfg, target, args):
     return cmd_render(cfg, target, args)
 
 
+ISSUE_NO = re.compile(r"[0-9]{1,10}")
+
+
+def git(cwd, *a):
+    """cwd 에서 돈 git 의 결과. git 을 띄우지 못하면(없는 디렉터리 포함) 실패한 결과로 돌려준다."""
+    try:
+        return subprocess.run(["git", *a], cwd=str(cwd), capture_output=True, text=True)
+    except OSError as e:
+        return subprocess.CompletedProcess(["git", *a], 127, "", str(e))
+
+
+def worktree_state(path) -> str:
+    """작업 트리를 남길 이유 — 미커밋 변경이면 `uncommitted`, 미push 커밋이면 `unpushed`, 없으면 `clean`.
+
+    git 이 답하지 못하면 남기는 쪽으로 본다. 지우는 쪽으로 틀리면 작업이 사라진다.
+    """
+    r = git(path, "status", "--porcelain")
+    if r.returncode != 0 or r.stdout.strip():
+        return "uncommitted"
+    r = git(path, "rev-list", "--count", "HEAD", "--not", "--remotes")
+    if r.returncode != 0 or not r.stdout.strip().isdigit() or int(r.stdout.strip()) > 0:
+        return "unpushed"
+    return "clean"
+
+
+def git_common_dir(path):
+    """path 가 속한 리포의 git 공통 디렉터리를 실제 경로로 푼 것. git 트리가 아니면 None."""
+    r = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return os.path.realpath(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def own_worktree(path, common) -> bool:
+    """path 가 이 리포(공통 디렉터리 common)의 worktree 최상위인가. 둘러싼 다른 리포를 잡지 않는다."""
+    r = git(path, "rev-parse", "--show-toplevel")
+    return (r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(path)
+            and git_common_dir(path) == common)
+
+
+def registered_worktrees(top):
+    """git 에 등록된 worktree 경로 목록 (실제 경로로 푼 것)."""
+    r = git(top, "worktree", "list", "--porcelain")
+    return [os.path.realpath(ln[len("worktree "):]) for ln in r.stdout.splitlines() if ln.startswith("worktree ")]
+
+
+def issue_worktree(cfg, target, issue):
+    """이슈 worktree 의 자리와 여는 방식. 멈춰야 하면 종료 코드를 돌려준다.
+
+    아무것도 바꾸지 않는다 — 판정만 한다.
+    """
+    if not ISSUE_NO.fullmatch(issue):
+        die("error: --worktree needs an issue number (got %s)" % issue)
+    r = git(target, "rev-parse", "--show-toplevel")
+    if r.returncode != 0:
+        die("error: --worktree needs the harness root inside a git repository (%s)" % target)
+    top = os.path.realpath(r.stdout.strip())
+    prefix = git(target, "rev-parse", "--show-prefix").stdout.strip()
+    d = worktree_dir(cfg)
+    real = os.path.realpath(d) if os.path.isabs(d) else ""
+    if not real or real == top or real.startswith(top.rstrip("/") + "/"):
+        die("error: worktree.dir must be an absolute path outside the repository (got %s)\n\n"
+            "help: harness set worktree.dir <directory outside %s>" % (d, top))
+    path = os.path.join(d, issue)
+    common = git_common_dir(target)
+    if not os.path.lexists(path) or (os.path.isdir(path) and not os.path.islink(path) and not os.listdir(path)):
+        new = True
+    elif os.path.isdir(path) and own_worktree(path, common):
+        new = False
+        st = git(path, "status", "--short")
+        if st.returncode != 0 or st.stdout.strip():
+            print("stop: worktree %s has uncommitted changes — nothing was launched" % path, file=sys.stderr)
+            print(st.stdout.rstrip() or st.stderr.rstrip(), file=sys.stderr)
+            print("\nhelp: finish or discard them in that worktree, then rerun", file=sys.stderr)
+            return 1
+    else:
+        print("error: %s is not a worktree of this repository\n\n"
+              "help: another checkout may use the same project name — set worktree.dir or move that directory" % path,
+              file=sys.stderr)
+        return 2
+    return {"path": path, "top": top, "new": new, "run_dir": os.path.join(path, prefix) if prefix else path}
+
+
+def open_worktree(cfg, wt) -> int:
+    """새 worktree 를 원격 통합 브랜치의 분리된 HEAD 로 만든다. 실패하면 git 의 출력을 그대로 보인다."""
+    top, path, base = wt["top"], wt["path"], cfg["branches"]["base"]
+    if not os.path.lexists(path) and os.path.realpath(path) in registered_worktrees(top):
+        git(top, "worktree", "prune")   # 디렉터리가 지워지고 등록만 남은 것
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for a in (("fetch", "origin", base), ("worktree", "add", "--detach", path, "origin/%s" % base)):
+        r = git(top, *a)
+        if r.returncode != 0:
+            sys.stderr.write(r.stdout + r.stderr)
+            print("error: git %s failed — nothing was launched" % a[0], file=sys.stderr)
+            return 2
+    return 0
+
+
+def close_worktree(wt):
+    """오케스트레이터가 끝난 worktree 를 정리한다. 미커밋 변경·미push 커밋이 있으면 남긴다."""
+    path = wt["path"]
+    state = worktree_state(path)
+    if state == "uncommitted":
+        print("kept worktree %s — uncommitted changes" % path)
+    elif state == "unpushed":
+        print("kept worktree %s — unpushed commits" % path)
+    else:
+        r = git(wt["top"], "worktree", "remove", path)
+        if r.returncode == 0:
+            print("removed worktree %s" % path)
+        else:
+            print("warn: could not remove worktree %s" % path, file=sys.stderr)
+            sys.stderr.write(r.stdout + r.stderr)
+
+
 def cmd_run(cfg, target, args):
-    """`harness run <워크플로> <이슈>` — 설정된 오케스트레이터로 절차를 시작한다.
+    """`harness run <워크플로> <이슈> [--worktree]` — 설정된 오케스트레이터로 절차를 시작한다.
 
     절차는 사람이 승인하는 지점에서 멈추므로 **대화형으로 띄운다.** 비대화형으로 돌리면
     그 게이트가 통과된 것처럼 지나간다.
     """
     if len(args.args) != 2:
-        die("usage: harness run <workflow> <issue>\n\nexample: harness run work 12")
+        die("usage: harness run <workflow> <issue> [--worktree]\n\nexample: harness run work 12")
     name, issue = args.args
     wf = target / ".ai" / "workflows" / ("%s.md" % name)
     if not wf.is_file():
@@ -1757,10 +1870,22 @@ def cmd_run(cfg, target, args):
                  "사람이 승인하는 지점에서는 멈추고 묻는다." % (name, issue)})
     if not shutil.which(cmd[0]):
         die("error: orchestrator `%s` is not installed\n\nhelp: install it, or point harness.orchestrator at one you have\n        harness set harness.orchestrator <claude|codex>" % cmd[0])
+    wt = issue_worktree(cfg, target, issue) if args.worktree else None
+    if isinstance(wt, int):
+        return wt
     if args.dry_run:
+        if wt:
+            print("worktree: %s (%s)" % (wt["path"], "new" if wt["new"] else "reopened"))
+            print("directory: %s" % wt["run_dir"])
         print(" ".join(repr(c) if " " in c else c for c in cmd))
         return 0
-    os.chdir(target)
+    if wt and wt["new"]:
+        code = open_worktree(cfg, wt)
+        if code:
+            return code
+    if wt:
+        print("worktree: %s (%s)" % (wt["path"], "new" if wt["new"] else "reopened"), flush=True)
+    os.chdir(wt["run_dir"] if wt else target)
     # 이 실행 하나가 트레이스다. 시작 기록이 곧 run manifest 다 — 세션 가져오기가 이 시각·벤더·절차로
     # 대화 기록을 이 실행에 붙인다. 대화형으로 끝날 때까지 기다려 끝 기록도 남긴다
     m = metrics_module().load_metric(target)
@@ -1775,6 +1900,9 @@ def cmd_run(cfg, target, args):
         code = 130
     if m:
         m.end(span, "ok" if code == 0 else "error", code, (time.monotonic() - t0) * 1000)
+    if wt:
+        os.chdir(target)
+        close_worktree(wt)
     return code
 
 
@@ -2208,7 +2336,7 @@ COMMANDS = {
     "check":     (None, True,  "[--staged]", "verify generated files match the config"),
     "doctor":    (None, True,  "", "report readiness: config, files, tools, hooks"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
-    "run":       (None, True,  "<workflow> <issue>", "start a workflow in the configured orchestrator"),
+    "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
     "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
     "metrics":   (None, True,  "[import|prune] [--since 7d] [--trace ID]", "run metrics as JSON for the Metrics tab; import reads new session logs first; prune applies retention"),
@@ -2299,6 +2427,7 @@ def main():
     ap.add_argument("--delete", action="store_true", help="steps: delete a workflow this project made")
     ap.add_argument("--rename", metavar="NEW", help="steps: rename a workflow this project made")
     ap.add_argument("--dry-run", action="store_true", help="run: print the command instead of executing it; steps: validate without writing")
+    ap.add_argument("--worktree", action="store_true", help="run: start the workflow in a worktree of its own for the issue")
     ap.add_argument("--since", help="metrics: how far back, like 24h, 7d or 30d (default 7d)")
     ap.add_argument("--trace", help="metrics: include the span tree of this trace")
     ap.add_argument("-h", "--help", action="store_true")
