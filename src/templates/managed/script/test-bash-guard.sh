@@ -130,6 +130,12 @@ case_is 0 "echo git push origin $protected_b"
 case_is 0 "echo \"git push --force origin $work_branch\""
 case_is 0 'grep -n "git commit --no-verify" script/hooks/_guards.sh'
 case_is 0 "echo $forge_cli issue delete 100"
+case_is 0 "echo \"a; git push --force origin $work_branch\""
+case_is 0 "echo 'a && git push origin $protected_b'"
+
+# ── 따옴표로 감싼 낱말은 셸이 넘기는 값으로 읽는다 ─────────────────────────
+case_is 2 "git push \"--force\" origin $work_branch"
+case_is 2 "git push origin '$protected_a'"
 
 # ── 래퍼·환경변수 대입 뒤의 git 은 실행 자리다 ─────────────────────────────
 case_is 2 "env GIT_TRACE=1 git push origin $protected_a"
@@ -181,6 +187,160 @@ EOF'; do
 else
   fail=$((fail + 1))
   echo "fail: could not create the temp repo, so the commit rulings went unchecked" >&2
+fi
+
+# ── 명령이 가리키는 작업 트리의 브랜치로 판정한다 ──────────────────────────
+# 훅은 세션의 작업 트리에서 돈다. 명령이 `cd` 나 `git -C` 로 다른 작업 트리를 가리키면
+# 판정은 그 트리의 브랜치를 따라야 한다. 링크된 작업 트리는 임시 리포 안에만 만든다.
+wt_prot="$sandbox/wt-protected"
+wt_feat="$sandbox/wt-feature"
+feat_branch="feat/101-other"
+# at_is <기대코드> <훅 작업 디렉터리> <명령> <설명>
+at_is() {
+  local expect=$1 dir=$2 cmd=$3 note=$4 rc
+  rc=$(cd "$dir" && probe "$repo_root/script/hooks/bash-guard.sh" "$cmd")
+  if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1))
+    echo "fail: $note — want=$expect got=$rc  $cmd" >&2
+  fi
+}
+mkdir -p "$wt_prot"
+if git -C "$wt_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
+  git -C "$wt_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$wt_prot" worktree add -q -b "$feat_branch" "$wt_feat" >/dev/null 2>&1; then
+  at_is 0 "$wt_prot" "cd $wt_feat && git commit -m x" \
+    "a commit in another work tree on a work branch must pass"
+  at_is 0 "$wt_prot" "git -C $wt_feat commit -m x" \
+    "a commit through git -C into a work branch tree must pass"
+  at_is 2 "$wt_feat" "git -C $wt_prot commit -m x" \
+    "a commit through git -C into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $wt_prot && git commit -m x" \
+    "a commit after cd into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $sandbox && git -C wt-protected commit -m x" \
+    "git -C applies relative to the directory cd moved to"
+  at_is 0 "$wt_prot" "cd $wt_prot && git -C ../wt-feature commit -m x" \
+    "a relative git -C after cd resolves from the cd target"
+  at_is 0 "$wt_prot" "cd $wt_feat; cd ../wt-feature && git commit -m x" \
+    "a relative cd resolves from the previous cd"
+  at_is 2 "$wt_prot" "cd \"\$(something)\" && git commit -m x" \
+    "an unresolved cd path falls back to the hook directory"
+  at_is 0 "$wt_feat" "cd \"\$(something)\" && git commit -m x" \
+    "an unresolved cd path falls back to the hook directory"
+  at_is 2 "$wt_prot" "cd $sandbox && git commit -m x" \
+    "a cd target that is not a work tree falls back to the hook directory"
+  at_is 2 "$wt_prot" "git -C $sandbox/missing commit -m x" \
+    "a git -C path that does not exist falls back to the hook directory"
+  at_is 2 "$wt_prot" "(cd $wt_feat) && git commit -m x" \
+    "a cd closed inside a subshell does not move the later command"
+  at_is 2 "$wt_feat" "git -C $wt_prot push origin" \
+    "a push with no destination from a protected branch tree must be blocked"
+  at_is 0 "$wt_prot" "cd $wt_feat && git push origin" \
+    "a push with no destination from a work branch tree must pass"
+  at_is 0 "$wt_prot" "git -C $wt_feat commit -m \"keep -n out\"" \
+    "an option-like word inside a quoted message is not an option"
+  at_is 2 "$wt_prot" "git -C \"\$HOME/x\" commit -m x" \
+    "a quoted path with an expansion falls back to the hook directory"
+  at_is 0 "$wt_feat" "git -C \"\$HOME/x\" commit -m x" \
+    "a quoted path with an expansion falls back to the hook directory"
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp work trees, so the work tree rulings went unchecked" >&2
+fi
+
+# ── 공백이 든 작업 트리 경로를 따옴표로 감싸도 그 트리의 브랜치로 판정한다 ──
+sp_prot="$sandbox/prot tree"
+sp_feat="$sandbox/feat tree"
+mkdir -p "$sp_prot"
+if git -C "$sp_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
+  git -C "$sp_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$sp_prot" worktree add -q -b "feat/102-space" "$sp_feat" >/dev/null 2>&1; then
+  at_is 2 "$wt_feat" "git -C \"$sp_prot\" commit -m x" \
+    "a double-quoted git -C path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "git -C '$sp_prot' commit -m x" \
+    "a single-quoted git -C path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd \"$sp_prot\" && git commit -m x" \
+    "a double-quoted cd path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $sandbox && git -C 'prot tree' commit -m x" \
+    "a quoted relative git -C path with a space resolves from the cd target"
+  at_is 2 "$wt_feat" "git -C $sandbox/\"prot tree\" commit -m x" \
+    "a quoted part inside a path joins the rest of the word"
+  at_is 2 "$wt_feat" "git -C \"$sp_feat\" push origin \"$protected_a\"" \
+    "a quoted push destination is read as the branch it names"
+  at_is 0 "$wt_prot" "git -C \"$sp_feat\" commit -m x" \
+    "a double-quoted git -C path with a space into a work branch tree must pass"
+  at_is 0 "$wt_prot" "cd '$sp_feat' && git commit -m x" \
+    "a single-quoted cd path with a space into a work branch tree must pass"
+  at_is 0 "$wt_prot" "cd \"$sp_feat\" && git push origin" \
+    "a push with no destination from a quoted work branch tree must pass"
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp work trees with a space, so the quoted path rulings went unchecked" >&2
+fi
+
+# ── 따옴표 안의 구획 문자와 빈 따옴표는 셸이 넘기는 값으로 되돌려 판정한다 ──
+# git ref 에는 `&` · `;` · `|` 가 들어갈 수 있다. 그런 이름을 보호 목록에 둔 사본 레이아웃에서
+# 인용된 목적지가 실제로 가는 브랜치로 비교되는지 본다.
+punct="$sandbox/punct/script/hooks"
+mkdir -p "$punct"
+cp "$repo_root/script/hooks/bash-guard.sh" "$repo_root/script/hooks/_guards.sh" "$punct/"
+chmod +x "$punct"/*.sh
+p_amp="$protected_a&prod"
+p_semi="rel;x"
+p_bar="ops|y"
+{
+  cat "$repo_root/script/harness.env"
+  printf "PROTECTED_BRANCHES='%s %s %s'\n" "$p_amp" "$p_semi" "$p_bar"
+} >"$sandbox/punct/script/harness.env"
+# punct_is <기대코드> <명령> <설명>
+punct_is() {
+  local expect=$1 cmd=$2 note=$3 rc
+  rc=$(probe "$punct/bash-guard.sh" "$cmd")
+  if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1))
+    echo "fail: $note — want=$expect got=$rc  $cmd" >&2
+  fi
+}
+punct_is 2 "git push origin '$p_amp'" "a single-quoted destination with & is the protected branch it names"
+punct_is 2 "git push origin \"$p_semi\"" "a double-quoted destination with ; is the protected branch it names"
+punct_is 2 "git push origin '$p_bar'" "a single-quoted destination with | is the protected branch it names"
+punct_is 2 "git push origin HEAD:'$p_amp'" "a quoted refspec right side with & is the protected branch it names"
+punct_is 2 "git push origin $protected_a'&prod'" "a quoted part with & joins the rest of the destination"
+punct_is 2 "git push origin '$p_amp' $work_branch" "a quoted protected destination among several is found"
+punct_is 0 "git push origin '$p_amp-2'" "a quoted destination that only starts with a protected name passes"
+punct_is 0 "git push origin $work_branch" "a work branch push passes under a punctuated protected list"
+
+# 빈 따옴표는 셸이 지운다. 낱말에 붙은 빈 따옴표가 명령·옵션·목적지 판정을 비껴가지 않는다.
+case_is 2 "g''it push origin $protected_a"
+case_is 2 "git pu\"\"sh origin $protected_a"
+case_is 2 "git push origin $protected_b''"
+case_is 2 "git push --for''ce origin $work_branch"
+case_is 2 "git push origin --del''ete $work_branch"
+case_is 2 "git commit --no-''verify -m x"
+case_is 2 "${forge_cli%?}''${forge_cli#"${forge_cli%?}"} issue delete 100"
+case_is 2 "$forge_cli issue de''lete 100"
+case_is 0 "git push origin '' $work_branch"
+case_is 0 "echo g''it push origin $protected_a"
+
+# 보호 목록과 비교되는 값에 자리표(제어 문자)가 남지 않는다. 비교 함수를 기록하는 것으로 바꿔
+# 인용이 섞인 명령마다 비교된 값을 모으고, 제어 문자가 하나라도 있으면 실패다.
+seen="$sandbox/compared"
+for c in "git push origin '$p_amp'" "git push origin \"$p_semi\" '$p_bar'" \
+  "git push origin HEAD:\"$protected_a\"''" "git push origin 'a b~c'" \
+  "git -C 'x&y' push origin" "cd 'p;q' && git commit -m x" "git push origin ''"; do
+  (
+    CMD=$c
+    PROTECTED_BRANCHES=$protected_a
+    . "$repo_root/script/hooks/_guards.sh"
+    is_protected_branch() { printf '%s\n' "$1" >>"$seen"; return 1; }
+    guard_protected_branch
+  ) >/dev/null 2>&1
+done
+if [ -s "$seen" ] && ! LC_ALL=C grep -q '[[:cntrl:]]' "$seen"; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "fail: a value compared against the protected list still carries a quote placeholder" >&2
+  LC_ALL=C od -c "$seen" >&2 2>/dev/null || true
 fi
 
 # ── 망가진 가드를 이 표가 잡는가 ───────────────────────────────────────────
