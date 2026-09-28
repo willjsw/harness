@@ -15,7 +15,7 @@
 # minor 는 인라인으로 달지 않는다 — 소음이 판정을 묻는다.
 #
 # 반복은 세션의 기억이 아니라 파일이 센다. 어느 파일에 blocker·major 가 나온 회차를
-# `<git-dir>/work-loop/` 아래에 누적한다(커밋 대상 아님, 리뷰 요청 단위).
+# `<git-common-dir>/work-loop/` 아래에 누적한다(커밋 대상 아님, 리뷰 요청 단위). 같은 리포의 모든 worktree 가 한 이력을 쓴다.
 # **키는 파일 경로 하나이고, 연속한 회차만 센다.** 같은 뿌리의 결함은 회차마다 다른 문장으로
 # 나오고 등급도 흔들려서, 요지나 심각도를 키에 넣으면 매 회차가 새 지적이 되어 상한이 발동하지
 # 않는다. 서로 다른 파일의 독립 결함은 경로만으로 이미 갈린다. 줄 번호도 넣지 않는다 —
@@ -75,8 +75,13 @@ trap 'rm -rf "$work"' EXIT
 head_sha="$reviewed"
 [ -n "$head_sha" ] || head_sha=$(git rev-parse HEAD 2>/dev/null || true)
 
-# 이력은 로컬 git 디렉터리에 둔다 — 클론이 바뀌면 초기화된다(상단 주석: 보조 상한).
-hist_dir="$(git rev-parse --git-dir)/work-loop"
+# 이력은 git 공통 디렉터리에 둔다 — 원래 작업 트리와 linked worktree 가 같은 자리를 쓰고, 클론이 바뀌면
+# 초기화된다(상단 주석: 보조 상한). 절대 경로로 받아 하네스 루트가 리포 루트가 아니어도 같은 자리다.
+common_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+  echo "error: not inside a git repository — the review history has nowhere to go" >&2
+  exit 2
+}
+hist_dir="$common_dir/work-loop"
 hist="$hist_dir/review-findings-$mr.tsv"
 mkdir -p "$hist_dir"
 

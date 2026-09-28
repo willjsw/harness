@@ -796,6 +796,27 @@ check UT-27 "context without FMT_SUMMARY_HEADING" 2 \
 echo "UT-28 the review loop leaves no bytecode"
 check UT-28 "no script/__pycache__" no "$([ -e "$work/script/__pycache__" ] && echo yes || echo no)"
 
+echo "UT-31 the main tree and a linked worktree share one review history"
+git -C "$work" worktree add -q --detach "$sandbox/linked" >/dev/null 2>&1 || { echo "failed to add a linked worktree" >&2; exit 2; }
+run_post_at() { # <하네스 루트> <MR번호> <리뷰본문>
+  ( cd "$1" && PATH="$stub:$PATH" FAKE_STATE="$state" script/post-review.sh "$2" "$3" "테스트" >"$state/last.log" 2>&1 )
+  echo $?
+}
+check UT-31 "main tree — round 1 exit code" 1 "$(run_post_at "$work" 31 "$sandbox/same-major.md")"
+check UT-31 "linked worktree — round 2 exit code" 1 "$(run_post_at "$sandbox/linked" 31 "$sandbox/same-major.md")"
+check UT-31 "main tree — round 3 counts on from the worktree's round" 3 "$(run_post_at "$work" 31 "$sandbox/same-major.md")"
+check UT-31 "one history file in the common git directory" "1 2 3" \
+  "$(tail -n +2 "$work/.git/work-loop/review-findings-31.tsv" | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+check UT-31 "the linked worktree keeps no history of its own" no \
+  "$([ -e "$(git -C "$sandbox/linked" rev-parse --absolute-git-dir)/work-loop" ] && echo yes || echo no)"
+# 하네스 루트가 리포 루트 아래에 있어도 같은 자리를 쓴다
+mkdir -p "$work/sub" && cp -R "$work/script" "$work/sub/"
+check UT-31 "harness root below the repo root — exit code" 1 "$(run_post_at "$work/sub" 32 "$sandbox/same-major.md")"
+check UT-31 "harness root below the repo root — history in the common git directory" yes \
+  "$([ -f "$work/.git/work-loop/review-findings-32.tsv" ] && [ ! -e "$work/sub/.git" ] && echo yes || echo no)"
+git -C "$work" worktree remove --force "$sandbox/linked" >/dev/null 2>&1
+rm -rf "$work/sub"
+
 # 리뷰 도구를 부를 때마다 지표에 에이전트 스팬이 남고, 벤더 형식에서 꺼낸 사용량이 같은 뜻으로 맞춰진다.
 # 스텁은 두 벤더 모두 입력(캐시 제외) 11 + 출력 7 = 18 을 낸다
 tokens=$(python3 - "$sandbox/metrics" <<'PY'
