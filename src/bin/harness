@@ -1575,6 +1575,28 @@ def broken_refs(target):
     return [(rel, tok) for rel, tok in out if tok not in skip]
 
 
+def checkout_position(p: Path):
+    """(git 공통 디렉터리, 리포 안의 위치). git 이 답하지 못하면 None."""
+    out = []
+    for q in ("--git-common-dir", "--show-prefix"):
+        try:
+            r = subprocess.run(["git", "-C", str(p), "rev-parse", q], capture_output=True, text=True)
+        except OSError:
+            return None
+        if r.returncode != 0:
+            return None
+        out.append(r.stdout.strip())
+    if not out[0]:
+        return None
+    return (p / out[0]).resolve(), out[1]
+
+
+def same_checkout_position(a: Path, b: Path) -> bool:
+    """같은 리포의 worktree 에서 같은 자리인가. 같은 리포의 다른 서브프로젝트는 아니다."""
+    pa = checkout_position(a)
+    return pa is not None and pa == checkout_position(b)
+
+
 def cmd_doctor(cfg, target, _args):
     """쓸 준비가 됐는지 본다. 설정 자체는 여기 오기 전에 이미 검증됐다."""
     v = derive(cfg)
@@ -1687,6 +1709,16 @@ def cmd_doctor(cfg, target, _args):
         exe = ADR_EXE.get(t, t)
         line("ok" if shutil.which(exe) else "warn", "decision-record tool `%s`" % t,
              "" if shutil.which(exe) else "`%s` is not installed" % exe)
+
+    print("\nregistry")
+    name = cfg["project"]["name"]
+    at = registered_path(name)
+    if at is None:
+        line("warn", "this repository is not registered", "run `harness install` to list it in the UI")
+    elif Path(at).resolve() == target or same_checkout_position(Path(at), target):
+        line("ok", "registered as `%s`" % name)
+    else:
+        line("warn", "`%s` is registered to another path" % name, at)
 
     print("\ngit")
     hp = hooks_path(target)

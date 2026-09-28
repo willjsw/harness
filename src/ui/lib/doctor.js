@@ -9,6 +9,7 @@ export const SECTIONS = {
   verification: "검증",
   references: "문서 참조",
   "tools and connections": "도구와 연결",
+  registry: "등록",
   git: "git",
 };
 
@@ -63,6 +64,12 @@ export function explain(i, base) {
     return { title: `${m[1]} 역할의 모델(${m[2]})을 이 컴퓨터에서 찾지 못했습니다`, body: "그 에이전트 CLI 가 제공하는 모델로 바꿉니다. 모델 목록이 오래됐다면 Agents 탭에서 도구 목록을 새로 읽습니다.", href: `${base}/agents` };
   if ((m = w.match(/^role `(.+)` is not in harness\.toml$/)))
     return { title: `설정에 없는 역할(${m[1]})을 가리키는 문서가 있습니다`, body: `위치: ${d.replace(/^still referenced at /, "")}` };
+  if ((m = w.match(/^`(.+)` is registered to another path$/)))
+    return { title: `프로젝트 이름 ${m[1]} 이 다른 경로에 등록되어 있습니다`,
+      body: `UI 와 실행 기록이 ${d} 를 가리킵니다. 그 경로가 더는 이 프로젝트가 아니면 여기서 다시 설치해 등록을 넘겨받습니다. 아직 쓰는 클론이면 그쪽에서 harness uninstall 하거나 이 리포의 project.name 을 바꿉니다.`,
+      cmd: "harness install" };
+  if (w === "this repository is not registered")
+    return { title: "이 리포가 등록되어 있지 않습니다", body: "UI 의 프로젝트 목록에 나오지 않습니다.", cmd: "harness install" };
   if ((m = w.match(/^`(.+)` does not exist$/)))
     return { title: `없는 경로(${m[1]})를 가리키는 문서가 있습니다`, body: `위치: ${d.replace(/^referenced by /, "")}` };
   if ((m = w.match(/^forge CLI `(.+)`$/)) && i.state !== "ok")

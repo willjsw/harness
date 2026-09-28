@@ -1618,6 +1618,42 @@ inst "$root/bin/harness" "$A"; check "reinstall under a new name" "$?" "0"
 [ -e "$HARNESS_HOME/twin/project.json" ] && bad "the old name still points to the renamed repo" || ok
 check "the new name points to the repo" "$(regpath twin-new)" "$rA"
 
+# doctor 는 등록 상태를 보고만 한다. 경고는 두 가지이고 FAIL 은 없다.
+regsec() { awk '/^registry$/{f=1; next} /^$/{f=0} f' "$1"; }
+doc() { n=$((n + 1)); "$root/bin/harness" doctor --target "$1" >"$work/dup-$n.out" 2>"$work/dup-$n.err"; regsec "$work/dup-$n.out" > "$work/dup-reg-$n.txt"; }
+fresh
+doc "$A"
+has "$work/dup-reg-$n.txt" "ok   registered as \`twin\`" "doctor: a registered repo is not ok"
+grep -E "^(tools and connections|registry|git)$" "$work/dup-$n.out" | tr '\n' ' ' > "$work/dup-order.txt"
+check "doctor: the registry section sits between tools and git" "$(cat "$work/dup-order.txt")" "tools and connections registry git "
+# 등록하지 않은 채 생성물만 둔 같은 이름의 리포 — doctor 는 렌더된 리포에서 끝까지 돈다.
+"$root/bin/harness" render --target "$B" >/dev/null 2>&1 || bad "could not render B"
+cp "$HARNESS_HOME/twin/project.json" "$work/dup-before.json"
+doc "$B"
+has "$work/dup-reg-$n.txt" "warn \`twin\` is registered to another path" "doctor: another path is not a warning"
+has "$work/dup-reg-$n.txt" "$rA" "doctor: the warning does not name the registered path"
+hasnt "$work/dup-reg-$n.txt" "FAIL" "doctor: the registry section failed on another path"
+cmp -s "$HARNESS_HOME/twin/project.json" "$work/dup-before.json" && ok || bad "doctor changed the registry"
+rm "$HARNESS_HOME/twin/project.json"
+doc "$A"
+has "$work/dup-reg-$n.txt" "warn this repository is not registered" "doctor: a missing registration is not a warning"
+hasnt "$work/dup-reg-$n.txt" "FAIL" "doctor: the registry section failed on a missing registration"
+[ -e "$HARNESS_HOME/twin/project.json" ] && bad "doctor registered the repo" || ok
+
+# 같은 리포의 linked worktree 는 같은 프로젝트다. 같은 리포의 다른 서브디렉터리는 아니다.
+fresh
+rm "$B/harness.toml"
+git -C "$A" add -A && git -C "$A" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.invalid commit -q -m init \
+  && git -C "$A" worktree add -q -b side "$dup/a/twin-wt" || bad "could not set up the linked worktree"
+doc "$dup/a/twin-wt"
+has "$work/dup-reg-$n.txt" "ok   registered as \`twin\`" "doctor: a linked worktree of the registered repo is not ok"
+hasnt "$work/dup-reg-$n.txt" "warn" "doctor: a linked worktree of the registered repo warned"
+mkdir -p "$A/sub"; cp "$A/harness.toml" "$A/sub/harness.toml"
+"$root/bin/harness" render --target "$A/sub" >/dev/null 2>&1 || bad "could not render the subdirectory"
+doc "$A/sub"
+has "$work/dup-reg-$n.txt" "warn \`twin\` is registered to another path" "doctor: another subdirectory of the same repo is not a warning"
+unset -f regsec doc
+
 # 소스 리포 분기도 옛 사본을 걷어내기 전에 같은 판정을 거친다.
 rm -rf "$HARNESS_HOME"/srcdup
 for s in "$dup/s1/srcdup" "$dup/s2/srcdup"; do
