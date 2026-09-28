@@ -39,13 +39,79 @@ block() {
   exit 2
 }
 
-# $CMD 안에서 $1 프로그램이 **실행되는 자리**의 호출만 "인수..." 한 줄씩 낸다.
+# 판정 결과 한 줄의 앞 칸(작업 디렉터리)과 뒤 칸(호출)을 가르는 구분자.
+TAB=$(printf '\t')
+
+# 명령 문자열의 경로 토큰 $2 를 기준 디렉터리 $1 에서 푼다.
+# 기준이 비었으면 훅 작업 디렉터리, `?` 이면 풀지 못한 상태다. 결과도 같은 표기로 낸다.
+# 셸이 실행 때에야 정하는 값(변수·명령 치환·glob·중괄호·괄호)이 섞이면 풀지 않는다 —
+# 추측한 경로로 판정하면 엉뚱한 작업 트리의 브랜치를 보게 된다.
+resolve_path() {
+  _base=$1
+  _p=$2
+  case "$_p" in
+    \"*\") _p=${_p#\"}; _p=${_p%\"} ;;
+    \'*\') _p=${_p#\'}; _p=${_p%\'} ;;
+  esac
+  case "$_p" in
+    '' | - | *'$'* | *'`'* | *'*'* | *'?'* | *'['* | *'{'* | *'}'* | *'('* | *')'* | *'"'* | *"'"* | *'\'*)
+      printf '?'
+      return 0
+      ;;
+  esac
+  case "$_p" in
+    '~') _p=$HOME ;;
+    '~/'*) _p=$HOME/${_p#'~/'} ;;
+    '~'*)
+      printf '?'
+      return 0
+      ;;
+  esac
+  case "$_p" in
+    /*) printf '%s' "$_p" ;;
+    *)
+      case "$_base" in
+        '?') printf '?' ;;
+        '') printf '%s' "$_p" ;;
+        *) printf '%s/%s' "$_base" "$_p" ;;
+      esac
+      ;;
+  esac
+}
+
+# `cd` 의 인수에서 옮겨 갈 디렉터리를 낸다. $1 은 지금까지의 디렉터리다.
+# 인수가 없거나(`cd` 는 홈, `cd -` 는 직전 디렉터리) 풀 수 없으면 `?` 다.
+cd_target() {
+  _from=$1
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -P | -L | -e | -@) shift ;;
+      --)
+        shift
+        break
+        ;;
+      *) break ;;
+    esac
+  done
+  if [ $# -eq 0 ]; then
+    printf '?'
+    return 0
+  fi
+  resolve_path "$_from" "$1"
+}
+
+# $CMD 안에서 $1 프로그램이 **실행되는 자리**의 호출만 "작업디렉터리<TAB>인수..." 한 줄씩 낸다.
 # 파이프·세미콜론·& 로 끊은 구획마다 맨 앞 토큰이 명령이다. 앞선 프로그램의 인수로 적힌 말
 # (`echo git push origin main`)은 실행이 아니므로 세지 않는다 — 세면 정상 명령이 막힌다.
 # 환경변수 대입과 실행 래퍼(sudo·env·time 등), 여는 괄호·명령 치환 표기는 걷어내면 그 뒤가
 # 다시 명령 자리다.
-invocations_of() {
+#
+# 작업 디렉터리는 앞선 구획의 `cd` 가 옮겨 놓은 곳이다. 비었으면 훅 작업 디렉터리, `?` 이면
+# 풀지 못한 경로다.
+invocations_at() {
   _prog=$1
+  _dir=
   printf '%s\n' "$CMD" | tr '|;&' '\n\n\n' | while IFS= read -r _seg; do
     # shellcheck disable=SC2086
     set -- $_seg
@@ -66,6 +132,11 @@ invocations_of() {
           _hit=1
           break
           ;;
+        cd)
+          shift
+          _dir=$(cd_target "$_dir" "$@")
+          break
+          ;;
         '' | '{' | '!' | sudo | command | exec | nohup | time | env | then | do | else)
           shift
           ;;
@@ -75,20 +146,45 @@ invocations_of() {
     done
     [ "$_hit" -eq 1 ] || continue
     [ $# -gt 0 ] || continue
-    printf '%s\n' "$*"
+    printf '%s\t%s\n' "$_dir" "$*"
   done
 }
 
-# git 호출을 "subcommand 인수..." 한 줄씩 낸다.
+# invocations_at 에서 작업 디렉터리를 뗀 "인수..." 줄.
+invocations_of() {
+  invocations_at "$1" | while IFS= read -r _line; do
+    printf '%s\n' "${_line#*"$TAB"}"
+  done
+}
+
+# git 호출을 "작업디렉터리<TAB>subcommand 인수..." 한 줄씩 낸다.
 # 값을 갖는 전역 옵션(-c, -C, --git-dir 등)은 그 값까지 걷어낸다 — 걷어내지 않으면 값이
-# subcommand 로 읽힌다.
-git_invocations() {
-  invocations_of git | while IFS= read -r _inv; do
+# subcommand 로 읽힌다. `-C` 는 git 이 하듯 그때까지의 디렉터리에 차례로 덧붙인다.
+# `--git-dir` · `--work-tree` 는 작업 트리를 따로 정하므로 디렉터리를 풀지 못한 것으로 둔다.
+git_invocations_at() {
+  invocations_at git | while IFS= read -r _line; do
+    _at=${_line%%"$TAB"*}
     # shellcheck disable=SC2086
-    set -- $_inv
+    set -- ${_line#*"$TAB"}
     while [ $# -gt 0 ]; do
       case "$1" in
-        -c | -C | --git-dir | --work-tree | --namespace | --exec-path | --config-env)
+        -C)
+          shift
+          if [ $# -gt 0 ]; then
+            _at=$(resolve_path "$_at" "$1")
+            shift
+          fi
+          ;;
+        --git-dir | --work-tree)
+          _at='?'
+          shift
+          [ $# -gt 0 ] && shift
+          ;;
+        --git-dir=* | --work-tree=*)
+          _at='?'
+          shift
+          ;;
+        -c | --namespace | --exec-path | --config-env)
           shift
           [ $# -gt 0 ] && shift
           ;;
@@ -97,12 +193,34 @@ git_invocations() {
       esac
     done
     [ $# -gt 0 ] || continue
-    printf '%s\n' "$*"
+    printf '%s\t%s\n' "$_at" "$*"
   done
 }
 
+# git 호출을 "subcommand 인수..." 한 줄씩 낸다. 작업 디렉터리가 판정에 닿지 않는 가드가 쓴다.
+git_invocations() {
+  git_invocations_at | while IFS= read -r _line; do
+    printf '%s\n' "${_line#*"$TAB"}"
+  done
+}
+
+# 디렉터리 $1 의 현재 브랜치. 비었거나 풀지 못했거나(`?`) git 작업 트리가 아니면
+# 훅 작업 디렉터리의 브랜치로 판정한다 — 경로를 잘못 짚어 정상 작업을 막지 않는다.
+branch_at() {
+  case "${1:-}" in
+    '' | '?') ;;
+    *)
+      if [ "$(git -C "$1" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+        git -C "$1" branch --show-current 2>/dev/null
+        return 0
+      fi
+      ;;
+  esac
+  git branch --show-current 2>/dev/null
+}
+
 # push 인수에서 목적지 브랜치 후보를 한 줄씩 낸다.
-# 인수가 없거나 원격만 있으면 현재 브랜치가 목적지다. --tags 처럼 브랜치 refspec 을 보내지
+# 인수가 없거나 원격만 있으면 작업 디렉터리 $_AT 의 현재 브랜치가 목적지다. --tags 처럼 브랜치 refspec 을 보내지
 # 않는 모드에서는 현재 브랜치로 대체하지 않는다. --all·--mirror 는 모든 브랜치를 보내므로
 # 목적지를 하나로 지목할 수 없고, 보호 브랜치가 그 안에 든다.
 push_destinations() {
@@ -158,21 +276,24 @@ push_destinations() {
     shift
   done
   if [ "$_found" -eq 0 ] && [ "$_noref" -eq 0 ]; then
-    git branch --show-current 2>/dev/null
+    branch_at "${_AT:-}"
   fi
 }
 
 # 1) 보호 브랜치 직접 push·commit
+#    commit 과 목적지 없는 push 는 명령이 `cd` · `git -C` 로 가리키는 작업 트리의 브랜치로 판정한다.
+#    훅은 세션의 작업 트리에서 돌므로, 그 자리의 브랜치로 판정하면 다른 작업 트리의 커밋을 잘못 가른다.
 guard_protected_branch() {
   GUARD_LABEL=protected-branch
-  _invs=$(git_invocations)
+  _invs=$(git_invocations_at)
   _ifs=$IFS
   IFS='
 '
-  for _inv in $_invs; do
+  for _line in $_invs; do
     IFS=$_ifs
+    _AT=${_line%%"$TAB"*}
     # shellcheck disable=SC2086
-    set -- $_inv
+    set -- ${_line#*"$TAB"}
     case "$1" in
       push)
         shift
@@ -189,7 +310,7 @@ guard_protected_branch() {
         done
         ;;
       commit)
-        _cur=$(git branch --show-current 2>/dev/null)
+        _cur=$(branch_at "$_AT")
         if is_protected_branch "$_cur"; then
           block "direct commit on the protected branch $_cur" \
             "help: create a topic branch first — git checkout -b ${BRANCH_PATTERN:-<topic-branch>}"

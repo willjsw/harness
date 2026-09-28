@@ -183,6 +183,58 @@ else
   echo "fail: could not create the temp repo, so the commit rulings went unchecked" >&2
 fi
 
+# ── 명령이 가리키는 작업 트리의 브랜치로 판정한다 ──────────────────────────
+# 훅은 세션의 작업 트리에서 돈다. 명령이 `cd` 나 `git -C` 로 다른 작업 트리를 가리키면
+# 판정은 그 트리의 브랜치를 따라야 한다. 링크된 작업 트리는 임시 리포 안에만 만든다.
+wt_prot="$sandbox/wt-protected"
+wt_feat="$sandbox/wt-feature"
+feat_branch="feat/101-other"
+# at_is <기대코드> <훅 작업 디렉터리> <명령> <설명>
+at_is() {
+  local expect=$1 dir=$2 cmd=$3 note=$4 rc
+  rc=$(cd "$dir" && probe "$repo_root/script/hooks/bash-guard.sh" "$cmd")
+  if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1))
+    echo "fail: $note — want=$expect got=$rc  $cmd" >&2
+  fi
+}
+mkdir -p "$wt_prot"
+if git -C "$wt_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
+  git -C "$wt_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$wt_prot" worktree add -q -b "$feat_branch" "$wt_feat" >/dev/null 2>&1; then
+  at_is 0 "$wt_prot" "cd $wt_feat && git commit -m x" \
+    "a commit in another work tree on a work branch must pass"
+  at_is 0 "$wt_prot" "git -C $wt_feat commit -m x" \
+    "a commit through git -C into a work branch tree must pass"
+  at_is 2 "$wt_feat" "git -C $wt_prot commit -m x" \
+    "a commit through git -C into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $wt_prot && git commit -m x" \
+    "a commit after cd into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $sandbox && git -C wt-protected commit -m x" \
+    "git -C applies relative to the directory cd moved to"
+  at_is 0 "$wt_prot" "cd $wt_prot && git -C ../wt-feature commit -m x" \
+    "a relative git -C after cd resolves from the cd target"
+  at_is 0 "$wt_prot" "cd $wt_feat; cd ../wt-feature && git commit -m x" \
+    "a relative cd resolves from the previous cd"
+  at_is 2 "$wt_prot" "cd \"\$(something)\" && git commit -m x" \
+    "an unresolved cd path falls back to the hook directory"
+  at_is 0 "$wt_feat" "cd \"\$(something)\" && git commit -m x" \
+    "an unresolved cd path falls back to the hook directory"
+  at_is 2 "$wt_prot" "cd $sandbox && git commit -m x" \
+    "a cd target that is not a work tree falls back to the hook directory"
+  at_is 2 "$wt_prot" "git -C $sandbox/missing commit -m x" \
+    "a git -C path that does not exist falls back to the hook directory"
+  at_is 2 "$wt_prot" "(cd $wt_feat) && git commit -m x" \
+    "a cd closed inside a subshell does not move the later command"
+  at_is 2 "$wt_feat" "git -C $wt_prot push origin" \
+    "a push with no destination from a protected branch tree must be blocked"
+  at_is 0 "$wt_prot" "cd $wt_feat && git push origin" \
+    "a push with no destination from a work branch tree must pass"
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp work trees, so the work tree rulings went unchecked" >&2
+fi
+
 # ── 망가진 가드를 이 표가 잡는가 ───────────────────────────────────────────
 # force push 가드만 무력화한 사본에 차단 케이스 표를 그대로 돌린다.
 # force 케이스가 전부 통과(코드 0)로 뒤집히고 다른 계열은 그대로 차단이어야,
