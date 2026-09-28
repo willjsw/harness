@@ -12,21 +12,22 @@
 - `src/ui/` — Next.js 앱. `harness start-server` 가 루프백에 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
 - 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다
-- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서
+- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치)
 
 ### 데이터 흐름
 
 - 렌더: `harness.toml` + `.ai/project/` → `src/bin/harness render` → 생성 파일(`.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `CLAUDE.md` · `AGENTS.md`) → 에이전트·훅·가드·CI 가 읽는다
 - UI: 브라우저 → 루프백 HTTP → Next.js 서버 액션 → `src/bin/harness <명령>` 서브프로세스 → 파일 → 다시 UI. 저장 전 검사는 정적 검사와 저렴한 모델(오케스트레이터 CLI, 쓰기 도구 없이)로 한다
-- 절차 실행: `harness run` → 오케스트레이터 CLI → 절차 문서를 따라 역할(서브에이전트, 또는 `script/run-agent.py` 가 실행 계획대로 띄운 CLI)과 스크립트를 부른다. 리뷰 루프는 `work-preflight.sh` → 구현자 → `review-mr.sh`(diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → 리뷰어의 판정 데이터(JSON 블록) → `post-review.sh`(스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약·인라인 댓글 렌더링) → 종료 코드로 분기
+- 절차 실행: `harness run` → 오케스트레이터 CLI → 절차 문서를 따라 역할(서브에이전트, 또는 `script/run-agent.py` 가 실행 계획대로 띄운 CLI)과 스크립트를 부른다. 리뷰 루프는 `work-preflight.sh` → 구현자 → `review-mr.sh`(diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → 리뷰어의 판정 데이터(JSON 블록) → `post-review.sh`(스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약·인라인 댓글 렌더링) → 종료 코드로 분기. `harness run --worktree` 는 원격 통합 브랜치에서 이슈별 worktree 를 만들고 그 안에서 오케스트레이터를 띄운 뒤, 끝나면 미커밋 변경·미push 커밋이 없을 때 제거한다
 - forge: 스크립트 → `script/forge.sh` 어댑터 함수(tracker 군 · review 군) → `gh` · `glab` · `jira`. 호출부는 forge 를 모르고 정규화된 JSON 을 받는다
-- 실행 지표: 명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) → 홈 아래 `.harness/<프로젝트>/metrics/spans-*.jsonl` → `harness metrics`(가져오기 · 집계) → UI Metrics 탭. 트레이스·부모 스팬은 환경 변수로 자식에게 넘어간다
+- 실행 지표: 명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) → 홈 아래 `.harness/<프로젝트>/metrics/spans-*.jsonl` → `harness metrics`(가져오기 · 집계) → UI Metrics 탭. 트레이스·부모 스팬은 환경 변수로 자식에게 넘어간다. 세션 가져오기는 run 스팬의 worktree 이름과 설정의 `worktree.dir` 로 worktree 실행 디렉터리를 다시 계산해 기록을 붙인다
 
 ### 신뢰 경계
 
 - 들어오는 입력: `harness.toml`(TOML)과 `.ai/project/` 마크다운(프로젝트가 쓴다), 오케스트레이터 훅이 stdin 으로 주는 도구 호출 JSON(`script/hooks/bash-guard.sh`), forge CLI 의 출력, 에이전트 CLI 의 출력(JSON · JSONL)과 대화 기록, 리뷰어의 판정 데이터(스키마로 엄격히 검증하고, 어기면 등록하지 않는다), UI 요청(루프백에만 묶인다), 명령줄 인자(경로는 리포 기준 상대 경로만 받는다 — 절대 경로 · `..` · 공백 · glob 거부)
 - 다루는 민감 정보: forge 와 에이전트 CLI 의 인증은 각 CLI 가 갖고 리포에 두지 않는다. 실행 지표는 프롬프트·명령줄·문서 본문을 남기지 않고, 실패 로그는 토큰·쿠키·URL 쿼리·이메일·홈 경로를 지운 뒤 끝부분만 남긴다(디렉터리 0700 · 파일 0600). `script/secret-scan.sh` 가 커밋에 새로 들어오는 자격증명을 막고, 막을 때 값을 출력에 옮기지 않는다
 - 가드는 미탐을 허용하고 오탐을 피한다. 규칙이 정본이고 가드·권한은 보조다. 단 가드가 설정을 읽지 못하면 통과가 아니라 차단이다
+- `worktree.include` 는 git 이 무시하는 로컬 파일만 worktree 로 복사하고 그 경로·내용을 출력하지 않는다. 기존 worktree 는 git 공통 디렉터리가 같을 때만 연다
 
 ### 새 코드를 둘 곳
 
