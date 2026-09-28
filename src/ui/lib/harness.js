@@ -20,11 +20,17 @@ export async function listProjects() {
   for (const name of names.sort()) {
     if (name.startsWith(".")) continue;
     let p = null;
-    try { p = JSON.parse(await fs.readFile(path.join(HOME, name, "project.json"), "utf8")).path; } catch {}
-    const ok = !!p && (await exists(path.join(p, "harness.toml")));
+    try { p = registeredPath(JSON.parse(await fs.readFile(path.join(HOME, name, "project.json"), "utf8"))); } catch {}
+    const ok = p !== null && (await exists(path.join(p, "harness.toml")));
     out.push({ name, path: p, ok });
   }
   return out;
+}
+
+// 등록 JSON 의 경로. 비어 있지 않은 문자열만 경로로 보고, 나머지는 경로 없음(null)이다.
+export function registeredPath(data) {
+  const p = data && typeof data === "object" && !Array.isArray(data) ? data.path : null;
+  return typeof p === "string" && p !== "" ? p : null;
 }
 
 export async function getProject(name) {
