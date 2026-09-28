@@ -190,6 +190,32 @@ check UT-06 "no argument — exit code" 2 "$(run)"
 check UT-06 "mistyped option — exit code" 2 "$(run 100 --dryrun)"
 check UT-06 "close calls" 0 "$(closes)"
 
+echo "UT-07 a branch another worktree has checked out is kept, the others are removed"
+setup "12"
+git -C "$work" branch "feat/100-second" >/dev/null 2>&1
+git -C "$work" worktree add -q "$sandbox/linked" "feat/100-skeleton" || { echo "error: could not add a worktree" >&2; exit 2; }
+check UT-07 "dry run — exit code" 0 "$(run 100 --dry-run)"
+check UT-07 "dry run — names the worktree" 1 \
+  "$(grep -c '^    local branch feat/100-skeleton   \*\* checked out in worktree .*/linked — will not be removed \*\*$' "$state/last.out" || true)"
+check UT-07 "exit code" 0 "$(run 100 --yes)"
+check UT-07 "says why it kept the branch" 1 \
+  "$(grep -c '^kept local branch feat/100-skeleton — it is checked out in worktree .*/linked\. remove that worktree and rerun to remove it$' "$state/last.out" || true)"
+check UT-07 "the worktree's branch survives" 1 "$(line_hits 'feat/100-skeleton' "$(branches)")"
+check UT-07 "the other local branch is removed" 0 "$(line_hits 'feat/100-second' "$(branches)")"
+check UT-07 "not counted as a failure" 0 "$(hits 'warning:' "$state/last.err")"
+check UT-07 "the worktree is left in place" yes \
+  "$([ -d "$sandbox/linked" ] && git -C "$work" worktree list | grep -q '/linked ' && echo yes || echo no)"
+
+echo "UT-08 when the worktree's branch is all there is, it is still shown and kept"
+setup ""
+printf '[]\n' > "$state/issues.json"
+check UT-08 "dry run — exit code" 0 "$(run 100 --dry-run)"
+check UT-08 "not reported as nothing to roll back" 0 "$(hits 'nothing to roll back' "$state/last.out")"
+check UT-08 "dry run — names the worktree" 1 "$(hits 'checked out in worktree' "$state/last.out")"
+check UT-08 "exit code" 0 "$(run 100 --yes)"
+check UT-08 "the branch survives" 1 "$(line_hits 'feat/100-skeleton' "$(branches)")"
+git -C "$work" worktree remove --force "$sandbox/linked" >/dev/null 2>&1
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "rollback test failed: ${pass} passed, ${fail} failed" >&2
