@@ -24,6 +24,8 @@ ok()   { pass=$((pass + 1)); }
 bad()  { fail=$((fail + 1)); echo "  FAIL: $1" >&2; }
 check(){ if [ "$2" = "$3" ]; then ok; else bad "$1 — expected '$3', actual '$2'"; fi; }
 has()  { if grep -qF -- "$2" "$1"; then ok; else bad "$3"; fi; }
+# 제자리 편집. BSD sed 는 `-i ''`, GNU sed 는 `-i` 만 받으므로 두 쪽이 같이 받는 `-i.bak` 을 쓰고 지운다.
+sedi() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
 hasnt(){ if grep -qF -- "$2" "$1"; then bad "$3"; else ok; fi; }
 
 
@@ -194,21 +196,21 @@ case "$out" in *distinct_reviewer*) ok ;; *) bad "the refusal does not say how t
 echo "UT-07 a config that breaks the rules is refused before render"
 # 티켓 접두사형인데 키가 없으면 검사식을 만들 수 없다.
 t="$work/invalid"; setup "$t"
-sed -i '' 's/issue_ref = "suffix"/issue_ref = "prefix"/' "$t/harness.toml"
+sedi 's/issue_ref = "suffix"/issue_ref = "prefix"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "prefix form without a ticket key" "$?" "2"
-sed -i '' 's/^runner = "codex"$/runner = "unknown-runner"/' "$t/harness.toml"
+sedi 's/^runner = "codex"$/runner = "unknown-runner"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "unknown runner" "$?" "2"
 
 echo "UT-07d a branch list written as one comma-joined string is refused"
 # 브랜치 이름은 훅의 case 패턴에 그대로 들어가므로, 쉼표·공백이 섞이면 훅이 문법 오류로 깨진다.
 t="$work/branchname"; setup "$t"
-sed -i '' 's/^protected = \["main", "development"\]$/protected = ["main, development"]/' "$t/harness.toml"
+sedi 's/^protected = \["main", "development"\]$/protected = ["main, development"]/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "comma-joined branch list" "$?" "2"
 
 echo "UT-07b the integration branch is protected even when it is not listed"
 # 거기로 직접 push 할 수 있으면 승인 게이트가 우회된다. 선택지가 아니므로 채운다.
 t="$work/autoprotect"; setup "$t"
-sed -i '' 's/^protected = \["main", "development"\]$/protected = ["main"]/' "$t/harness.toml"
+sedi 's/^protected = \["main", "development"\]$/protected = ["main"]/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1
 check "render exit code" "$?" "0"
 has "$t/script/githooks/pre-push" "refs/heads/development" "the integration branch did not reach the hook"
@@ -270,7 +272,7 @@ hasnt "$t/.ai/templates/developer.md" "사람이 끼워 넣은 줄" "the managed
 
 echo "UT-11 changing the forge changes the adapter choice and the command glossary together"
 t="$work/forge"; setup "$t"
-sed -i '' 's/tracker = "gitlab"/tracker = "github"/; s/review_host = "gitlab"/review_host = "github"/' "$t/harness.toml"
+sedi 's/tracker = "gitlab"/tracker = "github"/; s/review_host = "gitlab"/review_host = "github"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 has   "$t/script/forge.sh" "script/forge/github.sh" "the adapter choice did not follow"
 hasnt "$t/script/forge.sh" "script/forge/gitlab.sh" "the old adapter is still there"
@@ -284,7 +286,7 @@ echo "UT-12 changing the ADR style switches the doc set and the old one disappea
 t="$work/adr"; setup "$t"
 [ -f "$t/docs/adr/README.md" ] && ok || bad "the nygard doc set is missing"
 [ -f "$t/.adr-dir" ] && ok || bad "the adr-tools target file is missing"
-sed -i '' 's/style = "nygard"/style = "madr"/; s/tool = "adr-tools"/tool = "manual"/; s|dir = "docs/adr"|dir = "docs/decisions"|' "$t/harness.toml"
+sedi 's/style = "nygard"/style = "madr"/; s/tool = "adr-tools"/tool = "manual"/; s|dir = "docs/adr"|dir = "docs/decisions"|' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 [ -f "$t/docs/decisions/README.md" ] && ok || bad "the madr doc set was not created"
 [ -e "$t/docs/adr" ] && bad "docs from the old style are still there" || ok
@@ -295,7 +297,7 @@ has "$t/.ai/adr.md" "front matter" "the decision-record glossary did not follow 
 echo "UT-13 render refuses a style and tool combination that cannot hold"
 # adr-tools 는 상태와 대체 표기를 Nygard 절 구조에서 찾는다. MADR 에 쓰면 조용히 아무 일도 안 한다.
 t="$work/adrbad"; setup "$t"
-sed -i '' 's/^style = .*/style = "madr"/; s/^tool = .*/tool = "adr-tools"/' "$t/harness.toml"
+sedi 's/^style = .*/style = "madr"/; s/^tool = .*/tool = "adr-tools"/' "$t/harness.toml"
 out=$("$root/bin/harness" render --target "$t" 2>&1); rc=$?
 check "render exit code" "$rc" "2"
 case "$out" in *madr*) ok ;; *) bad "the refusal does not say the combination is the problem" ;; esac
@@ -377,7 +379,7 @@ echo "UT-17 the rule prose does not state config values as fact"
 # 설정에 있는 값을 산문에 박아 두면 그 값을 바꾼 프로젝트에서 규칙이 거짓말을 한다.
 t="$work/prose"; setup "$t"
 has "$t/.ai/AI_AGENT.md" "이슈 삭제를 **금지**한다" "the deletion ban rule was not rendered"
-sed -i '' 's/deletion_forbidden = true/deletion_forbidden = false/' "$t/harness.toml"
+sedi 's/deletion_forbidden = true/deletion_forbidden = false/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 hasnt "$t/.ai/AI_AGENT.md" "이슈 삭제를 **금지**한다" "deletion is allowed, yet the ban rule is still there"
 has   "$t/.ai/AI_AGENT.md" "지울 수 있다"             "the allowing sentence did not appear"
@@ -505,7 +507,7 @@ check "pinned version after install" "$(cat "$t/.harness/VERSION")" "0.1.0"
 echo "UT-27 the decision-record procedure follows the tool setting"
 # 도구를 바꿨는데 절차가 그대로면 없는 명령을 지시한다.
 t="$work/adrtool"; setup "$t"
-sed -i '' 's/^tool = .*/tool = "manual"/' "$t/harness.toml"
+sedi 's/^tool = .*/tool = "manual"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null
 has   "$t/.ai/adr.md" "도구를 쓰지 않는다" "manual, yet there is no by-hand procedure"
 hasnt "$t/.ai/adr.md" "adr new"            "manual, yet it prescribes a command that does not exist"
@@ -837,7 +839,7 @@ hasnt "$t/.claude/agents/planner.md" "## 이 프로젝트에서" "removing the n
 echo "UT-43 steps use type, and a config that still says kind reads the same"
 t="$work/wfnotes"; setup "$t"
 has "$t/harness.toml" 'type = "prompt"' "the shipped steps still use kind"
-sed -i '' 's/type = "/kind = "/g' "$t/harness.toml"
+sedi 's/type = "/kind = "/g' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "an old config with kind still renders" "$?" "0"
 
 echo "UT-44 workflow notes reach that procedure only, and stay protected"
@@ -1004,8 +1006,8 @@ check "wrap keeps the exit code" "$?" "3"
 has "$work/m.out" "out-line" "wrap swallowed stdout"
 has "$work/m.err" "token=abc123" "wrap swallowed stderr"
 f=$(ls "$md"/spans-*.jsonl | head -1)
-[ "$(stat -f %Lp "$md" 2>/dev/null || stat -c %a "$md")" = "700" ] && ok || bad "the metrics dir is not 0700"
-[ "$(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f")" = "600" ] && ok || bad "a span file is not 0600"
+[ "$(stat -c %a "$md" 2>/dev/null || stat -f %Lp "$md")" = "700" ] && ok || bad "the metrics dir is not 0700"
+[ "$(stat -c %a "$f" 2>/dev/null || stat -f %Lp "$f")" = "600" ] && ok || bad "a span file is not 0600"
 hasnt "$f" "abc123" "a token reached the log"
 hasnt "$f" "me@x.com" "an email reached the log"
 hasnt "$f" "$HOME/" "the home path reached the log"
@@ -1160,7 +1162,7 @@ PY
 imp > "$work/imp3.json"; sum "$work/imp3.json" > "$work/imp3.sum"
 has "$work/imp3.sum" "1 25 130 10 [16] 1" "the completed line was not imported exactly once"
 cur="$HARNESS_HOME/my-project/state/import-cursor.json"   # setup 의 설정은 project.name 을 바꾸지 않는다
-[ "$(stat -f %Lp "$cur" 2>/dev/null || stat -c %a "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
+[ "$(stat -c %a "$cur" 2>/dev/null || stat -f %Lp "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
 
 echo
 if [ "$fail" -eq 0 ]; then
