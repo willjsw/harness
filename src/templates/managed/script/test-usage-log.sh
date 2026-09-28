@@ -7,6 +7,9 @@
 #
 # 원격을 부르지 않는다. 임시 로그 파일에 직접 기록을 남기고 집계 출력만 본다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 root=$(pwd)

@@ -11,6 +11,9 @@
 # **표본 값을 이 파일에 문자열 그대로 적지 않는다.** 적으면 이 리포를 스캔할 때 이 파일이
 # 걸린다. 조각을 이어 붙여 임시 파일에만 완성된 형태가 생기게 한다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 command -v python3 >/dev/null || { echo "error: python3 is required to run this test" >&2; exit 2; }
 

@@ -11,6 +11,9 @@
 # **남기는 쪽이 이 테스트의 요점이다.** 되감기는 되돌릴 수 없으므로, 요구사항 이슈와 원격
 # 브랜치를 건드리지 않는다는 것이 닫는 동작 자체보다 중요하다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 command -v python3 >/dev/null || { echo "error: python3 is required to run this test" >&2; exit 2; }
 

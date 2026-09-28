@@ -7,6 +7,9 @@
 # 생성 파일을 손으로 고치면 check 가 잡는가, 불변식 위반이 render 를 막는가.
 # 이 셋이 하네스가 약속하는 전부다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 cd "$(dirname "$0")/.."
 root=$(pwd)
 pass=0
@@ -333,6 +336,22 @@ done
 check "verification bundle right after install" "$?" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
 ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
+
+echo "UT-61 regression tests run from a linked worktree's hook leave that worktree's repo alone"
+# 링크된 워크트리의 훅은 GIT_DIR·GIT_INDEX_FILE 을 절대 경로로 넘긴다. 그 값을 물려받은 채
+# 임시 리포를 만들면 임시 디렉터리 대신 그 리포가 다시 초기화된다.
+victim="$work/victim"; rm -rf "$victim" "$victim-wt"; mkdir -p "$victim"
+( cd "$victim" && git init -q . && git -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init \
+    && git worktree add -q -b side "$victim-wt" ) || bad "could not set up the linked worktree"
+wt_gitdir=$(git -C "$victim-wt" rev-parse --absolute-git-dir)
+branches_before=$(git -C "$victim" branch --format='%(refname:short)' | sort)
+for f in "$t"/script/test-*.sh; do
+  s=$(basename "$f" .sh)
+  ( cd "$t" && GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index" "./script/$s.sh" >"$work/$s.hookenv.log" 2>&1 ) \
+    || bad "$s failed under a linked worktree's hook environment — $work/$s.hookenv.log"
+  check "$s: core.bare of the worktree's repo" "$(git -C "$victim" config core.bare)" "false"
+  check "$s: branches of the worktree's repo" "$(git -C "$victim" branch --format='%(refname:short)' | sort)" "$branches_before"
+done
 
 echo "UT-58 the installed CLI carries its metrics module and leaves no bytecode"
 [ -f "$t/.harness/bin/harness_metrics.py" ] && ok || bad "install did not vendor the metrics module"
