@@ -233,6 +233,17 @@ clean = dump(review([], "PASS"))
 with open(os.path.join(out, "two-blocks.md"), "w", encoding="utf-8") as fp:
     fp.write(f"```{tag}\n{clean}\n```\n\n```{tag}\n{clean}\n```\n")
 write("bad-json.md", raw='{"summary": "끝이 없다", "findings": [')
+# 여는 줄의 info string 은 정확히 태그여야 한다. 뒤에 공백이 붙은 줄은 판정 데이터 블록이 아니다.
+with open(os.path.join(out, "fence-trailing-space.md"), "w", encoding="utf-8") as fp:
+    fp.write(f"```{tag} \n{clean}\n```\n")
+with open(os.path.join(out, "fence-trailing-tab.md"), "w", encoding="utf-8") as fp:
+    fp.write(f"```{tag}\t\n{clean}\n```\n")
+# CRLF 줄 끝은 줄 끝일 뿐 info string 의 일부가 아니다.
+with open(os.path.join(out, "fence-crlf.md"), "w", encoding="utf-8", newline="") as fp:
+    fp.write(f"리뷰를 마쳤다.\r\n\r\n```{tag}\r\n" + clean.replace("\n", "\r\n") + "\r\n```\r\n")
+# 줄을 가르지 않는 제어 문자는 title 에 있어도 한 줄이다.
+write("title-inline-control.md", review([
+    finding("major", "script/review-mr.sh", 5, "요지\u0007와\t탭")], "CHANGES_REQUESTED"))
 
 # 스키마 위반 — 한 가지씩만 어긴다. 기대하는 지목 위치를 파일 이름 옆에 적어 둔다.
 base = review([finding("major", "script/review-mr.sh", 4, "요지")], "CHANGES_REQUESTED")
@@ -272,7 +283,11 @@ bad("title-carriage-return", "findings[0].title", lambda d: d["findings"][0].upd
 bad("title-line-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u2028# 삽입"))
 bad("title-paragraph-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u2029# 삽입"))
 bad("title-next-line", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u0085# 삽입"))
-bad("title-control", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u0007"))
+bad("title-vertical-tab", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u000b# 삽입"))
+bad("title-form-feed", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u000c# 삽입"))
+bad("title-file-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u001c# 삽입"))
+bad("title-group-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u001d# 삽입"))
+bad("title-record-separator", "findings[0].title", lambda d: d["findings"][0].update(title="요지\u001e# 삽입"))
 bad("decision-not-minor", "findings[0].decision_basis",
     lambda d: d["findings"][0].update(decision_basis="docs/adr/0004-x.md"))
 bad("out-of-scope-type", "findings[0].out_of_scope", lambda d: d["findings"][0].update(out_of_scope="no"))
@@ -450,7 +465,7 @@ check UT-11 "outside lines are not posted" 0 "$(note_hits '블록 밖의 발견 
 check UT-11 "no inline comment" 0 "$(note_hits '^note: inline')"
 
 echo "UT-12 no block, two blocks or broken JSON means nothing is posted"
-for c in no-block two-blocks bad-json; do
+for c in no-block two-blocks bad-json fence-trailing-space fence-trailing-tab; do
   rm -f "$state/notes"
   check UT-12 "$c — exit code" 2 "$(run_post 16 "$sandbox/$c.md")"
   check UT-12 "$c — post calls" 0 "$(note_hits 'note:')"
@@ -471,6 +486,16 @@ echo "UT-13 a line separator inside a multi-line field is not a violation"
 rm -f "$state/notes"
 check UT-13 "separator-in-text — exit code" 1 "$(run_post 17 "$sandbox/separator-in-text.md")"
 check UT-13 "separator-in-text — inline posted" 1 "$(note_hits '^note: inline')"
+
+echo "UT-13 a control character that does not break the line is allowed in the title"
+rm -f "$state/notes"
+check UT-13 "title-inline-control — exit code" 1 "$(run_post 17 "$sandbox/title-inline-control.md")"
+check UT-13 "title-inline-control — inline posted" 1 "$(note_hits '^note: inline')"
+
+echo "UT-12 CRLF line endings around the block are accepted"
+rm -f "$state/notes"
+check UT-12 "fence-crlf — exit code" 0 "$(run_post 16 "$sandbox/fence-crlf.md")"
+check UT-12 "fence-crlf — summary posted" 1 "$(note_hits '^note: summary')"
 
 echo "UT-29 the summary and inline comments are rendered from the data"
 rm -f "$state/notes"

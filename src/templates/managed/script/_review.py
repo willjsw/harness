@@ -225,7 +225,8 @@ HIST_FORMAT = "#format 1"
 # blocker·major 가 없던 회차의 자리표시자. 회차 번호를 잇고 연속을 끊는 역할만 한다.
 NO_FINDING = "-"
 
-FENCE = re.compile(r"^```(.*?)\s*$")
+# 여는 줄의 ``` 뒤 전부가 info string 이다. 공백을 걷어 내지 않는다 — 떼는 것은 CRLF 의 CR 하나뿐이다.
+FENCE = re.compile(r"^```(.*?)\r?$")
 
 
 class Violation(Exception):
@@ -277,11 +278,11 @@ def _text(v):
     return isinstance(v, str) and v.strip() != ""
 
 
-# 제어 문자(Cc)와 줄·문단 구분자(Zl·Zp). 한 줄 문자열에 들어오면 등록 댓글의 줄 구조와
-# 누적 파일의 한 줄 기록이 깨진다. str.splitlines 가 줄바꿈으로 보는 문자는 전부 이 안에 든다.
-LINE_BREAKING = ("Cc", "Zl", "Zp")
-# 경로에는 서식 문자(Cf — 양방향 재정렬 등)도 받지 않는다. 보이는 경로와 실제 경로가 달라진다.
-PATH_FORBIDDEN = LINE_BREAKING + ("Cf",)
+# str.splitlines 가 줄 경계로 보는 문자 전부. 한 줄 문자열에 들어오면 등록 댓글의 줄 구조가 깨진다.
+LINE_BREAKS = frozenset("\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029")
+# 경로에는 제어 문자(Cc)·줄·문단 구분자(Zl·Zp)·서식 문자(Cf — 양방향 재정렬 등)를 받지 않는다.
+# 누적 파일의 한 줄 기록이 깨지고, 보이는 경로와 실제 경로가 달라진다.
+PATH_FORBIDDEN = ("Cc", "Zl", "Zp", "Cf")
 
 
 def _has_category(s, categories):
@@ -337,8 +338,8 @@ def validate(data, verdicts):
                 raise Violation(f"{at}.line: must be an integer of 1 or more, or null")
             if path is None:
                 raise Violation(f"{at}.line: must be null when path is null")
-        if not _text(f["title"]) or _has_category(f["title"], LINE_BREAKING):
-            raise Violation(f"{at}.title: must be one non-blank line without control characters")
+        if not _text(f["title"]) or any(c in LINE_BREAKS for c in f["title"]):
+            raise Violation(f"{at}.title: must be one non-blank line")
         for k in ("problem", "repro", "recommendation"):
             if not _text(f[k]):
                 raise Violation(f"{at}.{k}: must be a non-blank string")
