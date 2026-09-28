@@ -470,12 +470,14 @@ has "$work/doctor.log" "git hooks"   "did not report the hook state"
 echo "UT-24 running a workflow launches the orchestrator interactively"
 # 승인 게이트가 있으므로 비대화형으로 돌리면 그 지점이 통과된 것처럼 지나간다.
 t="$work/run"; setup "$t"
-out=$("$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
+# 실행 기기에 오케스트레이터가 없어도 돌도록 가짜를 PATH 앞에 둔다. --dry-run 도 설치 여부는 확인한다.
+orch24="$work/orch24"; mkdir -p "$orch24"; printf '#!/bin/sh\nexit 0\n' > "$orch24/claude"; chmod +x "$orch24/claude"
+out=$(PATH="$orch24:$PATH" "$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
 check "run exit code" "$?" "0"
 case "$out" in *claude*"/work 12"*) ok ;; *) bad "the command to launch is not what is expected: $out" ;; esac
 case "$out" in *-p*|*--print*) bad "launches non-interactively — the approval gate is skipped" ;; *) ok ;; esac
 "$root/bin/harness" set --target "$t" harness.model opus >/dev/null 2>&1
-out=$("$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
+out=$(PATH="$orch24:$PATH" "$root/bin/harness" run --target "$t" work 12 --dry-run 2>&1)
 case "$out" in *"claude --model opus"*) ok ;; *) bad "the orchestrator model is not passed at launch: $out" ;; esac
 "$root/bin/harness" run --target "$t" nosuch 12 --dry-run >/dev/null 2>&1
 check "exit code for an unknown workflow" "$?" "2"
