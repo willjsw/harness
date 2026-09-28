@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SCHEMA = 1
 KINDS = {"command", "step", "agent", "script", "session", "prompt", "marker"}
 UNATTRIBUTED = "t-unattributed"   # 어느 실행(harness run)에도 붙이지 못한 기록이 모이는 트레이스
-ATTR_KEYS = {"workflow", "step", "role", "vendor", "model", "issue", "script", "source"}
+ATTR_KEYS = {"workflow", "step", "role", "vendor", "model", "issue", "worktree", "script", "source"}
 # 이름·속성 값의 모양. 자유 문장이 들어오지 못하게 짧은 식별자만 받는다
 NAME_RE = re.compile(r"^[\w.:/@+-]{1,80}$")
 ISSUE_RE = re.compile(r"^[0-9]{1,10}$")
@@ -70,7 +70,7 @@ def clean_attrs(pairs):
     out = {}
     for p in pairs or []:
         k, _, v = p.partition("=")
-        if k in ATTR_KEYS and (ISSUE_RE if k == "issue" else NAME_RE).match(v):
+        if k in ATTR_KEYS and (ISSUE_RE if k in ("issue", "worktree") else NAME_RE).match(v):
             out[k] = v
     return out
 

@@ -84,6 +84,11 @@ git for-each-ref --format='%(refname:short)' "refs/heads/*/$issue-*" > "$work/lo
 git ls-remote --heads origin "*/$issue-*" 2>/dev/null \
   | sed 's|.*refs/heads/||' > "$work/remote.txt" || : > "$work/remote.txt"
 current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+# 다른 worktree 가 체크아웃한 브랜치는 `git branch -D` 가 실패한다. 브랜치 → 그 worktree 경로를 모아 남긴다.
+git worktree list --porcelain 2>/dev/null | awk '
+  /^worktree /             { p = substr($0, 10) }
+  /^branch refs\/heads\// { printf "%s\t%s\n", substr($0, 19), p }' > "$work/worktrees.txt" || : > "$work/worktrees.txt"
+worktree_of() { awk -F '\t' -v b="$1" '$1 == b { print $2; exit }' "$work/worktrees.txt"; }
 
 # ── 보인다 ──────────────────────────────────────────────────────────────────
 n_mr=$(printf '%s' "$open_mrs" | wc -w | tr -d ' ')
@@ -107,6 +112,8 @@ while read -r b; do
   [ -n "$b" ] || continue
   if [ "$b" = "$current" ]; then
     echo "    local branch $b   ** checked out — will not be removed **"
+  elif wp=$(worktree_of "$b") && [ -n "$wp" ]; then
+    echo "    local branch $b   ** checked out in worktree $wp — will not be removed **"
   else
     echo "    local branch $b"
   fi
@@ -169,6 +176,12 @@ while read -r b; do
   [ -n "$b" ] || continue
   if [ "$b" = "$current" ]; then
     echo "kept local branch $b — it is checked out. switch away and rerun to remove it"
+    continue
+  fi
+  wp=$(worktree_of "$b")
+  if [ -n "$wp" ]; then
+    # worktree 는 지우지 않는다 — 그 안의 미커밋 변경과 미push 커밋이 사라진다
+    echo "kept local branch $b — it is checked out in worktree $wp. remove that worktree and rerun to remove it"
     continue
   fi
   # 머지되지 않은 커밋이 있어도 지운다 — 되감기가 그 목적이다. 원격 브랜치는 그대로 남아 있어

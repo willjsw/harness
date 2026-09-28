@@ -192,10 +192,18 @@ def seen(st: dict, key: str) -> bool:
     return False
 
 
-def import_claude(target: Path, cursor: dict, since, roles: set):
+def source_dirs(sources: dict) -> dict:
+    """출처(하네스 루트는 "", worktree 는 그 이름) → 그 실행 디렉터리의 적힌 경로와 실제 경로로 푼 경로."""
+    return {name: {str(p), str(Path(p).resolve())} for name, p in sources.items()}
+
+
+def import_claude(sources: dict, cursor: dict, since, roles: set):
     base = Path(os.environ.get("HARNESS_CLAUDE_DIR") or Path.home() / ".claude" / "projects")
-    names = {re.sub(r"[^A-Za-z0-9]", "-", str(p)) for p in (target, target.resolve())}
-    for d in (base / n for n in names):
+    dirs = {}
+    for src, paths in source_dirs(sources).items():
+        for p in paths:
+            dirs.setdefault(re.sub(r"[^A-Za-z0-9]", "-", p), src)
+    for d, src in ((base / n, s) for n, s in dirs.items()):
         for f in sorted(d.glob("*.jsonl")) + sorted(d.glob("*/subagents/agent-*.jsonl")) if d.is_dir() else []:
             if datetime.datetime.fromtimestamp(f.stat().st_mtime, datetime.timezone.utc) < since:
                 continue
@@ -214,12 +222,13 @@ def import_claude(target: Path, cursor: dict, since, roles: set):
                 t = parse_iso(e["timestamp"])
                 if t >= since:
                     yield {"vendor": "claude", "session": e.get("sessionId", f.stem), "role": role, "t": t,
-                           "model": m.get("model", ""), "usage": claude_usage(m["usage"])}
+                           "model": m.get("model", ""), "usage": claude_usage(m["usage"]), "src": src}
 
 
-def import_codex(target: Path, cursor: dict, since):
+def import_codex(sources: dict, cursor: dict, since):
     base = Path(os.environ.get("HARNESS_CODEX_DIR") or Path.home() / ".codex" / "sessions")
-    mine = {str(target), str(target.resolve())}
+    # worktree 를 먼저 본다 — 하네스 루트와 겹치지 않지만, 겹쳐도 더 좁은 쪽이 출처다
+    mine = sorted(source_dirs(sources).items(), key=lambda x: x[0] == "")
     for f in sorted(base.rglob("rollout-*.jsonl")) if base.is_dir() else []:
         st = cursor.setdefault("codex:" + str(f), {})
         if st.get("other") or datetime.datetime.fromtimestamp(f.stat().st_mtime, datetime.timezone.utc) < since:
@@ -229,7 +238,8 @@ def import_codex(target: Path, cursor: dict, since):
             kind = e.get("type")
             if kind == "session_meta":
                 cwd = p.get("cwd", "")
-                st["mine"] = any(cwd == m or cwd.startswith(m + "/") for m in mine)
+                src = next((n for n, ps in mine if any(cwd == m or cwd.startswith(m + "/") for m in ps)), None)
+                st["mine"], st["src"] = src is not None, src or ""
                 st["other"] = not st["mine"]            # 다른 프로젝트의 기록은 다시 열지 않는다
                 st["session"] = p.get("id", f.stem)
                 continue
@@ -243,7 +253,7 @@ def import_codex(target: Path, cursor: dict, since):
                 if seen(st, p.get("response_id", "")) or not t or t < since:
                     continue
                 yield {"vendor": "codex", "session": st.get("session", f.stem), "role": "", "t": t,
-                       "model": st.get("model", ""), "usage": codex_usage(p.get("usage") or {})}
+                       "model": st.get("model", ""), "usage": codex_usage(p.get("usage") or {}), "src": st.get("src", "")}
             elif kind == "event_msg" and p.get("type") == "token_count" and not st.get("rec"):
                 tot = ((p.get("info") or {}).get("total_token_usage")) or {}
                 cur = codex_usage(tot)
@@ -254,13 +264,16 @@ def import_codex(target: Path, cursor: dict, since):
                 delta = {k: max(0, cur[k] - prev.get(k, 0)) for k in cur}
                 if any(delta.values()) and t and t >= since:
                     yield {"vendor": "codex", "session": st.get("session", f.stem), "role": "", "t": t,
-                           "model": st.get("model", ""), "usage": delta}
+                           "model": st.get("model", ""), "usage": delta, "src": st.get("src", "")}
 
 
-def metrics_import(target: Path, mc: dict, state: Path, roles: set) -> dict:
+def metrics_import(target: Path, mc: dict, state: Path, roles: set, worktree_dir: str = "", prefix: str = "") -> dict:
     """새 대화 기록을 스팬으로 옮긴다. 커서는 지표와 따로(보관 정책 밖에) 두고 원자적으로 바꾼다.
 
     mc 는 해석한 지표 설정, state 는 가져오기 커서를 둘 디렉터리, roles 는 설정의 역할 이름이다.
+    worktree_dir 은 확장한 worktree.dir, prefix 는 하네스 루트의 리포 내 위치다. run 스팬의 worktree
+    이름마다 실행 디렉터리를 <worktree_dir>/<이름>/<prefix> 로 다시 계산해 그 대화 기록도 읽는다 —
+    스팬은 경로를 갖지 않는다.
     """
     m = load_metric(target)
     if not m or mc["dir"] == "off":
@@ -272,23 +285,29 @@ def metrics_import(target: Path, mc: dict, state: Path, roles: set) -> dict:
         cursor = json.loads(cur_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         cursor = {}
-    records = list(import_claude(target, cursor, since, roles)) + list(import_codex(target, cursor, since))
-
     spans, _ = read_spans(Path(os.path.expandvars(os.path.expanduser(mc["dir"]))))
     runs, marks = [], {}
     for sid, e in spans.items():
         s = e.get("start") or {}
         if s.get("kind") == "command" and s.get("name", "").startswith("run/"):
             t1 = parse_iso(e["end"]["t"]) if e.get("end") else now
-            runs.append((s["trace"], sid, s["attrs"].get("vendor", ""), parse_iso(s["t"]), t1))
+            runs.append((s["trace"], sid, s["attrs"].get("vendor", ""), parse_iso(s["t"]), t1, s["attrs"].get("worktree", "")))
         elif s.get("kind") == "marker":
             marks.setdefault(s["trace"], []).append((parse_iso(s["t"]), s["attrs"]))
     for v in marks.values():
         v.sort(key=lambda x: x[0])
 
+    sources = {"": target}
+    if os.path.isabs(worktree_dir or ""):
+        for name in sorted({x[5] for x in runs if x[5] and x[4] >= since}):
+            sources[name] = Path(worktree_dir, name, prefix) if prefix else Path(worktree_dir, name)
+    records = list(import_claude(sources, cursor, since, roles)) + list(import_codex(sources, cursor, since))
+
     groups = {}
     for r in records:
-        hit = [x for x in runs if x[2] == r["vendor"] and x[3] <= r["t"] <= x[4] + datetime.timedelta(seconds=60)]
+        # worktree 의 기록은 그 worktree 의 실행에만, 하네스 루트의 기록은 worktree 없는 실행에만 붙는다
+        hit = [x for x in runs if x[2] == r["vendor"] and x[5] == r["src"]
+               and x[3] <= r["t"] <= x[4] + datetime.timedelta(seconds=60)]
         trace, parent = (hit[0][0], hit[0][1]) if len(hit) == 1 else (UNATTRIBUTED, None)
         step = next((a for t, a in reversed(marks.get(trace, [])) if t <= r["t"]), {})
         key = (trace, parent, r["session"], r["vendor"], r["role"], r["model"], step.get("workflow", ""), step.get("step", ""))

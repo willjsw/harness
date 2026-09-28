@@ -1271,6 +1271,283 @@ check "Jira: a thread reply is refused" "$?" "2"
 has "$work/jira-reply.err" "not supported" "Jira: the refusal does not say it is unsupported"
 unset FAKE_CALLS
 
+echo "UT-70 the worktree section: defaults, unknown keys and paths that are not relative are refused"
+t="$work/wtcfg"; setup "$t"
+has "$t/harness.toml" 'dir = "$HOME/.harness/{project}/worktrees"' "the default config has no worktree.dir default"
+has "$t/harness.toml" 'include = [".claude/settings.local.json"]' "the default config has no worktree.include default"
+cp "$t/harness.toml" "$work/wtcfg.orig"
+wt_render() { "$root/bin/harness" render --target "$t" > "$work/wtcfg.log" 2>&1; }
+python3 - "$t/harness.toml" <<'PY'
+import sys; p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace('include = [".claude/settings.local.json"]', 'include = [".claude/settings.local.json"]\nenabled = true'))
+PY
+wt_render; check "render with an unknown worktree key" "$?" "2"
+has "$work/wtcfg.log" "unknown key(s) in [worktree]: enabled" "the unknown worktree key is not named"
+has "$work/wtcfg.log" "the keys are dir, include" "the worktree keys are not listed"
+for bad_path in "/etc/x" "../x" "a/../b" "a b" "*.json" "a?" "[ab]"; do
+  cp "$work/wtcfg.orig" "$t/harness.toml"
+  python3 - "$t/harness.toml" "$bad_path" <<'PY'
+import json, sys; p = sys.argv[1]; s = open(p).read()
+open(p, "w").write(s.replace('include = [".claude/settings.local.json"]', 'include = [".env", %s]' % json.dumps(sys.argv[2])))
+PY
+  wt_render; check "render with worktree.include item $bad_path" "$?" "2"
+  has "$work/wtcfg.log" "worktree.include[2] must be a path relative to the harness root" "the bad include item $bad_path is not named"
+done
+cp "$work/wtcfg.orig" "$t/harness.toml"
+sedi 's|^dir = "\$HOME/.harness/{project}/worktrees"$|dir = "  "|' "$t/harness.toml"
+wt_render; check "render with a blank worktree.dir" "$?" "2"
+has "$work/wtcfg.log" "worktree.dir must be" "the blank worktree.dir is not named"
+# 절이 없는 옛 설정은 기본값으로 돈다
+cp "$work/wtcfg.orig" "$t/harness.toml"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[worktree\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[worktree]" not in s
+open(p, "w").write(s)
+PY
+wt_render; check "render without a worktree section" "$?" "0"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check without a worktree section" "$?" "0"
+cp "$work/wtcfg.orig" "$t/harness.toml"
+
+echo "UT-71 harness run --worktree makes a worktree per issue, reopens a clean one and removes it when nothing is left"
+t="$work/wtrun"; setup "$t"; wd="$work/wtrun-trees"
+"$root/bin/harness" set --target "$t" worktree.dir "$wd" >/dev/null 2>&1 || bad "could not set worktree.dir"
+wtg() { git -C "$1" -c user.name=t -c user.email=t@example.invalid "${@:2}"; }
+git init -q --bare -b development "$work/wtrun-origin.git"
+( cd "$t" && git init -q -b development . && echo a > tracked.txt )
+wtg "$t" add -A && wtg "$t" commit -q -m "chore: 하네스" && wtg "$t" remote add origin "$work/wtrun-origin.git" \
+  && wtg "$t" push -q origin development || bad "could not set up the worktree test repo"
+# 가짜 오케스트레이터: 불린 자리와 HEAD 를 적고, 케이스에 따라 추적 파일을 고치거나 커밋한다
+mkdir -p "$work/wtorch" && cat > "$work/wtorch/claude" <<'SH'
+#!/bin/sh
+{ pwd -P; git rev-parse HEAD; git symbolic-ref -q HEAD || echo detached; } > "$WT_OUT"
+git status --porcelain > "$WT_OUT.status"
+top=$(git rev-parse --show-toplevel)
+case "$WT_ACT" in
+  keep)   touch "$top/keep.me" ;;
+  edit)   echo b >> "$top/tracked.txt" ;;
+  commit) echo c >> "$top/tracked.txt"; git -c user.name=t -c user.email=t@example.invalid commit -qam "feat: x(#7)" --no-verify ;;
+esac
+exit "${WT_CODE:-0}"
+SH
+chmod +x "$work/wtorch/claude"
+wtrun() { # wtrun <하네스 루트> <인자...> — 가짜 오케스트레이터로 harness run 을 돌린다. 출력은 wt.log, 불린 자리는 wt.cwd
+  local dir="$1"; shift; rm -f "$work/wt.cwd"
+  ( cd "$dir" && PATH="$work/wtorch:$PATH" WT_OUT="$work/wt.cwd" "$root/bin/harness" run "$@" ) > "$work/wt.log" 2>&1
+}
+called() { [ -f "$work/wt.cwd" ] && sed -n "${1}p" "$work/wt.cwd"; }
+base_head=$(git -C "$t" rev-parse origin/development)
+
+wtrun "$t" work 7 --worktree; check "run --worktree exit code" "$?" "0"
+real_wd=$(cd "$wd" && pwd -P)
+check "the orchestrator runs inside the new worktree" "$(called 1)" "$real_wd/7"
+check "the new worktree starts at the remote integration branch" "$(called 2)" "$base_head"
+check "the new worktree's HEAD is detached" "$(called 3)" "detached"
+has "$work/wt.log" "worktree: $wd/7 (new)" "run --worktree did not name the new worktree"
+has "$work/wt.log" "removed worktree $wd/7" "a worktree left clean was not removed"
+[ ! -e "$wd/7" ] && ok || bad "the clean worktree is still on disk"
+git -C "$t" worktree list | grep -qF "wtrun-trees/7" && bad "the clean worktree is still registered" || ok
+
+wtrun "$t" work 7; check "run without --worktree exit code" "$?" "0"
+check "without --worktree the orchestrator runs at the harness root" "$(called 1)" "$(cd "$t" && pwd -P)"
+[ ! -e "$wd/7" ] && ok || bad "a worktree was made without --worktree"
+
+WT_ACT=edit WT_CODE=3 wtrun "$t" work 7 --worktree; check "exit code is the orchestrator's when the worktree is kept" "$?" "3"
+has "$work/wt.log" "kept worktree $wd/7 — uncommitted changes" "a worktree with uncommitted changes was not kept"
+[ -d "$wd/7" ] && ok || bad "the worktree with uncommitted changes was removed"
+
+wtrun "$t" work 7 --worktree; check "exit code for a worktree with uncommitted changes" "$?" "1"
+[ -f "$work/wt.cwd" ] && bad "the orchestrator launched in a worktree with uncommitted changes" || ok
+has "$work/wt.log" "stop: worktree $wd/7 has uncommitted changes" "the stop does not name the worktree"
+has "$work/wt.log" " M tracked.txt" "the stop does not show the status lines"
+wtg "$wd/7" checkout -q -- tracked.txt
+
+WT_ACT=commit wtrun "$t" work 7 --worktree; check "run that commits exit code" "$?" "0"
+has "$work/wt.log" "worktree: $wd/7 (reopened)" "a clean worktree was not reopened"
+has "$work/wt.log" "kept worktree $wd/7 — unpushed commits" "a worktree with unpushed commits was not kept"
+wtg "$wd/7" push -q origin HEAD:refs/heads/wt7 || bad "could not push the worktree commit"
+head7=$(git -C "$wd/7" rev-parse HEAD)
+wtrun "$t" work 7 --worktree; check "reopening a clean worktree exit code" "$?" "0"
+has "$work/wt.log" "worktree: $wd/7 (reopened)" "a clean worktree was not reopened"
+check "the reopened worktree keeps its HEAD" "$(called 2)" "$head7"
+check "the orchestrator runs inside the reopened worktree" "$(called 1)" "$real_wd/7"
+[ ! -e "$wd/7" ] && ok || bad "the pushed worktree was not removed"
+
+o="$work/wtother"; rm -rf "$o"; mkdir -p "$o"; ( cd "$o" && git init -q . && echo o > o.txt )
+wtg "$o" add -A && wtg "$o" commit -q -m init && wtg "$o" worktree add -q --detach "$wd/7" || bad "could not make another repo's worktree"
+ohead=$(git -C "$wd/7" rev-parse HEAD)
+wtrun "$t" work 7 --worktree; check "exit code for another repository's worktree" "$?" "2"
+[ -f "$work/wt.cwd" ] && bad "the orchestrator launched in another repository's worktree" || ok
+has "$work/wt.log" "error: $wd/7 is not a worktree of this repository" "the path conflict is not named"
+check "another repository's worktree is left as it was" "$(git -C "$wd/7" rev-parse HEAD) $(git -C "$wd/7" status --porcelain | wc -l | tr -d ' ')" "$ohead 0"
+wtg "$o" worktree remove "$wd/7"
+
+mkdir -p "$wd/7" && echo x > "$wd/7/f"
+wtrun "$t" work 7 --worktree; check "exit code for a directory that is not a git tree" "$?" "2"
+[ -f "$wd/7/f" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "a plain directory was touched or the orchestrator launched"
+rm -f "$wd/7/f"
+wtrun "$t" work 7 --worktree; check "an empty directory becomes the worktree" "$?" "0"
+check "the orchestrator runs inside the worktree made in an empty directory" "$(called 1)" "$real_wd/7"
+
+wtrun "$t" retro x --worktree; check "exit code for an issue that is not a number" "$?" "2"
+has "$work/wt.log" "error: --worktree needs an issue number (got x)" "the bad issue is not named"
+[ ! -e "$wd/x" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "something was made for an issue that is not a number"
+
+for inside in "$t/trees" "rel/trees"; do
+  "$root/bin/harness" set --target "$t" worktree.dir "$inside" >/dev/null 2>&1
+  wtrun "$t" work 7 --worktree; check "exit code for worktree.dir $inside" "$?" "2"
+  [ ! -e "$t/trees" ] && [ ! -e "$t/rel" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "worktree.dir $inside made something or launched"
+done
+"$root/bin/harness" set --target "$t" worktree.dir "$wd" >/dev/null 2>&1
+
+wtg "$t" remote rename origin upstream
+wtrun "$t" work 7 --worktree; check "exit code when the fetch fails" "$?" "2"
+[ ! -e "$wd/7" ] && [ ! -f "$work/wt.cwd" ] && ok || bad "a failed fetch made a worktree or launched"
+wtg "$t" remote rename upstream origin
+
+wtrun "$t" work 7 --worktree --dry-run; check "run --worktree --dry-run exit code" "$?" "0"
+[ ! -e "$wd/7" ] && ok || bad "--dry-run made a worktree"
+has "$work/wt.log" "worktree: $wd/7 (new)" "--dry-run does not show the worktree"
+has "$work/wt.log" "/work 7" "--dry-run does not show the command"
+
+mono="$work/wtmono"; rm -rf "$mono"; mkdir -p "$mono"; setup "$mono/sub"; wd2="$work/wtmono-trees"
+"$root/bin/harness" set --target "$mono/sub" worktree.dir "$wd2" >/dev/null 2>&1
+git init -q --bare -b development "$work/wtmono-origin.git"
+( cd "$mono" && git init -q -b development . && echo a > tracked.txt )
+wtg "$mono" add -A && wtg "$mono" commit -q -m "chore: 하네스" && wtg "$mono" remote add origin "$work/wtmono-origin.git" \
+  && wtg "$mono" push -q origin development || bad "could not set up the monorepo worktree test repo"
+wtrun "$mono/sub" work 7 --worktree; check "monorepo run --worktree exit code" "$?" "0"
+check "in a monorepo the orchestrator runs at the harness root's place in the worktree" "$(called 1)" "$(cd "$wd2" && pwd -P)/7/sub"
+
+echo "UT-72 a new worktree gets the ignored local files, and its hooks and guard are its own"
+# UT-71 의 리포를 이어 쓴다. 무시 규칙은 checkout 이 가져가야 하므로 원격에 올린다
+printf '.claude/settings.local.json\nlocal-dir/\n' >> "$t/.gitignore"
+wtg "$t" add .gitignore && wtg "$t" commit -q -m "chore: 무시 규칙" && wtg "$t" push -q origin development || bad "could not push the ignore rules"
+( cd "$t" && printf 'local\n' > .claude/settings.local.json && chmod 600 .claude/settings.local.json \
+  && mkdir -p local-dir && echo d > local-dir/a && ln -sf a local-dir/ln && echo n > notignored.txt && echo changed > tracked.txt )
+"$root/bin/harness" set --target "$t" worktree.include ".claude/settings.local.json,local-dir,notignored.txt,missing.txt,tracked.txt" >/dev/null 2>&1 \
+  || bad "could not set worktree.include"
+WT_ACT=keep wtrun "$t" work 8 --worktree; check "run --worktree with include exit code" "$?" "0"
+cmp -s "$t/.claude/settings.local.json" "$wd/8/.claude/settings.local.json" && ok || bad "an ignored include file was not copied"
+check "the copied file keeps its permission bits" "$(stat -c %a "$wd/8/.claude/settings.local.json" 2>/dev/null || stat -f %Lp "$wd/8/.claude/settings.local.json")" "600"
+[ -f "$wd/8/local-dir/a" ] && [ -L "$wd/8/local-dir/ln" ] && ok || bad "an ignored directory was not copied whole with its symlink"
+[ ! -e "$wd/8/notignored.txt" ] && ok || bad "a file git does not ignore was copied"
+has "$work/wt.log" "warn: notignored.txt is not ignored by git — not copied" "the file git does not ignore was not warned about"
+[ ! -e "$wd/8/missing.txt" ] && ok || bad "a missing include path appeared in the worktree"
+hasnt "$work/wt.log" "missing.txt" "a missing include path was reported"
+check "a tracked include path keeps the checkout's content" "$(cat "$wd/8/tracked.txt")" "a"
+check "git status is clean after the copy" "$(wc -c < "$work/wt.cwd.status" | tr -d ' ')" "0"
+hasnt "$work/wt.log" "settings.local.json" "run printed a copied path"
+has "$work/wt.log" "kept worktree $wd/8 — uncommitted changes" "the kept worktree is not reported"
+# 다시 열 때는 복사하지 않는다
+rm -f "$wd/8/keep.me" "$wd/8/.claude/settings.local.json"
+WT_ACT=keep wtrun "$t" work 8 --worktree; check "reopen with include exit code" "$?" "0"
+has "$work/wt.log" "worktree: $wd/8 (reopened)" "the worktree was not reopened"
+[ ! -e "$wd/8/.claude/settings.local.json" ] && ok || bad "a reopened worktree got the include files again"
+# worktree 의 git 훅: core.hooksPath 의 상대 경로가 worktree 최상위 기준으로 풀린다
+git -C "$t" config core.hooksPath script/githooks
+rm -f "$wd/8/keep.me"; echo hook >> "$wd/8/tracked.txt"
+wtg "$wd/8" commit -qam "not the commit form" > "$work/wthook.log" 2>&1; check "commit-msg in a worktree refuses a bad subject" "$?" "1"
+has "$work/wthook.log" "commit subject does not match the required form" "the worktree's commit-msg hook did not run"
+git -C "$t" config --unset core.hooksPath
+# worktree 의 명령 가드: settings.json 의 훅 명령이 그 worktree 의 가드와 harness.env 를 부른다
+gcmd=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["hooks"]["PreToolUse"][0]["hooks"][0]["command"])' "$wd/8/.claude/settings.json")
+case "$gcmd" in '$CLAUDE_PROJECT_DIR/script/hooks/bash-guard.sh') ok ;; *) bad "the guard command is not under CLAUDE_PROJECT_DIR: $gcmd" ;; esac
+printf '{"tool_input":{"command":"git push origin development"}}' | CLAUDE_PROJECT_DIR="$wd/8" sh -c "$gcmd" > "$work/wtguard.log" 2>&1
+check "the worktree's guard blocks a push to a protected branch" "$?" "2"
+wtg "$wd/8" checkout -q -- tracked.txt && wtg "$t" worktree remove "$wd/8" || bad "could not remove the include worktree"
+"$root/bin/harness" set --target "$t" worktree.include ".claude/settings.local.json" >/dev/null 2>&1
+# 모노레포: 실행 디렉터리 아래로 복사한다
+printf '.claude/settings.local.json\n' > "$mono/sub/.gitignore"
+wtg "$mono" add sub/.gitignore && wtg "$mono" commit -q -m "chore: 무시 규칙" && wtg "$mono" push -q origin development || bad "could not push the monorepo ignore rule"
+echo local > "$mono/sub/.claude/settings.local.json"
+WT_ACT=keep wtrun "$mono/sub" work 8 --worktree; check "monorepo run --worktree with include exit code" "$?" "0"
+[ -f "$wd2/8/sub/.claude/settings.local.json" ] && [ ! -e "$wd2/8/.claude/settings.local.json" ] && ok \
+  || bad "in a monorepo the include file was not copied under the harness root's place"
+
+echo "UT-73 a worktree run carries only its issue number, and session import attributes each worktree's records to its run"
+wtrun "$t" work 9 --worktree; check "run --worktree for the span exit code" "$?" "0"
+wtrun "$t" work 9; check "run without --worktree for the span exit code" "$?" "0"
+python3 - "$t.records/metrics" > "$work/wtspan.sum" <<'PY2'
+import glob, json, sys
+st = [json.loads(l) for f in sorted(glob.glob(sys.argv[1] + "/spans-*.jsonl")) for l in open(f)]
+runs = [e["attrs"] for e in st if e["ev"] == "start" and e["name"] == "run/work" and e["attrs"].get("issue") == "9"]
+print(len(runs), runs[0].get("worktree"), runs[1].get("worktree", "none"))
+PY2
+has "$work/wtspan.sum" "2 9 none" "the run span's worktree attribute is wrong (runs, with the flag, without)"
+grep -rqF "wtrun-trees" "$t.records/metrics" && bad "a worktree path reached the spans" || ok
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); sys.dont_write_bytecode = True; import metric; print(metric.clean_attrs(["worktree=../x", "issue=1"]), metric.clean_attrs(["worktree=12"]))' "$t/script" > "$work/wtattr.sum"
+has "$work/wtattr.sum" "{'issue': '1'} {'worktree': '12'}" "metric.py does not keep only a numeric worktree attribute"
+for wtcase in present removed; do
+  ti="$work/wtimp-$wtcase"; setup "$ti"; wdi="$work/wtimp-$wtcase-trees"; cl="$work/wtimp-$wtcase-claude"; cx="$work/wtimp-$wtcase-codex"
+  "$root/bin/harness" set --target "$ti" worktree.dir "$wdi" >/dev/null 2>&1
+  [ "$wtcase" = present ] && mkdir -p "$wdi/7" "$wdi/8"
+  python3 - "$ti" "$wdi" "$cl" "$cx" <<'PY2'
+import datetime, json, os, re, sys
+t, wd, cl, cx = sys.argv[1:5]
+sys.path.insert(0, t + "/script"); sys.dont_write_bytecode = True
+import metric
+now = datetime.datetime.now(datetime.timezone.utc)
+at = lambda m: now - datetime.timedelta(minutes=m)
+ts = lambda m: at(m).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+for tr, vendor, wt in (("t-c7", "claude", "7"), ("t-c8", "claude", "8"), ("t-x7", "codex", "7"), ("t-x8", "codex", "8"), ("t-root", "claude", "")):
+    attrs = {"workflow": "work", "vendor": vendor, **({"worktree": wt, "issue": wt} if wt else {})}
+    _, run = metric.start("run/work", "command", attrs, trace=tr, parent="", source="runner", t=at(10))
+    metric.end(run, "ok", 0, t=at(1))
+def claude(path, n):
+    d = os.path.join(cl, re.sub(r"[^A-Za-z0-9]", "-", path)); os.makedirs(d)
+    open(d + "/s%d.jsonl" % n, "w").write(json.dumps({"type": "assistant", "sessionId": "s%d" % n, "timestamp": ts(5),
+        "message": {"id": "m%d" % n, "model": "claude-x", "usage": {"input_tokens": n, "output_tokens": 0}}}) + "\n")
+def codex(name, cwd, n):
+    os.makedirs(cx, exist_ok=True)
+    open(os.path.join(cx, "rollout-%s.jsonl" % name), "w").write("\n".join([
+        json.dumps({"timestamp": ts(5), "type": "session_meta", "payload": {"id": name, "cwd": cwd}}),
+        json.dumps({"timestamp": ts(5), "type": "token_usage_record", "payload": {"response_id": name, "usage": {"input_tokens": n, "output_tokens": 0}}})]) + "\n")
+# 실행 디렉터리는 적힌 경로와 실제 경로 어느 쪽으로도 기록될 수 있다
+claude(os.path.join(wd, "7"), 11)
+claude(os.path.join(os.path.realpath(wd), "8"), 22)
+codex("x7", os.path.join(wd, "7", "deeper"), 33)
+codex("x8", os.path.join(os.path.realpath(wd), "8"), 44)
+claude(os.path.realpath(t), 55)
+codex("other", "/elsewhere", 66)
+PY2
+  HARNESS_CLAUDE_DIR="$cl" HARNESS_CODEX_DIR="$cx" "$root/bin/harness" metrics import --target "$ti" --since 1d > "$work/wtimp.json"
+  check "metrics import with worktree runs ($wtcase)" "$?" "0"
+  python3 - "$work/wtimp.json" "$HARNESS_HOME/my-project/state/import-cursor.json" "$cx" > "$work/wtimp.sum" <<'PY2'
+import json, os, sys
+d = json.load(open(sys.argv[1])); cur = json.load(open(sys.argv[2])); cx = sys.argv[3]
+tok = {x["trace"]: x["tokens"] for x in d["traces"]}
+other = lambda n: cur.get("codex:" + os.path.join(cx, "rollout-%s.jsonl" % n), {}).get("other")
+print(tok.get("t-c7"), tok.get("t-c8"), tok.get("t-x7"), tok.get("t-x8"), tok.get("t-root"),
+      d["diagnostics"]["imported"]["unattributed"], other("x7"), other("x8"), other("other"))
+PY2
+  has "$work/wtimp.sum" "11 22 33 44 55 0 False False True" "worktree records are not attributed to their own runs ($wtcase): c7 c8 x7 x8 root unattributed other-flags"
+  rm -rf "$HARNESS_HOME/my-project/state"
+done
+
+echo "UT-74 doctor reports the issue worktrees left under worktree.dir with their state"
+doc() { "$root/bin/harness" doctor --target "$1" > "$work/wtdoc.log" 2>&1; }
+doc "$t"; has "$work/wtdoc.log" "no worktrees left" "doctor does not say no worktrees are left"
+WT_ACT=edit wtrun "$t" work 1 --worktree
+WT_ACT=commit wtrun "$t" work 2 --worktree
+wtg "$t" worktree add -q --detach "$wd/3" origin/development && wtg "$t" worktree add -q --detach "$wd/4" origin/development \
+  && wtg "$t" worktree add -q --detach "$work/wtoutside" origin/development || bad "could not make the doctor worktrees"
+rm -rf "$wd/4"
+doc "$t"
+has "$work/wtdoc.log" "worktree 1  — uncommitted changes at $wd/1" "doctor does not report the worktree with uncommitted changes"
+has "$work/wtdoc.log" "worktree 2  — unpushed commits at $wd/2" "doctor does not report the worktree with unpushed commits"
+has "$work/wtdoc.log" "worktree 3  — clean at $wd/3 — rerun its workflow or remove it with \`git worktree remove\`" "doctor does not report the clean worktree"
+has "$work/wtdoc.log" "worktree 4  — missing — run \`git worktree prune\`" "doctor does not report the missing worktree"
+check "doctor reports each left worktree as a warning" "$(grep -c '^  warn worktree ' "$work/wtdoc.log")" "4"
+hasnt "$work/wtdoc.log" "wtoutside" "doctor reported a worktree outside worktree.dir"
+hasnt "$work/wtdoc.log" "no worktrees left" "doctor says no worktrees are left while some are"
+grep -qi "ignore" "$work/wtdoc.log" && bad "doctor checks the worktree directory's gitignore" || ok
+doc "$work/base"; code=$?
+hasnt "$work/wtdoc.log" "worktree" "doctor looked at worktrees outside a git repository"
+hasnt "$work/wtdoc.log" "Traceback" "doctor failed outside a git repository"
+"$root/bin/harness" set --target "$work/base" worktree.dir "$work/base-trees" >/dev/null 2>&1
+doc "$work/base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
