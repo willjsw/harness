@@ -383,11 +383,13 @@ check "writes pass when the contract holds" "$(run_selftest '' --write 1 100)" "
 check "issue creation passes when the contract holds" "$(run_selftest '' --create-issue 1 100)" "0"
 hasnt "$work/selftest.log" "skip  " "ran every item, yet something was skipped"
 
-# 계약을 어기는 여섯 가지를 각각 잡아야 한다. 하나라도 통과로 지나가면 "검증됨" 이 거짓이 된다.
-for brk in mr_view threads issue_list open_mrs; do
+# 계약을 어기는 아홉 가지를 각각 잡아야 한다. 하나라도 통과로 지나가면 "검증됨" 이 거짓이 된다.
+for brk in mr_view threads thread_id issue_list open_mrs; do
   check "catches a contract violation: $brk" "$(run_selftest "$brk" 1 100)" "1"
 done
-check "catches a contract violation: inline_any" "$(run_selftest inline_any --write 1 100)" "1"
+for brk in inline_any reply_any reply_new; do
+  check "catches a contract violation: $brk" "$(run_selftest "$brk" --write 1 100)" "1"
+done
 check "catches a contract violation: create_url" "$(run_selftest create_url --create-issue 1 100)" "1"
 
 # 인수를 잘못 주면 돌지 않는다 — 대상 없이 돌면 엉뚱한 리뷰 요청에 흔적이 남는다.
@@ -1184,6 +1186,90 @@ imp > "$work/imp3.json"; sum "$work/imp3.json" > "$work/imp3.sum"
 has "$work/imp3.sum" "1 25 130 10 [16] 1" "the completed line was not imported exactly once"
 cur="$HARNESS_HOME/my-project/state/import-cursor.json"   # setup 의 설정은 project.name 을 바꾸지 않는다
 [ "$(stat -c %a "$cur" 2>/dev/null || stat -f %Lp "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
+
+echo "UT-61 review threads carry an id, and a reply lands on the thread it names"
+# 답글을 달려면 조회 결과가 스레드를 지목할 수 있어야 한다. 정규화와 호출 경로는 자격증명 없이 도는
+# 부분이라 가짜 CLI 로 본다 — 실제 forge 로 보는 것은 자체 검사의 몫이다.
+t="$work/thread-reply"; rm -rf "$t"; mkdir -p "$t"
+cp "$root/templates/managed/script/forge/"*.sh "$t/"
+cat > "$t/fake-gh" <<'GH'
+#!/bin/sh
+printf '%s\n' "$@" >> "$FAKE_CALLS"
+case "$*" in
+  *pulls/5/comments\?*) printf '%s' '[{"id":11,"path":"a.sh","line":3,"body":"지적","created_at":"2026-01-01T00:00:00Z"},{"id":12,"in_reply_to_id":11,"path":"a.sh","line":3,"body":"조치","created_at":"2026-01-01T00:00:01Z"}]' ;;
+  *issues/5/comments\?*) printf '%s' '[{"id":21,"body":"요약","created_at":"2026-01-01T00:00:02Z"}]' ;;
+  *comments/11/replies*) printf '{}' ;;
+  *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
+esac
+GH
+cat > "$t/fake-glab" <<'GL'
+#!/bin/sh
+printf '%s\n' "$@" >> "$FAKE_CALLS"
+case "$*" in
+  *merge_requests/5/discussions\?*page=1*) printf '%s' '[{"id":"abc","individual_note":false,"notes":[{"body":"지적","created_at":"t1","position":{"new_path":"a.sh","new_line":3}},{"body":"조치","created_at":"t2"}]},{"id":"def","individual_note":true,"notes":[{"body":"요약","created_at":"t3"}]},{"id":"sys","individual_note":true,"notes":[{"body":"added 1 commit","system":true}]}]' ;;
+  *discussions/abc/notes*) printf '{}' ;;
+  *) echo "glab: 404 Not Found" >&2; exit 1 ;;
+esac
+GL
+chmod +x "$t/fake-gh" "$t/fake-glab"
+export FAKE_CALLS="$t/calls"
+
+ids() { python3 -c '
+import json, sys
+for x in json.load(open(sys.argv[1])):
+    print("%s %s %d" % (json.dumps(x.get("id", "MISSING")), x["inline"], len(x["notes"])))' "$1"; }
+
+( _FORGE_WANT_REVIEW=1; . "$t/github.sh"; GITHUB_CLI="$t/fake-gh"; review_mr_threads 5 ) > "$work/gh-threads.json" 2>&1
+ids "$work/gh-threads.json" > "$work/gh-ids.txt" 2>&1
+has   "$work/gh-ids.txt" '"11" True 2' "GitHub: the inline thread does not carry its root comment id with its reply"
+has   "$work/gh-ids.txt" 'null False 1' "GitHub: a plain PR comment does not carry a null id"
+hasnt "$work/gh-ids.txt" '"12"'        "GitHub: a reply surfaced as a thread of its own"
+
+: > "$FAKE_CALLS"
+( _FORGE_WANT_REVIEW=1; . "$t/github.sh"; GITHUB_CLI="$t/fake-gh"; review_mr_thread_reply 5 11 "고쳤다" )
+check "GitHub: a reply to an existing thread" "$?" "0"
+has "$FAKE_CALLS" "repos/{owner}/{repo}/pulls/5/comments/11/replies" "GitHub: the reply did not go to the thread's replies endpoint"
+has "$FAKE_CALLS" "body=고쳤다" "GitHub: the reply body was not sent"
+( _FORGE_WANT_REVIEW=1; . "$t/github.sh"; GITHUB_CLI="$t/fake-gh"; review_mr_thread_reply 5 99 "고쳤다" ) 2>"$work/gh-reply.err"
+check "GitHub: a reply to an unknown thread fails" "$?" "1"
+has "$work/gh-reply.err" "404" "GitHub: the failure does not say why"
+
+( _FORGE_WANT_REVIEW=1; . "$t/gitlab.sh"; GITLAB_CLI="$t/fake-glab"; review_mr_threads 5 ) > "$work/gl-threads.json" 2>&1
+ids "$work/gl-threads.json" > "$work/gl-ids.txt" 2>&1
+has   "$work/gl-ids.txt" '"abc" True 2' "GitLab: the inline discussion does not carry its id with its reply"
+has   "$work/gl-ids.txt" 'null False 1' "GitLab: an individual note does not carry a null id"
+hasnt "$work/gl-ids.txt" '"sys"'       "GitLab: a system note surfaced as a thread"
+
+: > "$FAKE_CALLS"
+( _FORGE_WANT_REVIEW=1; . "$t/gitlab.sh"; GITLAB_CLI="$t/fake-glab"; review_mr_thread_reply 5 abc "고쳤다" )
+check "GitLab: a reply to an existing discussion" "$?" "0"
+has "$FAKE_CALLS" "projects/:id/merge_requests/5/discussions/abc/notes" "GitLab: the reply did not go to the discussion's notes"
+has "$FAKE_CALLS" "POST" "GitLab: the reply is not a POST"
+( _FORGE_WANT_REVIEW=1; . "$t/gitlab.sh"; GITLAB_CLI="$t/fake-glab"; review_mr_thread_reply 5 nope "고쳤다" ) 2>/dev/null
+check "GitLab: a reply to an unknown discussion fails" "$?" "1"
+
+# 페이크 어댑터는 자체 검사의 기준이다. 계약대로 답글을 붙이고 없는 스레드를 거부해야 한다.
+fst="$work/thread-fake"; rm -rf "$fst"; mkdir -p "$fst"
+( FAKE_STATE="$fst"; FAKE_BREAK=""; . "$root/test/fake-forge.sh"
+  review_mr_note_inline 1 sample.txt 2 "지적" >/dev/null
+  printf '요약\n' > "$fst/s.md"; review_mr_note_summary 1 "$fst/s.md" >/dev/null
+  review_mr_thread_reply 1 t1 "고쳤다" && review_mr_threads 1 ) > "$work/fake-threads.json" 2>&1
+check "fake forge: a reply to an existing thread" "$?" "0"
+python3 -c '
+import json, sys
+t = json.load(open(sys.argv[1]))
+ok = t[0]["id"] == "t1" and [n["body"] for n in t[0]["notes"]] == ["지적", "고쳤다"] and t[1]["id"] is None and len(t) == 2
+raise SystemExit(0 if ok else 1)' "$work/fake-threads.json" 2>/dev/null \
+  && ok || bad "fake forge: the reply is not the last note of the thread it names"
+( FAKE_STATE="$fst"; FAKE_BREAK=""; . "$root/test/fake-forge.sh"; review_mr_thread_reply 1 t9 "고쳤다" ) 2>"$work/fake-reply.err"
+check "fake forge: a reply to an unknown thread fails" "$?" "1"
+has "$work/fake-reply.err" "t9" "fake forge: the failure does not name the thread"
+
+# Jira 는 리뷰를 호스트하지 않는다. 답글이 성공처럼 지나가면 조치가 어디에도 남지 않는다.
+( _FORGE_WANT_TRACKER=0; _FORGE_WANT_REVIEW=1; . "$t/jira.sh"; review_mr_thread_reply 5 11 "고쳤다" ) 2>"$work/jira-reply.err"
+check "Jira: a thread reply is refused" "$?" "2"
+has "$work/jira-reply.err" "not supported" "Jira: the refusal does not say it is unsupported"
+unset FAKE_CALLS
 
 echo
 if [ "$fail" -eq 0 ]; then

@@ -5,6 +5,7 @@
 | PR 조회 | `gh pr view <번호>` |
 | PR diff | `gh pr diff <번호>` |
 | PR 라벨 | `gh pr edit <번호> --add-label <라벨>` |
+| PR 리뷰 스레드 답글 | `gh api repos/{owner}/{repo}/pulls/<번호>/comments/<스레드id>/replies -f body=<본문>` |
 
 PR 번호는 `#N` 으로 적는다. 이슈 번호와 같은 표기이므로 어느 쪽인지 문장에서 밝힌다.
 

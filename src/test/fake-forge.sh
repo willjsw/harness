@@ -4,13 +4,16 @@
 # **자체 검사는 실제 forge 를 상대로 도는 도구이므로 그 자신은 검사되지 않는다.**
 # 계약을 지키는 페이크를 통과시키고 어기는 페이크를 잡아내야, 자체 검사의 판정을 믿을 수 있다.
 #
-# `FAKE_BREAK` 에 함수 이름을 주면 그 함수만 계약을 어긴다.
+# `FAKE_BREAK` 에 이름을 주면 그 동작만 계약을 어긴다.
 #   mr_view      head_sha 를 뺀다
 #   threads      스레드에 inline 키를 뺀다
 #   issue_list   대상 이슈를 목록에서 뺀다 (첫 페이지만 도는 어댑터를 흉내)
 #   open_mrs     이슈↔리뷰 요청 연결을 찾지 못한다
 #   inline_any   diff 밖 줄에도 인라인을 단다
 #   create_url   생성 결과로 식별자가 아니라 URL 을 돌려준다
+#   thread_id    스레드에 id 키를 뺀다
+#   reply_any    없는 스레드 id 에도 답글이 성공한다
+#   reply_new    답글을 지목한 스레드가 아니라 새 노트로 단다
 set -u
 : "${FAKE_BREAK:=}"
 : "${FAKE_STATE:?FAKE_STATE 가 필요하다}"
@@ -49,7 +52,12 @@ if brk == "threads":
     for t in out:
         t.pop("inline", None)
     if not out:
-        out = [{"path": "", "line": "", "notes": [{"body": "x", "created_at": ""}]}]
+        out = [{"id": None, "path": "", "line": "", "notes": [{"body": "x", "created_at": ""}]}]
+if brk == "thread_id":
+    for t in out:
+        t.pop("id", None)
+    if not out:
+        out = [{"inline": False, "path": "", "line": "", "notes": [{"body": "x", "created_at": ""}]}]
 json.dump(out, sys.stdout, ensure_ascii=False)
 PY
 }
@@ -103,7 +111,8 @@ _fake_add_note() { # <inline> <path> <line> <본문>
 import json, os, sys
 path, inline, f, line, body = sys.argv[1:6]
 cur = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
-cur.append({"inline": inline == "1", "path": f, "line": line,
+cur.append({"id": "t%d" % (len(cur) + 1) if inline == "1" else None,
+            "inline": inline == "1", "path": f, "line": line,
             "notes": [{"body": body, "created_at": "2026-01-01T00:00:00Z"}]})
 json.dump(cur, open(path, "w", encoding="utf-8"), ensure_ascii=False)
 PY
@@ -119,6 +128,25 @@ review_mr_note_inline() { # <n> <파일> <줄> <본문>
 }
 
 review_mr_note_summary() { _fake_add_note 0 "" "" "$(cat "$2")"; }
+
+# 실제 어댑터처럼 있는 스레드에만 답글이 달린다. id 가 null 인 노트는 답글을 받지 않는다.
+review_mr_thread_reply() { # <n> <스레드id> <본문>
+  [ "$FAKE_BREAK" = reply_new ] && { _fake_add_note 0 "" "" "$3"; return 0; }
+  python3 - "$FAKE_STATE/notes.json" "$2" "$3" "$FAKE_BREAK" <<'PY'
+import json, os, sys
+path, tid, body, brk = sys.argv[1:5]
+cur = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+for t in cur:
+    if t.get("id") is not None and t.get("id") == tid:
+        t["notes"].append({"body": body, "created_at": "2026-01-01T00:00:01Z"})
+        json.dump(cur, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+        raise SystemExit(0)
+if brk == "reply_any":
+    raise SystemExit(0)
+print("스레드를 찾지 못했다: %s" % tid, file=sys.stderr)
+raise SystemExit(1)
+PY
+}
 
 tracker_issue_create() {
   [ "$FAKE_BREAK" = create_url ] && { echo "https://forge.invalid/proj/-/issues/42"; return 0; }

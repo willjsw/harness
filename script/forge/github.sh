@@ -9,6 +9,7 @@
 #     같은 동작으로 맞춘다. 만들지 않으면 회차 기록과 이슈 생성이 라벨 때문에 실패한다.
 #   - 인라인 리뷰 댓글은 `gh pr comment` 로 달 수 없어 REST 를 직접 쓴다. commit_id 가 필요하다.
 #   - 스레드는 `notes` 배열이 아니라 `in_reply_to_id` 로 이어진다. 여기서 묶어 준다.
+#     스레드 id 는 루트 댓글의 id 이고, 답글도 그 id 로 단다.
 #   - 이슈↔PR 연결을 직접 주는 API 가 없다. `_common.sh` 의 문법 기반 기본 구현을 그대로 쓴다.
 #
 # **함수군은 따로 켜진다.** 이슈 트래커와 리뷰 호스트를 서로 다른 forge 로 고를 수 있어야 하므로,
@@ -177,6 +178,7 @@ out = []
 for cid, c in roots.items():
     notes = [c] + sorted(replies.get(cid, []), key=lambda n: n.get("created_at") or "")
     out.append({
+        "id": str(cid),
         "inline": True,
         "path": c.get("path") or "",
         "line": c.get("line") or c.get("original_line") or "",
@@ -184,7 +186,7 @@ for cid, c in roots.items():
     })
 for c in issue:
     out.append({
-        "inline": False, "path": "", "line": "",
+        "id": None, "inline": False, "path": "", "line": "",
         "notes": [{"body": c.get("body") or "", "created_at": c.get("created_at") or ""}],
     })
 json.dump(out, sys.stdout, ensure_ascii=False)
@@ -199,6 +201,11 @@ review_mr_note_inline() {
 
 review_mr_note_summary() {
   "$GITHUB_CLI" pr comment "$1" --body-file "$2"
+}
+
+# 답글은 인라인 루트 댓글에 단다. 이슈 댓글은 스레드가 아니라 답글 API 가 없다 — threads 가 id 를 null 로 낸다.
+review_mr_thread_reply() {
+  "$GITHUB_CLI" api "repos/{owner}/{repo}/pulls/$1/comments/$2/replies" -f "body=$3" >/dev/null
 }
 
 review_mr_list_open() {
