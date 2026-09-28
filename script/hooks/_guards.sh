@@ -42,6 +42,49 @@ block() {
 # 판정 결과 한 줄의 앞 칸(작업 디렉터리)과 뒤 칸(호출)을 가르는 구분자.
 TAB=$(printf '\t')
 
+# 따옴표 안의 글자를 토큰 분해에서 지키는 자리표. 공백·탭·구획 구분자·물결표를 제어 문자로
+# 바꿔 두면 비따옴표 확장과 `tr` 이 그 글자에서 끊지 않는다. 빈 따옴표는 Q_EMPTY 한 글자다.
+Q_EMPTY=$(printf '\032')
+
+# $CMD 의 단순한 따옴표 구간을 셸이 하듯 한 낱말로 푼다 — 따옴표를 떼고 안의 글자를 자리표로 바꾼다.
+# 단순한 구간은 안에 `$` · 백틱 · 백슬래시가 없는 `"…"` 와 `'…'` 다. 그 밖(확장·이스케이프가 섞인
+# 구간, 닫히지 않은 따옴표, 따옴표 밖의 백슬래시 이스케이프)은 그대로 두어 경로를 풀지 못한 것으로 남긴다.
+quote_words() {
+  printf '%s\n' "$CMD" | awk '
+    BEGIN { sq = sprintf("%c", 39); dq = "\"" }
+    {
+      s = $0; n = length(s); out = ""; i = 1
+      while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\\") { out = out substr(s, i, 2); i += 2; continue }
+        if (c != sq && c != dq) { out = out c; i++; continue }
+        j = i + 1
+        while (j <= n && substr(s, j, 1) != c) {
+          if (c == dq && substr(s, j, 1) == "\\") j++
+          j++
+        }
+        if (j > n) { out = out substr(s, i); break }
+        body = substr(s, i + 1, j - i - 1)
+        if (body ~ /[$`\\]/) {
+          out = out substr(s, i, j - i + 1)
+        } else if (body == "") {
+          out = out "\032"
+        } else {
+          gsub(/ /, "\037", body); gsub(/\t/, "\036", body); gsub(/\|/, "\035", body)
+          gsub(/;/, "\034", body); gsub(/&/, "\033", body); gsub(/~/, "\031", body)
+          out = out body
+        }
+        i = j + 1
+      }
+      print out
+    }'
+}
+
+# quote_words 의 자리표를 원래 글자로 되돌린다.
+unquote_word() {
+  printf '%s' "$1" | tr -d '\032' | tr '\037\036\035\034\033\031' ' \t|;&~'
+}
+
 # 명령 문자열의 경로 토큰 $2 를 기준 디렉터리 $1 에서 푼다.
 # 기준이 비었으면 훅 작업 디렉터리, `?` 이면 풀지 못한 상태다. 결과도 같은 표기로 낸다.
 # 셸이 실행 때에야 정하는 값(변수·명령 치환·glob·중괄호·괄호)이 섞이면 풀지 않는다 —
@@ -50,11 +93,7 @@ resolve_path() {
   _base=$1
   _p=$2
   case "$_p" in
-    \"*\") _p=${_p#\"}; _p=${_p%\"} ;;
-    \'*\') _p=${_p#\'}; _p=${_p%\'} ;;
-  esac
-  case "$_p" in
-    '' | - | *'$'* | *'`'* | *'*'* | *'?'* | *'['* | *'{'* | *'}'* | *'('* | *')'* | *'"'* | *"'"* | *'\'*)
+    '' | - | "$Q_EMPTY" | *'$'* | *'`'* | *'*'* | *'?'* | *'['* | *'{'* | *'}'* | *'('* | *')'* | *'"'* | *"'"* | *'\'*)
       printf '?'
       return 0
       ;;
@@ -107,12 +146,14 @@ cd_target() {
 # 환경변수 대입과 실행 래퍼(sudo·env·time 등), 여는 괄호·명령 치환 표기는 걷어내면 그 뒤가
 # 다시 명령 자리다.
 #
+# 단순한 따옴표 구간은 quote_words 가 한 낱말로 묶어 두므로, 그 안의 공백·구분자에서 끊지 않는다.
+#
 # 작업 디렉터리는 앞선 구획의 `cd` 가 옮겨 놓은 곳이다. 비었으면 훅 작업 디렉터리, `?` 이면
-# 풀지 못한 경로다.
+# 풀지 못한 경로다. 자리표는 되돌리지 않은 채로 낸다 — 경로를 쓰는 branch_at 이 되돌린다.
 invocations_at() {
   _prog=$1
   _dir=
-  printf '%s\n' "$CMD" | tr '|;&' '\n\n\n' | while IFS= read -r _seg; do
+  quote_words | tr '|;&' '\n\n\n' | while IFS= read -r _seg; do
     # shellcheck disable=SC2086
     set -- $_seg
     _hit=0
@@ -210,8 +251,9 @@ branch_at() {
   case "${1:-}" in
     '' | '?') ;;
     *)
-      if [ "$(git -C "$1" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
-        git -C "$1" branch --show-current 2>/dev/null
+      _wt=$(unquote_word "$1")
+      if [ "$(git -C "$_wt" rev-parse --is-inside-work-tree 2>/dev/null)" = true ]; then
+        git -C "$_wt" branch --show-current 2>/dev/null
         return 0
       fi
       ;;

@@ -130,6 +130,12 @@ case_is 0 "echo git push origin $protected_b"
 case_is 0 "echo \"git push --force origin $work_branch\""
 case_is 0 'grep -n "git commit --no-verify" script/hooks/_guards.sh'
 case_is 0 "echo $forge_cli issue delete 100"
+case_is 0 "echo \"a; git push --force origin $work_branch\""
+case_is 0 "echo 'a && git push origin $protected_b'"
+
+# ── 따옴표로 감싼 낱말은 셸이 넘기는 값으로 읽는다 ─────────────────────────
+case_is 2 "git push \"--force\" origin $work_branch"
+case_is 2 "git push origin '$protected_a'"
 
 # ── 래퍼·환경변수 대입 뒤의 git 은 실행 자리다 ─────────────────────────────
 case_is 2 "env GIT_TRACE=1 git push origin $protected_a"
@@ -230,9 +236,45 @@ if git -C "$wt_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
     "a push with no destination from a protected branch tree must be blocked"
   at_is 0 "$wt_prot" "cd $wt_feat && git push origin" \
     "a push with no destination from a work branch tree must pass"
+  at_is 0 "$wt_prot" "git -C $wt_feat commit -m \"keep -n out\"" \
+    "an option-like word inside a quoted message is not an option"
+  at_is 2 "$wt_prot" "git -C \"\$HOME/x\" commit -m x" \
+    "a quoted path with an expansion falls back to the hook directory"
+  at_is 0 "$wt_feat" "git -C \"\$HOME/x\" commit -m x" \
+    "a quoted path with an expansion falls back to the hook directory"
 else
   fail=$((fail + 1))
   echo "fail: could not create the temp work trees, so the work tree rulings went unchecked" >&2
+fi
+
+# ── 공백이 든 작업 트리 경로를 따옴표로 감싸도 그 트리의 브랜치로 판정한다 ──
+sp_prot="$sandbox/prot tree"
+sp_feat="$sandbox/feat tree"
+mkdir -p "$sp_prot"
+if git -C "$sp_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
+  git -C "$sp_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$sp_prot" worktree add -q -b "feat/102-space" "$sp_feat" >/dev/null 2>&1; then
+  at_is 2 "$wt_feat" "git -C \"$sp_prot\" commit -m x" \
+    "a double-quoted git -C path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "git -C '$sp_prot' commit -m x" \
+    "a single-quoted git -C path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd \"$sp_prot\" && git commit -m x" \
+    "a double-quoted cd path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $sandbox && git -C 'prot tree' commit -m x" \
+    "a quoted relative git -C path with a space resolves from the cd target"
+  at_is 2 "$wt_feat" "git -C $sandbox/\"prot tree\" commit -m x" \
+    "a quoted part inside a path joins the rest of the word"
+  at_is 2 "$wt_feat" "git -C \"$sp_feat\" push origin \"$protected_a\"" \
+    "a quoted push destination is read as the branch it names"
+  at_is 0 "$wt_prot" "git -C \"$sp_feat\" commit -m x" \
+    "a double-quoted git -C path with a space into a work branch tree must pass"
+  at_is 0 "$wt_prot" "cd '$sp_feat' && git commit -m x" \
+    "a single-quoted cd path with a space into a work branch tree must pass"
+  at_is 0 "$wt_prot" "cd \"$sp_feat\" && git push origin" \
+    "a push with no destination from a quoted work branch tree must pass"
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp work trees with a space, so the quoted path rulings went unchecked" >&2
 fi
 
 # ── 망가진 가드를 이 표가 잡는가 ───────────────────────────────────────────
