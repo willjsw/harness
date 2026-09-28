@@ -1624,6 +1624,22 @@ if [ "$(id -u)" != 0 ]; then
   chmod 755 "$A"
 fi
 
+# 같은 이름의 두 설치가 동시에 돌면 하나만 등록되고 다른 하나는 거부된다.
+fresh
+race=0; for i in 1 2 3 4 5; do
+  rm -rf "$HARNESS_HOME"/twin* "$A/.harness" "$B/.harness"
+  "$root/bin/harness" install --target "$A" >"$work/race-a.out" 2>&1 & pa=$!
+  "$root/bin/harness" install --target "$B" >"$work/race-b.out" 2>&1 & pb=$!
+  wait "$pa"; ca=$?; wait "$pb"; cb=$?
+  got=$(regpath twin)
+  case "$ca $cb" in
+    "0 2") [ "$got" = "$rA" ] || race=1 ;;
+    "2 0") [ "$got" = "$rB" ] || race=1 ;;
+    *) race=1 ;;
+  esac
+done
+check "concurrent installs of one name: one succeeds, the other is refused" "$race" "0"
+
 fresh
 echo '{}' > "$HARNESS_HOME/twin/project.json"
 inst "$root/bin/harness" "$B"; check "a registration without a path" "$?" "0"
