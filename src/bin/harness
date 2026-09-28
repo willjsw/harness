@@ -328,6 +328,9 @@ def validate(cfg: dict):
         die("error: harness.orchestrator must be one of %s (got %r)"
             % (", ".join(ORCHESTRATORS), cfg["harness"]["orchestrator"]))
     for name, role in cfg["roles"].items():
+        # 어댑터 본문이 없는 역할은 어느 명령에서도 기본값으로 채워 넘기지 않는다
+        if not role_meta(name):
+            die("error: no adapter body for role `%s`\n  --> %s" % (name, TEMPLATES / "agents" / ("%s.md" % name)))
         if role["runner"] not in ["inproc"] + RUNNERS:
             die("error: roles.%s.runner must be one of %s (got %r)"
                 % (name, ", ".join(["inproc"] + RUNNERS), role["runner"]))

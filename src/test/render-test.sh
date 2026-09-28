@@ -792,6 +792,11 @@ frontmatter_case() { # <이름> <기대 메시지> <템플릿을 바꾸는 파�
   has "$work/fm-$1.out" "$2" "$1: render did not say '$2'"
 }
 frontmatter_case nobody "no adapter body for role \`planner\`" "p.unlink()"
+for c in schema metrics; do
+  "$work/fm-nobody/bin/harness" "$c" --target "$work/fm-nobody-target" >"$work/fm-nobody-$c.out" 2>&1
+  check "$c stops on a role without an adapter body" "$?" "2"
+  has "$work/fm-nobody-$c.out" "no adapter body for role \`planner\`" "$c did not say which role has no adapter body"
+done
 frontmatter_case nosummary "frontmatter has no \`summary\`" "p.write_text(re.sub(r'(?m)^summary:.*\\n', '', s, count=1), encoding='utf-8')"
 frontmatter_case nodescription "frontmatter has no \`description\`" "p.write_text(re.sub(r'(?m)^description:.*\\n', '', s, count=1), encoding='utf-8')"
 
