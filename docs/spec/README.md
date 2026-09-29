@@ -23,3 +23,4 @@
 | [`64-modularize-cli-review-scripts.md`](64-modularize-cli-review-scripts.md) | 리뷰 판정 데이터(JSON) 계약·집계·등록 댓글 렌더링, 리뷰 루프 공용 모듈, CLI 지표 모듈 분리와 중복 정리, 테스트 기록 경로 격리 |
 | [`71-issue-worktree-run.md`](71-issue-worktree-run.md) | `harness run --worktree` — 이슈별 worktree 생성·다시 열기·정리 판정, `[worktree]` 설정, doctor 보고, 세션 가져오기의 worktree 귀속, 반복 지적 이력의 공통 디렉터리 이동, 되감기의 worktree 브랜치 처리 |
 | [`79-reject-duplicate-project-name.md`](79-reject-duplicate-project-name.md) | 설치 등록부의 같은 이름 거부 — 기존 등록 판정(재설치·낡은 등록 넘겨받기·거부), 거부 안내문, doctor `registry` 절과 UI 문구, README 안내 |
+| [`61-start-server-background.md`](61-start-server-background.md) | `start-server` 의 빌드 판정(UI 소스 해시↔스탬프)·백그라운드 기동·응답 대기, `ui.pid` 기록과 서버 식별, `stop-server` · `server-status`, `--dev` 포그라운드, 없는 프로젝트 404, 보호 문서 개정 범위 |
