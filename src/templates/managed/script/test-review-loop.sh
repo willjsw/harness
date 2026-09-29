@@ -98,21 +98,49 @@ review_mr_labels_set() { # <n> <붙일것> <뗄것>
   printf '%s\n' $_kept $_add | sort -u | tr '\n' ' ' | sed 's/ *$//' > "$FAKE_STATE/labels"
 }
 
+# 스레드 id. 픽스처가 적은 값을 쓰고, 없으면 인라인 스레드는 픽스처 안 순번으로 짓고 일반 노트는 null 이다.
+# 조회와 답글이 같은 규칙으로 스레드를 찾도록 한 곳에 둔다.
+FAKE_THREAD_ID='
+def thread_id(i, t):
+    if "id" in t:
+        return None if t["id"] is None else str(t["id"])
+    return "t%d" % (i + 1) if t.get("inline") else None
+'
+
 # 실제 어댑터와 같이 시스템 메모를 걸러 정규화해 돌려준다.
 review_mr_threads() {
   [ -f "$FAKE_STATE/threads.json" ] || { echo '[]'; return 0; }
-  python3 - "$FAKE_STATE/threads.json" <<'PY'
+  python3 - "$FAKE_STATE/threads.json" "$FAKE_THREAD_ID" <<'PY'
 import json, sys
+exec(sys.argv[2])
 out = []
-for t in json.load(open(sys.argv[1], encoding='utf-8')):
+for i, t in enumerate(json.load(open(sys.argv[1], encoding='utf-8'))):
     notes = [n for n in t.get("notes", []) if not n.get("system")]
     if not notes:
         continue
-    out.append({"inline": bool(t.get("inline")), "path": t.get("path", ""),
-                "line": t.get("line", ""),
+    out.append({"id": thread_id(i, t), "inline": bool(t.get("inline")),
+                "path": t.get("path", ""), "line": t.get("line", ""),
                 "notes": [{"body": n.get("body", ""), "created_at": n.get("created_at", "")}
                           for n in notes]})
 json.dump(out, sys.stdout, ensure_ascii=False)
+PY
+}
+
+# 있는 스레드에만 답글이 달린다. id 가 null 인 노트와 없는 id 는 0 이 아닌 코드로 끝난다.
+review_mr_thread_reply() { # <n> <스레드id> <본문>
+  [ -f "$FAKE_STATE/threads.json" ] || return 1
+  python3 - "$FAKE_STATE/threads.json" "$FAKE_THREAD_ID" "$2" "$3" <<'PY'
+import json, sys
+exec(sys.argv[2])
+path, tid, body = sys.argv[1], sys.argv[3], sys.argv[4]
+threads = json.load(open(path, encoding="utf-8"))
+for i, t in enumerate(threads):
+    if thread_id(i, t) is not None and thread_id(i, t) == tid:
+        t.setdefault("notes", []).append({"body": body, "created_at": "2026-09-23T12:00:00.000+09:00"})
+        json.dump(threads, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+        raise SystemExit(0)
+print("no such thread: %s" % tid, file=sys.stderr)
+raise SystemExit(1)
 PY
 }
 
@@ -567,12 +595,13 @@ for p in parts:
     if p.startswith("inline "):
         m = re.match(r"inline \S+ (\S+?):(\d+) ", p)
         body = p[m.end():].rstrip("\n")
-        threads.append({"inline": True, "path": m.group(1), "line": int(m.group(2)),
+        threads.append({"id": "t%d" % t, "inline": True, "path": m.group(1), "line": int(m.group(2)),
                         "notes": [{"body": body, "created_at": at},
                                   {"body": "이번 회차 발견에 단 답글이다.", "created_at": "2026-09-23T11:00:00.000+09:00"}]})
     else:
         body = p.split("\n", 1)[1]
-        threads.append({"notes": [{"body": body, "created_at": at}]})
+        threads.append({"id": None, "inline": False, "path": "", "line": "",
+                        "notes": [{"body": body, "created_at": at}]})
 json.dump(threads, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False)
 PY
 echo "증분 확인" > "$work/next-round.txt"
@@ -816,6 +845,50 @@ check UT-31 "harness root below the repo root — history in the common git dire
   "$([ -f "$work/.git/work-loop/review-findings-32.tsv" ] && [ ! -e "$work/sub/.git" ] && echo yes || echo no)"
 git -C "$work" worktree remove --force "$sandbox/linked" >/dev/null 2>&1
 rm -rf "$work/sub"
+
+echo "UT-32 the fake thread listing emits every contract key"
+# 페이크가 어댑터 계약보다 좁으면, 계약 키에 기대는 호출부가 테스트에서는 통과하고 실제 forge 에서 깨진다.
+fake() { ( cd "$work" && FAKE_STATE="$state" sh -c '. script/forge.sh && "$@"' fake "$@" ) }
+cat > "$state/threads.json" <<'JSON'
+[{"inline": true, "path": "script/review-mr.sh", "line": 10,
+  "notes": [{"body": "인라인 발견", "created_at": "2026-09-23T10:00:00.000+09:00"}]},
+ {"notes": [{"body": "일반 노트", "created_at": "2026-09-23T10:01:00.000+09:00"}]}]
+JSON
+fake review_mr_threads 1 > "$sandbox/fake-threads.json"
+check UT-32 "listing — exit code" 0 "$?"
+check UT-32 "every item has the contract keys" yes "$(python3 - "$sandbox/fake-threads.json" <<'PY'
+import json, sys
+keys = {"id", "inline", "path", "line", "notes"}
+print("yes" if all(set(t) == keys for t in json.load(open(sys.argv[1]))) else "no")
+PY
+)"
+check UT-32 "inline thread id is a string" yes "$(python3 - "$sandbox/fake-threads.json" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))[0]
+print("yes" if t["inline"] and isinstance(t["id"], str) and t["id"] else "no")
+PY
+)"
+check UT-32 "plain note id is null" yes "$(python3 - "$sandbox/fake-threads.json" <<'PY'
+import json, sys
+t = json.load(open(sys.argv[1]))[1]
+print("yes" if not t["inline"] and t["id"] is None else "no")
+PY
+)"
+
+echo "UT-33 the fake replies on an existing thread"
+tid=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))[0]["id"])' "$sandbox/fake-threads.json")
+fake review_mr_thread_reply 1 "$tid" "페이크 답글" 2>/dev/null
+check UT-33 "reply — exit code" 0 "$?"
+fake review_mr_threads 1 > "$sandbox/fake-threads.json"
+check UT-33 "reply is appended to that thread's notes" "인라인 발견|페이크 답글" \
+  "$(python3 -c 'import json, sys; print("|".join(n["body"] for n in json.load(open(sys.argv[1]))[0]["notes"]))' "$sandbox/fake-threads.json")"
+check UT-33 "the other thread is untouched" 1 \
+  "$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))[1]["notes"]))' "$sandbox/fake-threads.json")"
+fake review_mr_thread_reply 1 "no-such-thread" "x" 2>/dev/null
+check UT-33 "unknown id — exit code" 1 "$?"
+fake review_mr_thread_reply 1 "None" "x" 2>/dev/null
+check UT-33 "a plain note takes no reply" 1 "$?"
+rm -f "$state/threads.json"
 
 # 리뷰 도구를 부를 때마다 지표에 에이전트 스팬이 남고, 벤더 형식에서 꺼낸 사용량이 같은 뜻으로 맞춰진다.
 # 스텁은 두 벤더 모두 입력(캐시 제외) 11 + 출력 7 = 18 을 낸다
