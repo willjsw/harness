@@ -21,10 +21,13 @@ import os
 import re
 import shlex
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 try:
@@ -2575,6 +2578,157 @@ def server_state(record, matches: bool, root: str, hash_: str, port_busy: bool, 
     return "busy" if port_busy else "free"
 
 
+# 백그라운드 UI 서버의 기록과 출력. 서버 하나가 등록된 프로젝트 전부를 보이므로 등록부 최상위에 둔다.
+def server_files():
+    home = registry()
+    return home / "ui.pid", home / "ui.log"
+
+
+def read_server_record(pidfile: Path):
+    """(파일이 있는가, 기록). 파일이 있으나 형식이 맞지 않거나 읽히지 않으면 기록은 None."""
+    try:
+        text = pidfile.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, None
+    except (OSError, UnicodeDecodeError):
+        return True, None
+    return True, parse_server_record(text)
+
+
+def remove_server_record(pidfile: Path):
+    try:
+        pidfile.unlink(missing_ok=True)
+    except OSError as e:
+        die("error: could not remove the UI server record\n  --> %s\n\nhelp: %s" % (pidfile, e.strerror or e))
+
+
+def ps_fields(pid: int, fields: str) -> str:
+    """`LC_ALL=C ps -o <fields> -p <pid>` 의 표준 출력. 프로세스가 없으면 빈 문자열."""
+    r = subprocess.run(["ps", "-o", fields, "-p", str(pid)], capture_output=True, text=True,
+                       env=dict(os.environ, LC_ALL="C"))
+    return r.stdout if r.returncode == 0 else ""
+
+
+def port_busy(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def http_ok(port: int) -> bool:
+    """`GET http://127.0.0.1:<port>/` 가 1초 안에 200 인가. 프록시 설정을 타지 않는다."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open("http://127.0.0.1:%d/" % port, timeout=1) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def probe_server(ui: Path, hash_: str):
+    """(상태, 기록, 기록이 살아 있는 프로세스와 맞는가). 파일을 바꾸지 않는다."""
+    pidfile, _log = server_files()
+    _exists, record = read_server_record(pidfile)
+    matches = bool(record) and process_matches(record, ps_fields(record["pid"], "pgid=,lstart="))
+    busy = port_busy(UI_PORT)
+    ok = busy and http_ok(UI_PORT)
+    return server_state(record, matches, str(ui), hash_, busy, ok), record, matches
+
+
+def group_gone(pid: int, reap=None) -> bool:
+    if reap:
+        reap()
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def stop_group(pid: int, reap=None) -> bool:
+    """프로세스 그룹에 SIGTERM, 10초 안에 없어지지 않으면 SIGKILL 과 5초. 그룹이 없어지면 참.
+
+    `reap` 은 그 그룹의 우두머리가 이 프로세스의 자식일 때 좀비를 거두는 함수다. 권한 오류는 그대로 올린다.
+    """
+    for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return True
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if group_gone(pid, reap):
+                return True
+            time.sleep(0.1)
+    return group_gone(pid, reap)
+
+
+def halt_server(record, pidfile: Path, reap=None):
+    """기록의 서버 그룹을 멈추고 기록을 지운다. 멈추지 못하면 기록을 두고 종료 코드 2 로 멈춘다."""
+    pid = record["pid"]
+    try:
+        stopped = stop_group(pid, reap)
+    except PermissionError:
+        stopped = False
+    if not stopped:
+        die("error: the UI server (pid %d) did not stop\n\n"
+            "help: check the process yourself, then run `harness stop-server` again" % pid)
+    remove_server_record(pidfile)
+
+
+def cmd_stop_server(_cfg, _target, _args):
+    """`harness stop-server` — 기록이 살아 있는 프로세스와 맞을 때만 그 서버 그룹을 멈춘다.
+
+    포트를 쓰는 프로세스를 찾아 멈추지 않는다. 기록 없이 뜬 프로세스는 하네스가 띄운 것으로 확인되지 않는다.
+    """
+    pidfile, _log = server_files()
+    exists, record = read_server_record(pidfile)
+    if not exists:
+        print("stop-server: not running")
+        return 0
+    if record is None:
+        remove_server_record(pidfile)
+        print("stop-server: removed an unreadable record; no process was stopped")
+        return 0
+    # 판정과 신호 사이에 프로세스가 바뀌지 않았는지 신호 직전에 한 번 더 본다.
+    for _ in range(2):
+        if not process_matches(record, ps_fields(record["pid"], "pgid=,lstart=")):
+            remove_server_record(pidfile)
+            print("stop-server: not running (removed a stale record)")
+            return 0
+    halt_server(record, pidfile)
+    print("stop-server: stopped (pid %d)" % record["pid"])
+    return 0
+
+
+def cmd_server_status(_cfg, _target, _args):
+    """`harness server-status` — 서버 상태 한 줄. 파일을 바꾸지 않는다."""
+    ui = ROOT / "ui"
+    pidfile, _log = server_files()
+    exists, record = read_server_record(pidfile)
+    if exists and record is None:
+        die("error: the UI server record could not be read\n  --> %s\n\n"
+            "help: run `harness stop-server` to clear it" % pidfile)
+    state, record, _matches = probe_server(ui, ui_source_hash(ui))
+    url = "http://localhost:%d" % UI_PORT
+    if state in ("running", "other-copy", "other-build"):
+        print("server-status: running at %s (pid %d)" % (url, record["pid"]))
+        if state != "running":
+            print("note: this server is from another copy or an older build — "
+                  "run `harness stop-server`, then `harness start-server`")
+        return 0
+    if state == "unresponsive":
+        print("server-status: pid %d is running but %s does not respond" % (record["pid"], url))
+    elif state == "busy":
+        print("server-status: not running (port %d is in use by another process)" % UI_PORT)
+    else:
+        print("server-status: not running")
+    return 1
+
 def cmd_start_server(_cfg, _target, args):
     """`harness start-server` — 설정·워크플로·프로젝트 사실을 고치는 웹 UI 를 띄운다.
 
@@ -2612,6 +2766,8 @@ COMMANDS = {
     "vars":      (None, True,  "", "print template variables (debugging)"),
     "uninstall": (None, False, "[--purge] [--yes]", "remove what the harness installed; --purge also removes yours"),
     "start-server": (None, False, "", "open the web UI on http://localhost:%d" % UI_PORT),
+    "stop-server": (None, False, "", "stop the web UI started by start-server"),
+    "server-status": (None, False, "", "whether the web UI is running and responding"),
     "schema":    (None, True,  "", "agent registry and resolved roles as JSON (for the UI)"),
     "status":    (None, True,  "", "project health for the home screen as JSON: check, doctor, facts, git"),
     "tools":     (None, False, "[--sync]", "list agent CLIs and decision-record tools on this machine"),
@@ -2633,7 +2789,7 @@ def cmd_help(_cfg, _target, _args):
     print(__doc__.strip().splitlines()[0])
     print()
     for name, (_f, _n, usage, desc) in COMMANDS.items():
-        print("  harness %-12s %-22s %s" % (name, usage, desc))
+        print("  harness %-13s %-22s %s" % (name, usage, desc))
     print()
     print("  --target DIR   target repository (default: current directory)")
     print()
@@ -2681,7 +2837,8 @@ def main():
     handlers = {"install": cmd_install, "render": cmd_render, "check": cmd_check,
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
-                "start-server": cmd_start_server, "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
+                "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
+                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,
@@ -2708,8 +2865,8 @@ def main():
 
     if args.command == "help":
         return cmd_help(None, None, args)
-    if args.command == "start-server":   # 대상 리포가 없다 — 등록된 프로젝트 전부를 본다
-        return cmd_start_server(None, None, args)
+    if args.command in ("start-server", "stop-server", "server-status"):   # 대상 리포가 없다 — UI 는 전역 설치의 것이다
+        return handlers[args.command](None, None, args)
     if args.command == "tools":          # 기기의 사실이다 — 대상 리포가 필요 없다
         return cmd_tools(None, None, args)
 
