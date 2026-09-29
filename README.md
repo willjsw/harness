@@ -59,6 +59,12 @@ harness doctor
 이름까지 채운 뒤 렌더한다. **기본값은 그 프로젝트의 사실이 아니다** — `harness doctor` 가
 무엇이 비어 있는지 알려 준다.
 
+**한 기기에 같은 리포는 하나만 설치한다.** 같은 `project.name` 이 아직 쓰이는 다른 경로에 등록돼
+있으면 `install` 이 거부한다 — 그 클론에서 `harness uninstall` 하거나 이 리포의 `project.name` 을
+바꾼다. 옛 경로에 그 프로젝트가 없으면(리포를 옮겼다) 등록을 넘겨받고, `~/.harness/<이름>/` 아래
+기록은 그대로 이어진다. 같은 리포에서 여러 작업을 나란히 하려면 두 번째 클론이 아니라
+`harness run --worktree` 로 이슈별 worktree 를 쓴다.
+
 훅 활성화는 클론마다 1회다. 하지 않으면 커밋·push 검사가 조용히 건너뛰어진다.
 
 ### 모노레포
@@ -149,7 +155,8 @@ harness start-server          # http://localhost:7777
 
 `harness install` 이 `~/.harness/<프로젝트>/project.json` 에 경로를 남기고, UI 가 그 목록으로
 프로젝트를 전환한다. 경로가 없는 옛 설치는 목록에 "재설치 필요" 로 뜬다 — 그 프로젝트에서
-`harness install` 을 다시 돌린다. 서버는 루프백에만 묶이고, 첫 실행에 `npm install` 을 한 번 한다
+`harness install` 을 다시 돌린다. 등록부의 프로젝트 이름 하나는 경로 하나를 가리킨다 — 같은 리포의
+병렬 작업은 두 번째 클론이 아니라 `harness run --worktree` 다. 서버는 루프백에만 묶이고, 첫 실행에 `npm install` 을 한 번 한다
 (Node.js 필요).
 
 | 화면 | 무엇을 | 쓰기 경로 |
