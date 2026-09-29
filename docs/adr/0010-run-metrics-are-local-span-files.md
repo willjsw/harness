@@ -4,7 +4,7 @@ Date: 2026-09-25
 
 ## Status
 
-Accepted
+Superseded by [16. Machine-local state is keyed by clone](0016-machine-local-state-is-keyed-by-clone.md)
 
 ## Context
 
