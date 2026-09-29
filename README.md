@@ -110,7 +110,9 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness steps [<절차> <JSON>]` | 절차의 단계를 JSON 으로 보거나, 한 절차의 단계를 통째로 바꾸고 렌더까지. `--dry-run` 이면 검사만 |
 | `harness checks [<JSON>]` | 검증 검사(`[verify]`)를 JSON 으로 보거나 통째로 바꾸고 렌더까지 |
 | `harness run <워크플로> <이슈> [--worktree]` | 설정된 오케스트레이터로 절차를 시작한다. `--worktree` 면 원격 통합 브랜치에서 이슈 번호 이름의 worktree(`worktree.dir` 아래)를 만들거나 남은 것을 열어 그 안에서 띄우고, 끝나면 미커밋 변경·미push 커밋이 없을 때 지운다 |
-| `harness start-server` | 설정·절차·에이전트·프로젝트 문서를 고치는 웹 UI 를 `localhost:7777` 에 띄운다 |
+| `harness start-server [--dev]` | 설정·절차·에이전트·프로젝트 문서를 고치는 웹 UI 를 `localhost:7777` 에 백그라운드로 띄우고, 응답이 오면 URL 을 내고 돌아온다. UI 소스가 지난 빌드와 다를 때만 빌드한다. `--dev` 는 UI 개발용 포그라운드 `next dev` |
+| `harness stop-server` | `start-server` 가 띄운 웹 UI 를 멈춘다. 기록(`ui.pid`)이 살아 있는 프로세스와 맞을 때만 멈추고, 기록 없이 포트를 쓰는 프로세스는 건드리지 않는다 |
+| `harness server-status` | 웹 UI 가 떠서 응답하는지 한 줄로. 떠 있으면 종료 코드 0, 아니면 1 |
 | `harness tools [--sync]` | 이 기기에 설치된 에이전트 CLI·결정 기록 도구. 결과는 `~/.harness/tools.json` |
 | `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). UI 가 선택지를 그린다 |
 | `harness status` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git |
@@ -150,8 +152,26 @@ remove these? [y/N]
 ## UI
 
 ```bash
-harness start-server          # http://localhost:7777
+harness start-server          # 백그라운드로 띄우고 http://localhost:7777 을 낸 뒤 돌아온다
+harness server-status         # 떠 있는지, 응답하는지
+harness stop-server           # 멈춘다
 ```
+
+서버는 백그라운드에서 돈다. `start-server` 는 응답이 오면 URL 한 줄을 내고 돌아오고, 서버는
+`stop-server` 로 멈출 때까지 남는다. 서버 기록 `ui.pid` 와 그 기동의 설치·빌드·서버 출력 `ui.log` 는
+등록부 최상위(`HARNESS_HOME`, 없으면 `~/.harness/`)에 있다 — 뜨지 않거나 빌드가 실패하면 `ui.log` 를 본다.
+`ui.log` 는 기동할 때마다 새로 쓴다.
+
+UI 소스(`src/ui/` 의 `app/` · `components/` · `lib/` 와 패키지·빌드 설정)가 지난 빌드와 달라지면 다음
+`start-server` 가 빌드부터 한다. 바뀌지 않았으면 빌드 없이 바로 띄운다.
+
+다른 사본(예: 업데이트 전의 전역 설치)이나 옛 빌드의 서버가 떠 있으면 `start-server` 는 그 서버를
+건드리지 않고 멈춘다 — `harness stop-server` 를 먼저 하고 다시 띄운다. UI 의 `node_modules` 는
+심볼릭 링크로 두지 않는다. 빌드가 쓰지 못하므로 링크면 빌드 전에 멈춘다 — 링크를 지우면 다음
+`start-server` 가 의존성을 다시 설치한다.
+
+UI 자체를 고칠 때는 `harness start-server --dev` 가 지금 터미널에서 `next dev` 를 돌린다. 기록을 남기지
+않고, 백그라운드 서버가 떠 있으면 `stop-server` 를 먼저 하라고 멈춘다.
 
 `harness install` 이 `~/.harness/<프로젝트>/project.json` 에 경로를 남기고, UI 가 그 목록으로
 프로젝트를 전환한다. 경로가 없는 옛 설치는 목록에 "재설치 필요" 로 뜬다 — 그 프로젝트에서
