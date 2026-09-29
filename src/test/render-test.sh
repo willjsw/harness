@@ -84,6 +84,7 @@ def in_section(s, section, pat, repl):
 s = in_section(s, "adr", r'^dir = .*$', 'dir = "docs/adr"')
 s = in_section(s, "metrics", r'^dir = .*$', 'dir = "%s/metrics"' % rec)
 s = in_section(s, "usage", r'^log_path = .*$', 'log_path = "%s/usage.log"' % rec)
+s = in_section(s, "permissions", r'^allow_push = .*$', 'allow_push = false')
 p.write_text(s, encoding="utf-8")
 PY
   "$root/bin/harness" render --target "$1" >/dev/null
@@ -1784,6 +1785,56 @@ grep -qxF "Bash(gh pr view:*)" "$work/allow-forge.txt" && ok || bad "gh pr view 
 hasnt "$work/allow-forge.txt" "glab" "a gitlab command is allowed with jira and github"
 hasnt "$work/allow-forge.txt" "gh issue" "the github tracker commands are allowed when github only hosts review"
 check "gh api rules" "$(grep -F "Bash(gh api" "$work/allow-forge.txt")" 'Bash(gh api repos/{owner}/{repo}/pulls/*/comments/*/replies:*)'
+
+# push 를 허용해도 보호 브랜치 deny 는 그대로다
+t="$work/allow"
+"$root/bin/harness" set --target "$t" permissions.allow_push true >/dev/null 2>&1; check "set permissions.allow_push true" "$?" "0"
+rules "$t/.claude/settings.json" allow > "$work/allow-push.txt"
+rules "$t/.claude/settings.json" deny > "$work/deny-push.txt"
+grep -qxF "Bash(git push:*)" "$work/allow-push.txt" && ok || bad "git push is not allowed with allow_push = true"
+cmp -s "$work/deny.txt" "$work/deny-push.txt" && ok || bad "allowing push changed the deny list"
+for br in main development; do
+  grep -qxF "Bash(git push origin $br)" "$work/deny-push.txt" && ok || bad "the push to $br is no longer denied"
+  grep -qxF "Bash(git push*refs/heads/$br*)" "$work/deny-push.txt" && ok || bad "the refspec push to $br is no longer denied"
+done
+for r in "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git push origin +*)" \
+         "Bash(git push --no-verify:*)" "Bash(git commit --no-verify:*)"; do
+  grep -qxF "$r" "$work/deny-push.txt" && ok || bad "$r is no longer denied"
+done
+
+# 절이 없는 옛 설정은 기본값으로 돌고, set 이 절을 더한다
+t="$work/allow-old"; setup "$t"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[permissions\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[permissions]" not in s and "allow_push" not in s
+open(p, "w").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render without a permissions section" "$?" "0"
+hasnt "$t/.claude/settings.json" '"Bash(git push:*)"' "git push is allowed without a permissions section"
+"$root/bin/harness" set --target "$t" permissions.allow_push true >/dev/null 2>&1; check "set allow_push without a permissions section" "$?" "0"
+has "$t/harness.toml" "[permissions]" "set did not add the permissions section"
+has "$t/harness.toml" "allow_push = true" "set did not add allow_push"
+has "$t/.claude/settings.json" '"Bash(git push:*)"' "git push is not allowed after set added the section"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check after set added the section" "$?" "0"
+
+# 성립하지 않는 값은 거부한다
+t="$work/allow-cfg"; setup "$t"; cp "$t/harness.toml" "$work/allow-cfg.orig"
+prender() { "$root/bin/harness" render --target "$t" > "$work/allow-cfg.log" 2>&1; }
+sedi 's/^allow_push = false$/allow_push = false\
+allow_merge = true/' "$t/harness.toml"
+prender; check "render with an unknown permissions key" "$?" "2"
+has "$work/allow-cfg.log" "unknown key(s) in [permissions]: allow_merge" "the unknown permissions key is not named"
+has "$work/allow-cfg.log" "the keys are allow_push" "the permissions keys are not listed"
+for v in '"true"' '1'; do
+  cp "$work/allow-cfg.orig" "$t/harness.toml"
+  sedi "s/^allow_push = false\$/allow_push = $v/" "$t/harness.toml"
+  grep -qxF "allow_push = $v" "$t/harness.toml" || bad "could not write allow_push = $v"
+  prender; check "render with allow_push = $v" "$?" "2"
+  has "$work/allow-cfg.log" "permissions.allow_push must be true or false" "allow_push = $v is not refused by name"
+done
+cp "$work/allow-cfg.orig" "$t/harness.toml"
+unset -f prender
 
 # 선언 파일과 제외 목록의 오류는 하네스 사본에서 만든다 — 소스 템플릿은 건드리지 않는다
 hc="$work/allow-copy"; rm -rf "$hc"; mkdir -p "$hc/bin"
