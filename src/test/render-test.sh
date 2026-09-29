@@ -89,6 +89,21 @@ PY
   "$root/bin/harness" render --target "$1" >/dev/null
 }
 
+dup_ut_ids() {     # dup_ut_ids <파일> — 표지(echo "UT-<번호>")가 두 번 이상 나오는 번호를 한 줄에 하나씩 찍는다
+  grep -oE '^[[:space:]]*echo "UT-[0-9]+[a-z]*' "$1" | sed -E 's/^[[:space:]]*echo "//' | sort | uniq -d
+}
+
+echo "UT-64 every case marker in this file is unique, and a repeated one is named"
+# 병렬 브랜치가 같은 다음 번호를 고르면 두 블록이 다른 줄에 들어가 텍스트 충돌 없이 번호만 겹친다.
+t="$work/ut-ids"; rm -rf "$t"; mkdir -p "$t"
+printf '%s\n' 'echo "UT-01 one"' 'echo "UT-01b one, again"' 'echo "UT-02 two"' '  echo "UT-02 two, indented"' \
+  'echo "UT-03 three"' '# echo "UT-03 in a comment"' > "$t/dup.sh"
+check "a repeated marker is named, a suffixed or commented one is not" "$(dup_ut_ids "$t/dup.sh" | tr '\n' ' ')" "UT-02 "
+printf '%s\n' 'echo "UT-01 one"' 'echo "UT-01b one, again"' > "$t/uniq.sh"
+check "distinct markers name nothing" "$(dup_ut_ids "$t/uniq.sh")" ""
+dups=$(dup_ut_ids "$root/test/render-test.sh")
+[ -z "$dups" ] && ok || bad "case markers repeat in src/test/render-test.sh: $(echo $dups)"
+
 echo "UT-00 the shipped default config renders as-is"
 # 기본값이 깨져 있으면 설치한 사람이 첫 명령에서 막힌다.
 t="$work/shipped"; rm -rf "$t"; mkdir -p "$t"
@@ -1187,7 +1202,7 @@ has "$work/imp3.sum" "1 25 130 10 [16] 1" "the completed line was not imported e
 cur="$HARNESS_HOME/my-project/state/import-cursor.json"   # setup 의 설정은 project.name 을 바꾸지 않는다
 [ "$(stat -c %a "$cur" 2>/dev/null || stat -f %Lp "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
 
-echo "UT-61 review threads carry an id, and a reply lands on the thread it names"
+echo "UT-63 review threads carry an id, and a reply lands on the thread it names"
 # 답글을 달려면 조회 결과가 스레드를 지목할 수 있어야 한다. 정규화와 호출 경로는 자격증명 없이 도는
 # 부분이라 가짜 CLI 로 본다 — 실제 forge 로 보는 것은 자체 검사의 몫이다.
 t="$work/thread-reply"; rm -rf "$t"; mkdir -p "$t"
