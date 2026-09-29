@@ -216,11 +216,12 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `commit.tags` · `issue_ref` · `ticket_key` | commit-msg 의 **검사식과 안내문 예시**, task 이슈 제목 |
 | `review.max_rounds` · `repeat_file_max` · `round_label` | 리뷰·등록·집계 스크립트가 읽는 상수 |
 | `roles.<역할>.runner` · `model` · `access` | 역할마다 에이전트 정의(Claude·Codex 양쪽)와 그 역할 전용 커맨드, 리뷰 실행 명령 |
-| `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전 |
+| `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전, 권한 허용 목록의 forge 명령 |
 | `issues.labels` · `required_fields` · `deletion_forbidden` | 이슈 생성 스크립트, 삭제 가드, 규칙 문서 |
 | `mr.default_assignee` · `default_reviewer` | forge 명령 사전, 작성 요령 |
 | `adr.style` · `tool` · `dir` | 결정 기록 사전·양식·디렉터리 |
 | `docs.protected` | 권한 deny, 명령 가드, 규칙 문서 |
+| `permissions.allow_push` | `.claude/settings.json` 의 허용 목록에 `git push` 를 넣는지 |
 | `usage.log_path` · `env_var` | 기록·집계 스크립트, 회고 절차 |
 | `worktree.dir` · `include` | 생성 파일은 없다. `harness run --worktree` · `doctor` · 세션 가져오기가 읽는다 |
 | `workflows.<절차>.steps` | `.ai/workflows/<절차>.md` — 단계 순서·종류(`type`)·제목. 없으면 하네스 기본값. 절차 끝에 붙일 지시는 `.ai/project/workflows/<절차>.md` |

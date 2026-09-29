@@ -57,6 +57,10 @@ git config core.hooksPath script/githooks
 | git 훅 | 실제 git 동작 — 사람·AI 공통 | `--no-verify` (그래서 deny 에도 넣는다) |
 | CI | 머지 전 검증 실행 | 성공 필수·승인 필수는 **서버 설정**이며 리포가 강제하지 못한다 |
 
+`.claude/settings.json` 의 allow 는 승인 프롬프트만 없앤다. 절차가 정상 경로에서 부르는 관리 스크립트·forge 명령·
+`git switch -c`·`git commit`(`permissions.allow_push` 가 참이면 `git push` 도)이 대상이다.
+deny·`PreToolUse` 가드·git 훅은 allow 에 든 명령에도 그대로 적용된다. 이 설정은 Claude Code 에만 적용된다.
+
 층이 겹치는 건 중복이 아니라 서로의 구멍을 메우는 것이다.
 **리포 안의 어떤 설정도 보호 브랜치 push 를 완전히 막지 못한다** — 확실한 차단은 서버 설정이다.
 

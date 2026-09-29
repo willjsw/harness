@@ -1,0 +1,14 @@
+# 절차가 정상 경로에서 부르는 이 forge 의 명령. `.claude/settings.json` 의 permissions.allow 로 간다.
+# 항목 하나가 규칙 `Bash(<항목>:*)` 하나다 — 이 접두로 시작하는 명령이 승인 없이 돈다.
+# 되돌릴 수 없는 쓰기(이슈 생성·머지·닫기·삭제)와 범용 API 호출은 넣지 않는다.
+
+# 이 forge 가 forge.tracker 일 때
+tracker = ["glab issue view", "glab issue note create"]
+
+# 이 forge 가 forge.review_host 일 때
+review = [
+  "glab mr view",
+  "glab mr diff",
+  "glab mr create",
+  "glab api --method POST projects/:id/merge_requests/*/discussions/*/notes",
+]
