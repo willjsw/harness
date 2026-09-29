@@ -192,13 +192,24 @@ fi
 # ── 명령이 가리키는 작업 트리의 브랜치로 판정한다 ──────────────────────────
 # 훅은 세션의 작업 트리에서 돈다. 명령이 `cd` 나 `git -C` 로 다른 작업 트리를 가리키면
 # 판정은 그 트리의 브랜치를 따라야 한다. 링크된 작업 트리는 임시 리포 안에만 만든다.
+#
+# 가드는 자기가 속한 리포의 작업 트리만 판정하므로, 임시 리포에 훅 사본과 설정을 깔아
+# 그 리포를 하네스가 지키는 리포로 만든다. at_is 는 at_hook 이 가리키는 사본을 부른다.
 wt_prot="$sandbox/wt-protected"
 wt_feat="$sandbox/wt-feature"
 feat_branch="feat/101-other"
+# install_hooks <리포 디렉터리> → 그 리포의 script/ 에 훅 사본과 설정을 깐다
+install_hooks() {
+  mkdir -p "$1/script/hooks" &&
+    cp "$repo_root/script/hooks/bash-guard.sh" "$repo_root/script/hooks/_guards.sh" "$1/script/hooks/" &&
+    cp "$repo_root/script/harness.env" "$1/script/" &&
+    chmod +x "$1/script/hooks/"*.sh
+}
+at_hook="$repo_root/script/hooks/bash-guard.sh"
 # at_is <기대코드> <훅 작업 디렉터리> <명령> <설명>
 at_is() {
   local expect=$1 dir=$2 cmd=$3 note=$4 rc
-  rc=$(cd "$dir" && probe "$repo_root/script/hooks/bash-guard.sh" "$cmd")
+  rc=$(cd "$dir" && probe "$at_hook" "$cmd")
   if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
     fail=$((fail + 1))
     echo "fail: $note — want=$expect got=$rc  $cmd" >&2
@@ -207,7 +218,9 @@ at_is() {
 mkdir -p "$wt_prot"
 if git -C "$wt_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
   git -C "$wt_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
-  git -C "$wt_prot" worktree add -q -b "$feat_branch" "$wt_feat" >/dev/null 2>&1; then
+  git -C "$wt_prot" worktree add -q -b "$feat_branch" "$wt_feat" >/dev/null 2>&1 &&
+  install_hooks "$wt_prot"; then
+  at_hook="$wt_prot/script/hooks/bash-guard.sh"
   at_is 0 "$wt_prot" "cd $wt_feat && git commit -m x" \
     "a commit in another work tree on a work branch must pass"
   at_is 0 "$wt_prot" "git -C $wt_feat commit -m x" \
@@ -253,7 +266,9 @@ sp_feat="$sandbox/feat tree"
 mkdir -p "$sp_prot"
 if git -C "$sp_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
   git -C "$sp_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
-  git -C "$sp_prot" worktree add -q -b "feat/102-space" "$sp_feat" >/dev/null 2>&1; then
+  git -C "$sp_prot" worktree add -q -b "feat/102-space" "$sp_feat" >/dev/null 2>&1 &&
+  install_hooks "$sp_prot"; then
+  at_hook="$sp_prot/script/hooks/bash-guard.sh"
   at_is 2 "$wt_feat" "git -C \"$sp_prot\" commit -m x" \
     "a double-quoted git -C path with a space into a protected branch tree must be blocked"
   at_is 2 "$wt_feat" "git -C '$sp_prot' commit -m x" \
@@ -275,6 +290,59 @@ if git -C "$sp_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
 else
   fail=$((fail + 1))
   echo "fail: could not create the temp work trees with a space, so the quoted path rulings went unchecked" >&2
+fi
+
+# ── 하네스가 지키지 않는 다른 리포에는 보호 브랜치 규칙을 적용하지 않는다 ──
+# 하네스 리포(본 작업 트리 · 링크된 worktree)와 무관한 리포를 함께 만든다. 무관한 리포도
+# 보호 목록과 같은 이름의 브랜치에 있다 — 그 리포의 브랜치 규칙은 이 하네스의 설정이 정하지 않는다.
+h_root="$sandbox/h-root"
+h_feat="$sandbox/h-feature"
+h_prot="$sandbox/h-protected"
+other="$sandbox/other-repo"
+mkdir -p "$h_root" "$other/sub"
+if git -C "$h_root" init -q -b "$protected_a" >/dev/null 2>&1 &&
+  git -C "$h_root" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$h_root" worktree add -q -b "feat/103-guard" "$h_feat" >/dev/null 2>&1 &&
+  install_hooks "$h_root" && mkdir -p "$h_root/sub" &&
+  git -C "$other" init -q -b "$protected_a" >/dev/null 2>&1 &&
+  git -C "$other" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1; then
+  at_hook="$h_root/script/hooks/bash-guard.sh"
+  at_is 0 "$h_feat" "cd $other && git commit -m x" \
+    "a commit after cd into an unrelated repo on a protected name must pass"
+  at_is 0 "$h_feat" "git -C $other commit -m x" \
+    "a commit through git -C into an unrelated repo on a protected name must pass"
+  at_is 0 "$h_feat" "git -C $other/sub commit -m x" \
+    "a subdirectory of an unrelated repo is that unrelated repo"
+  at_is 0 "$h_feat" "cd $other && git push origin" \
+    "a push with no destination from an unrelated repo must pass"
+  at_is 0 "$h_feat" "git -C $other push origin $protected_a" \
+    "a push from an unrelated repo is not ruled by this harness's protected list"
+  at_is 2 "$h_feat" "git -C $other push --force origin $work_branch" \
+    "a force push stays blocked in an unrelated repo"
+  at_is 2 "$h_feat" "git -C $h_root commit -m x" \
+    "a commit through git -C into the harness main work tree on a protected branch must be blocked"
+  at_is 2 "$h_feat" "git -C $h_root/sub commit -m x" \
+    "a subdirectory of the harness main work tree is the harness repo"
+  at_is 2 "$h_feat" "cd $other && git -C $h_root commit -m x" \
+    "git -C back into the harness repo after cd into an unrelated repo is ruled again"
+  at_is 2 "$other" "git commit -m x" \
+    "a command with no directory is ruled by the hook directory"
+  # 본 작업 트리를 작업 브랜치로 옮기고, 비워진 보호 브랜치를 링크된 worktree 로 연다.
+  if git -C "$h_root" checkout -q -b "feat/104-root" >/dev/null 2>&1 &&
+    git -C "$h_root" worktree add -q "$h_prot" "$protected_a" >/dev/null 2>&1; then
+    at_is 2 "$h_feat" "cd $h_prot && git commit -m x" \
+      "a linked worktree of the harness repo on a protected branch must be blocked"
+    at_is 2 "$h_feat" "cd $h_prot && git push origin" \
+      "a push with no destination from a linked harness worktree on a protected branch must be blocked"
+    at_is 0 "$h_prot" "git -C $h_feat commit -m x" \
+      "a linked harness worktree on a work branch must pass"
+  else
+    fail=$((fail + 1))
+    echo "fail: could not open a protected branch in a linked worktree of the temp harness repo" >&2
+  fi
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp harness repo and the unrelated repo, so the repo boundary rulings went unchecked" >&2
 fi
 
 # ── 따옴표 안의 구획 문자와 빈 따옴표는 셸이 넘기는 값으로 되돌려 판정한다 ──
