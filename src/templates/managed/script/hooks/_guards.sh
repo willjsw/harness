@@ -283,6 +283,33 @@ branch_at() {
   git branch --show-current 2>/dev/null
 }
 
+# 디렉터리 $1 이 속한 리포의 git 공통 디렉터리를 심볼릭 링크를 푼 실제 경로로 낸다.
+# 본 작업 트리와 그 링크된 worktree 는 같은 값을 낸다. 얻지 못하면 아무것도 내지 않는다.
+common_dir_of() {
+  _gcd=$(git -C "$1" rev-parse --git-common-dir 2>/dev/null) || return 0
+  [ -n "$_gcd" ] || return 0
+  case "$_gcd" in /*) ;; *) _gcd=$1/$_gcd ;; esac
+  (CDPATH= cd -- "$_gcd" 2>/dev/null && pwd -P)
+}
+
+# 디렉터리 $1 이 이 하네스가 지키지 않는 다른 리포의 작업 트리인가.
+# 가드 루트와 git 공통 디렉터리가 다르면 다른 리포다. 비었거나 풀지 못했거나(`?`) 작업 트리가
+# 아니거나 어느 쪽이든 공통 디렉터리를 얻지 못하면 판정할 수 없으므로 아니라고 답한다 —
+# 그때는 branch_at 이 훅 작업 디렉터리로 판정한다.
+foreign_repo_at() {
+  case "${1:-}" in '' | '?') return 1 ;; esac
+  [ -n "${GUARD_ROOT:-}" ] || return 1
+  _fw=$(unquote_word "$1")
+  [ "$(git -C "$_fw" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || return 1
+  _fc=$(common_dir_of "$_fw")
+  [ -n "$_fc" ] || return 1
+  if [ -z "${_GUARD_COMMON:-}" ]; then
+    _GUARD_COMMON=$(common_dir_of "$GUARD_ROOT")
+  fi
+  [ -n "$_GUARD_COMMON" ] || return 1
+  [ "$_fc" != "$_GUARD_COMMON" ]
+}
+
 # push 인수에서 목적지 브랜치 후보를 한 줄씩 낸다. 후보는 자리표를 모두 되돌린 값이다.
 # 인수가 없거나 원격만 있으면 작업 디렉터리 $_AT 의 현재 브랜치가 목적지다. --tags 처럼 브랜치 refspec 을 보내지
 # 않는 모드에서는 현재 브랜치로 대체하지 않는다. --all·--mirror 는 모든 브랜치를 보내므로
@@ -348,6 +375,8 @@ push_destinations() {
 # 1) 보호 브랜치 직접 push·commit
 #    commit 과 목적지 없는 push 는 명령이 `cd` · `git -C` 로 가리키는 작업 트리의 브랜치로 판정한다.
 #    훅은 세션의 작업 트리에서 돌므로, 그 자리의 브랜치로 판정하면 다른 작업 트리의 커밋을 잘못 가른다.
+#    그 작업 트리가 이 하네스가 지키는 리포가 아니면 판정하지 않는다. 보호 브랜치 목록은 이 리포의
+#    설정이고, 다른 리포의 브랜치 규칙은 그 리포가 정한다.
 guard_protected_branch() {
   GUARD_LABEL=protected-branch
   _invs=$(git_invocations_at)
@@ -357,6 +386,11 @@ guard_protected_branch() {
   for _line in $_invs; do
     IFS=$_ifs
     _AT=${_line%%"$TAB"*}
+    if foreign_repo_at "$_AT"; then
+      IFS='
+'
+      continue
+    fi
     # shellcheck disable=SC2086
     set -- ${_line#*"$TAB"}
     case "$1" in
