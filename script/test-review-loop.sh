@@ -98,8 +98,9 @@ review_mr_labels_set() { # <n> <붙일것> <뗄것>
   printf '%s\n' $_kept $_add | sort -u | tr '\n' ' ' | sed 's/ *$//' > "$FAKE_STATE/labels"
 }
 
-# 조회에 나가는 스레드와 그 id. 시스템 노트만 있는 항목은 빠진다. id 는 픽스처가 적은 값을 쓰고,
-# 없으면 인라인 스레드는 픽스처의 어느 명시 id 와도 겹치지 않는 `t<n>` 을, 일반 노트는 null 을 받는다.
+# 조회에 나가는 스레드와 그 id. 시스템 노트만 있는 항목은 빠진다. 일반 노트는 픽스처가 id 를 적었어도
+# 답글을 받지 않으므로 null 이다. 인라인 스레드는 픽스처가 적은 id 를 쓰고, 없으면 조회에 남은 id 없는
+# 인라인 스레드 순서로 픽스처의 어느 명시 id 와도 겹치지 않는 `t<n>` 을 받는다.
 # 조회와 답글이 이 목록 하나로 스레드를 찾으므로 조회가 준 id 는 조회된 그 스레드만 가리킨다.
 FAKE_THREAD_ID='
 def visible_threads(threads):
@@ -108,16 +109,16 @@ def visible_threads(threads):
     for t in threads:
         if not [x for x in t.get("notes", []) if not x.get("system")]:
             continue
-        if "id" in t:
+        if not t.get("inline"):
+            tid = None
+        elif "id" in t:
             tid = None if t["id"] is None else str(t["id"])
-        elif t.get("inline"):
+        else:
             n += 1
             while "t%d" % n in taken:
                 n += 1
             tid = "t%d" % n
             taken.add(tid)
-        else:
-            tid = None
         out.append((tid, t))
     return out
 '
@@ -930,6 +931,23 @@ cat > "$state/threads.json" <<'JSON'
 JSON
 fake review_mr_thread_reply 1 dup "x" 2>/dev/null
 check UT-33 "an id naming two threads takes no reply" 1 "$?"
+# 일반 노트는 픽스처가 id 를 적었어도 답글을 받지 않는다 — 실제 어댑터가 null 로 내는 자리다.
+cat > "$state/threads.json" <<'JSON'
+[{"id": "note-1", "inline": false, "notes": [{"body": "일반 노트", "created_at": ""}]}]
+JSON
+check UT-33 "a plain note with a fixture id lists a null id" yes \
+  "$(fake review_mr_threads 1 | python3 -c 'import json, sys; print("yes" if json.load(sys.stdin)[0]["id"] is None else "no")')"
+fake review_mr_thread_reply 1 note-1 "x" 2>/dev/null
+check UT-33 "a plain note with a fixture id takes no reply" 1 "$?"
+check UT-33 "that plain note is untouched" 1 \
+  "$(python3 -c 'import json, sys; print(len(json.load(open(sys.argv[1]))[0]["notes"]))' "$state/threads.json")"
+# 합성 id 순번은 조회에 남은 id 없는 인라인 스레드만 센다. 걸러진 항목은 번호를 차지하지 않는다.
+cat > "$state/threads.json" <<'JSON'
+[{"inline": true, "notes": [{"body": "added a commit", "system": true, "created_at": ""}]},
+ {"inline": true, "notes": [{"body": "남은 인라인", "created_at": ""}]}]
+JSON
+check UT-33 "a filtered item takes no synthetic number" t1 \
+  "$(fake review_mr_threads 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["id"])')"
 rm -f "$state/threads.json"
 
 # 리뷰 도구를 부를 때마다 지표에 에이전트 스팬이 남고, 벤더 형식에서 꺼낸 사용량이 같은 뜻으로 맞춰진다.
