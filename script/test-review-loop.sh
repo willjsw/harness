@@ -98,13 +98,28 @@ review_mr_labels_set() { # <n> <붙일것> <뗄것>
   printf '%s\n' $_kept $_add | sort -u | tr '\n' ' ' | sed 's/ *$//' > "$FAKE_STATE/labels"
 }
 
-# 스레드 id. 픽스처가 적은 값을 쓰고, 없으면 인라인 스레드는 픽스처 안 순번으로 짓고 일반 노트는 null 이다.
-# 조회와 답글이 같은 규칙으로 스레드를 찾도록 한 곳에 둔다.
+# 조회에 나가는 스레드와 그 id. 시스템 노트만 있는 항목은 빠진다. id 는 픽스처가 적은 값을 쓰고,
+# 없으면 인라인 스레드는 픽스처의 어느 명시 id 와도 겹치지 않는 `t<n>` 을, 일반 노트는 null 을 받는다.
+# 조회와 답글이 이 목록 하나로 스레드를 찾으므로 조회가 준 id 는 조회된 그 스레드만 가리킨다.
 FAKE_THREAD_ID='
-def thread_id(i, t):
-    if "id" in t:
-        return None if t["id"] is None else str(t["id"])
-    return "t%d" % (i + 1) if t.get("inline") else None
+def visible_threads(threads):
+    taken = {str(t["id"]) for t in threads if t.get("id") is not None}
+    out, n = [], 0
+    for t in threads:
+        if not [x for x in t.get("notes", []) if not x.get("system")]:
+            continue
+        if "id" in t:
+            tid = None if t["id"] is None else str(t["id"])
+        elif t.get("inline"):
+            n += 1
+            while "t%d" % n in taken:
+                n += 1
+            tid = "t%d" % n
+            taken.add(tid)
+        else:
+            tid = None
+        out.append((tid, t))
+    return out
 '
 
 # 실제 어댑터와 같이 시스템 메모를 걸러 정규화해 돌려준다.
@@ -114,19 +129,16 @@ review_mr_threads() {
 import json, sys
 exec(sys.argv[2])
 out = []
-for i, t in enumerate(json.load(open(sys.argv[1], encoding='utf-8'))):
-    notes = [n for n in t.get("notes", []) if not n.get("system")]
-    if not notes:
-        continue
-    out.append({"id": thread_id(i, t), "inline": bool(t.get("inline")),
+for tid, t in visible_threads(json.load(open(sys.argv[1], encoding='utf-8'))):
+    out.append({"id": tid, "inline": bool(t.get("inline")),
                 "path": t.get("path", ""), "line": t.get("line", ""),
                 "notes": [{"body": n.get("body", ""), "created_at": n.get("created_at", "")}
-                          for n in notes]})
+                          for n in t.get("notes", []) if not n.get("system")]})
 json.dump(out, sys.stdout, ensure_ascii=False)
 PY
 }
 
-# 있는 스레드에만 답글이 달린다. id 가 null 인 노트와 없는 id 는 0 이 아닌 코드로 끝난다.
+# 조회된 스레드에만 답글이 달린다. id 가 null 인 노트, 없는 id, 둘 이상에 걸리는 id 는 0 이 아닌 코드로 끝난다.
 review_mr_thread_reply() { # <n> <스레드id> <본문>
   [ -f "$FAKE_STATE/threads.json" ] || return 1
   python3 - "$FAKE_STATE/threads.json" "$FAKE_THREAD_ID" "$2" "$3" <<'PY'
@@ -134,13 +146,12 @@ import json, sys
 exec(sys.argv[2])
 path, tid, body = sys.argv[1], sys.argv[3], sys.argv[4]
 threads = json.load(open(path, encoding="utf-8"))
-for i, t in enumerate(threads):
-    if thread_id(i, t) is not None and thread_id(i, t) == tid:
-        t.setdefault("notes", []).append({"body": body, "created_at": "2026-09-23T12:00:00.000+09:00"})
-        json.dump(threads, open(path, "w", encoding="utf-8"), ensure_ascii=False)
-        raise SystemExit(0)
-print("no such thread: %s" % tid, file=sys.stderr)
-raise SystemExit(1)
+hits = [t for i, t in visible_threads(threads) if i is not None and i == tid]
+if len(hits) != 1:
+    print("no single thread with id: %s" % tid, file=sys.stderr)
+    raise SystemExit(1)
+hits[0].setdefault("notes", []).append({"body": body, "created_at": "2026-09-23T12:00:00.000+09:00"})
+json.dump(threads, open(path, "w", encoding="utf-8"), ensure_ascii=False)
 PY
 }
 
@@ -888,6 +899,37 @@ fake review_mr_thread_reply 1 "no-such-thread" "x" 2>/dev/null
 check UT-33 "unknown id — exit code" 1 "$?"
 fake review_mr_thread_reply 1 "None" "x" 2>/dev/null
 check UT-33 "a plain note takes no reply" 1 "$?"
+# 시스템 노트만 있어 조회에서 빠지는 id 없는 인라인 항목과, 합성 id 와 같은 값을 명시한 스레드가 함께 있다.
+# 조회가 준 id 로 단 답글은 조회된 그 스레드에만 붙어야 한다.
+cat > "$state/threads.json" <<'JSON'
+[{"inline": true, "path": "script/review-mr.sh", "line": 1,
+  "notes": [{"body": "added a commit", "system": true, "created_at": "2026-09-23T10:00:00.000+09:00"}]},
+ {"id": "t1", "inline": true, "path": "script/review-mr.sh", "line": 2,
+  "notes": [{"body": "명시 id 스레드", "created_at": "2026-09-23T10:01:00.000+09:00"}]},
+ {"inline": true, "path": "script/review-mr.sh", "line": 3,
+  "notes": [{"body": "합성 id 스레드", "created_at": "2026-09-23T10:02:00.000+09:00"}]}]
+JSON
+fake review_mr_threads 1 > "$sandbox/fake-threads.json"
+check UT-33 "synthetic ids stay clear of explicit ones" yes "$(python3 - "$sandbox/fake-threads.json" <<'PY'
+import json, sys
+ids = [t["id"] for t in json.load(open(sys.argv[1]))]
+print("yes" if len(ids) == 2 and ids[0] == "t1" and ids[1] not in (None, "t1") else "no")
+PY
+)"
+fake review_mr_thread_reply 1 t1 "명시 id 에 단 답글" 2>/dev/null
+check UT-33 "explicit id reply — exit code" 0 "$?"
+check UT-33 "the reply lands only on the listed thread" "1:|2:명시 id 에 단 답글|3:합성 id 스레드" "$(python3 - "$state/threads.json" <<'PY'
+import json, sys
+ts = json.load(open(sys.argv[1]))
+print("|".join("%d:%s" % (t["line"], "" if t["notes"][-1].get("system") else t["notes"][-1]["body"]) for t in ts))
+PY
+)"
+cat > "$state/threads.json" <<'JSON'
+[{"id": "dup", "inline": true, "notes": [{"body": "a", "created_at": ""}]},
+ {"id": "dup", "inline": true, "notes": [{"body": "b", "created_at": ""}]}]
+JSON
+fake review_mr_thread_reply 1 dup "x" 2>/dev/null
+check UT-33 "an id naming two threads takes no reply" 1 "$?"
 rm -f "$state/threads.json"
 
 # 리뷰 도구를 부를 때마다 지표에 에이전트 스팬이 남고, 벤더 형식에서 꺼낸 사용량이 같은 뜻으로 맞춰진다.
