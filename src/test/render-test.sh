@@ -1731,6 +1731,93 @@ else
 fi
 unset -f mkrepo regpath real inst fresh
 
+echo "UT-75 the permission allow list: managed scripts, the configured forge's commands and git"
+t="$work/allow"; setup "$t"
+# rules <settings.json> <allow|deny> — 규칙을 한 줄에 하나씩
+rules() { python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["permissions"][sys.argv[2]]))' "$1" "$2"; }
+rules "$t/.claude/settings.json" allow > "$work/allow.txt"
+rules "$t/.claude/settings.json" deny > "$work/deny.txt"
+[ -s "$work/allow.txt" ] && ok || bad "the allow list is empty"
+[ -s "$work/deny.txt" ] && ok || bad "the deny list is empty"
+# 대상 스크립트는 테스트에 적지 않고 설치된 script/ 에서 센다
+n=0
+for f in "$t"/script/*.sh "$t"/script/*.py; do
+  [ -f "$f" ] || continue
+  b=$(basename "$f")
+  case "$b" in _*|rollback-work.sh|create-carryover-issue.sh|forge-selftest.sh|harness-verify.sh|forge.sh) continue ;; esac
+  n=$((n + 1))
+  grep -qxF "Bash(script/$b:*)" "$work/allow.txt" && ok || bad "the managed script $b is not allowed"
+done
+[ "$n" -gt 0 ] && ok || bad "no installed managed script was counted"
+for b in rollback-work.sh create-carryover-issue.sh forge-selftest.sh; do
+  [ -f "$t/script/$b" ] || bad "the excluded script $b is not installed, so its absence proves nothing"
+  hasnt "$work/allow.txt" "script/$b" "the irreversible script $b is allowed"
+done
+grep -qxF "Bash(script/sync-task-issues.sh:*)" "$work/allow.txt" && ok || bad "sync-task-issues.sh is not allowed"
+hasnt "$work/allow.txt" "Bash(script/*" "a glob rule over script/ is allowed"
+hasnt "$work/allow.txt" "script/project/" "a project script is allowed"
+hasnt "$work/allow.txt" "script/harness-verify.sh" "the generated verify script is allowed"
+hasnt "$work/allow.txt" "script/forge.sh" "the generated forge adapter is allowed"
+hasnt "$work/allow.txt" "script/_review.py" "a module script is allowed"
+hasnt "$work/allow.txt" "script/hooks/" "a hook script is allowed"
+grep -qxF "Bash(git switch -c:*)" "$work/allow.txt" && ok || bad "git switch -c is not allowed"
+grep -qxF "Bash(git commit:*)" "$work/allow.txt" && ok || bad "git commit is not allowed"
+hasnt "$work/allow.txt" "Bash(git push" "git push is allowed by default"
+grep -qxF "Bash(glab mr view:*)" "$work/allow.txt" && ok || bad "glab mr view is not allowed on gitlab"
+hasnt "$work/allow.txt" "Bash(gh " "a github command is allowed on gitlab"
+has "$t/.ai/forge.md" "issue create" "the command reference no longer names issue creation, so the next check proves nothing"
+hasnt "$work/allow.txt" "issue create" "issue creation is allowed"
+check "allow rules are unique" "$(sort "$work/allow.txt" | uniq -d)" ""
+# 같은 설정의 두 번째 렌더는 같은 파일을 낸다
+cp "$t/.claude/settings.json" "$work/allow-first.json"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+cmp -s "$t/.claude/settings.json" "$work/allow-first.json" && ok || bad "a second render changed .claude/settings.json"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check after the allow list render" "$?" "0"
+
+# forge 를 따라간다
+t="$work/allow-forge"; setup "$t"
+sedi 's/^tracker = "gitlab"$/tracker = "jira"/; s/^review_host = "gitlab"$/review_host = "github"/' "$t/harness.toml"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render with jira and github" "$?" "0"
+rules "$t/.claude/settings.json" allow > "$work/allow-forge.txt"
+grep -qxF "Bash(jira issue view:*)" "$work/allow-forge.txt" && ok || bad "jira issue view is not allowed with a jira tracker"
+grep -qxF "Bash(gh pr view:*)" "$work/allow-forge.txt" && ok || bad "gh pr view is not allowed with a github review host"
+hasnt "$work/allow-forge.txt" "glab" "a gitlab command is allowed with jira and github"
+hasnt "$work/allow-forge.txt" "gh issue" "the github tracker commands are allowed when github only hosts review"
+check "gh api rules" "$(grep -F "Bash(gh api" "$work/allow-forge.txt")" 'Bash(gh api repos/{owner}/{repo}/pulls/*/comments/*/replies:*)'
+
+# 선언 파일과 제외 목록의 오류는 하네스 사본에서 만든다 — 소스 템플릿은 건드리지 않는다
+hc="$work/allow-copy"; rm -rf "$hc"; mkdir -p "$hc/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$hc/bin/"; cp -R "$root/templates" "$hc/templates"
+t="$work/allow-bad"; setup "$t"
+arender() { "$hc/bin/harness" render --target "$t" > "$work/allow-bad.log" 2>&1; }
+arender; check "render from the harness copy" "$?" "0"
+decl="$hc/templates/forge/gitlab/allow.toml"
+cp "$decl" "$work/allow-decl.orig"
+rm "$decl"
+arender; check "render without the tracker forge's allow list" "$?" "2"
+has "$work/allow-bad.log" "no permission list for this forge" "the missing allow list is not named"
+has "$work/allow-bad.log" "$decl" "the missing allow list's path is not shown"
+for item in '"glab mr view:*"' '"Bash(glab mr view)"' '""' '" glab mr view"'; do
+  printf 'tracker = [%s]\nreview = ["glab mr view"]\n' "$item" > "$decl"
+  arender; check "render with the allow item $item" "$?" "2"
+  has "$work/allow-bad.log" "tracker[1] is not a command prefix" "the bad allow item $item is not named"
+done
+printf 'tracker = "glab issue view"\nreview = ["glab mr view"]\n' > "$decl"
+arender; check "render with a string tracker list" "$?" "2"
+has "$work/allow-bad.log" '`tracker` must be a list of command prefixes' "the string tracker list is not named"
+printf 'review = ["glab mr view"]\n' > "$decl"
+arender; check "render without the tracker key" "$?" "2"
+has "$work/allow-bad.log" '`tracker` must be a list of command prefixes' "the missing tracker key is not named"
+printf 'tracker = ["glab issue view"]\nreview = ["glab mr view"]\nmerge = ["glab mr merge"]\n' > "$decl"
+arender; check "render with an unknown allow key" "$?" "2"
+has "$work/allow-bad.log" "unknown key(s): merge" "the unknown allow key is not named"
+has "$work/allow-bad.log" "the keys are tracker, review" "the allow keys are not listed"
+cp "$work/allow-decl.orig" "$decl"
+rm "$hc/templates/managed/script/rollback-work.sh"
+arender; check "render with an exclusion that is not shipped" "$?" "2"
+has "$work/allow-bad.log" "permission exclusion names a script that is not shipped: rollback-work.sh" "the unshipped exclusion is not named"
+unset -f rules arender
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
