@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
 import { listProjects } from "@/lib/harness";
 import Nav from "@/components/Nav";
 import UiSettings from "@/components/UiSettings";
@@ -11,6 +12,8 @@ export default async function ProjectLayout({ children, params }) {
   const name = decodeURIComponent(project);
   const projects = await listProjects();
   const current = projects.find((p) => p.name === name);
+  // 등록부에 없는 이름이거나 경로를 쓸 수 없는 등록이면 404 다.
+  if (!current?.ok) notFound();
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -32,10 +35,10 @@ export default async function ProjectLayout({ children, params }) {
           Home
         </Link>
         <UiSettings />
-        <div className="path muted">{current?.path}</div>
+        <div className="path muted">{current.path}</div>
       </aside>
       <main className="content">
-        {current?.ok ? children : <div className="empty"><h1>프로젝트를 찾지 못했다</h1><p>{name}</p></div>}
+        {children}
       </main>
     </div>
   );
