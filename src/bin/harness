@@ -1932,6 +1932,21 @@ def remote_call(cfg, argv, cwd):
     return remote_finish(p, argv, cfg["doctor"]["remote_timeout"])
 
 
+def close_fds(*fds, strict=False):
+    """파일 기술자를 하나씩 닫는다. 닫다가 난 OS 오류는 버리고, strict 면 모두 닫은 뒤 첫 오류를 다시 낸다.
+
+    닫기가 실패해도 그 번호는 이미 풀린 것으로 보고 다시 닫지 않는다 — 다른 곳이 그 번호를 새로 받았을 수 있다.
+    """
+    first = None
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError as e:
+            first = first or e
+    if strict and first is not None:
+        raise first
+
+
 def runner_check_call(cfg, argv, cwd):
     """`run-agent.py --check` 호출 — 바깥 제한이 실행기 안의 로그인 확인보다 먼저 끝나지 않게 두 단계로 기다린다.
 
@@ -1939,23 +1954,30 @@ def runner_check_call(cfg, argv, cwd):
     doctor.remote_timeout 을 기다린다 — 그 전의 일(실행기 기동 · 계획 읽기)은 원격에 닿지 않는다. 알림 뒤로는
     그 제한의 RUNNER_CHECK_AFTER_START 배를 기다린다. 알림 없이 끝난 실행기(확인 명령 없음 · 실행하지 못함)는
     끝난 것을 읽는다. 어느 단계든 넘기면 None — 실행기가 제한 시간을 넘겼다고 낸 결과(4)와 같게 다룬다.
+    알림 통로를 만들거나 기다리다 OS 오류가 나도 None 이다. 그 통로의 파일 기술자는 어느 경로로든 한 번씩 닫는다.
     """
     limit = cfg["doctor"]["remote_timeout"]
-    rfd, wfd = os.pipe()
+    try:
+        rfd, wfd = os.pipe()
+    except OSError:
+        return None
     try:
         p = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=dict(remote_env(), **{CHECK_START_FD_ENV: str(wfd)}),
                              pass_fds=(wfd,), start_new_session=True)
     except OSError:
-        os.close(rfd)
-        os.close(wfd)
+        close_fds(rfd, wfd)
         return None
-    os.close(wfd)
+    started = None
     try:
+        close_fds(wfd, strict=True)
         ready = select.select([rfd], [], [], limit)[0]
         started = os.read(rfd, 1) if ready else None
+    except (OSError, ValueError):
+        # select 는 FD_SETSIZE 를 넘는 번호를 ValueError 로 거부한다
+        started = None
     finally:
-        os.close(rfd)
+        close_fds(rfd)
     if started is None:
         with contextlib.suppress(OSError):
             os.killpg(p.pid, signal.SIGKILL)

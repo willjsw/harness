@@ -2566,7 +2566,7 @@ done
 # doctor 의 리뷰어 러너 확인을 가상 시계로 돌린다. 실행기는 기동에 prep 초를 쓰고 시작을 알린 뒤 auth 초 뒤에 끝난다.
 # 시작 알림이 없으면 prep 초 뒤에 그냥 끝난다. 실제로 기다리지 않는다
 python3 - "$root/bin/harness" "$work/remote59" > "$work/at-doctor" 2>&1 <<'PY2'
-import importlib.machinery, importlib.util, os, subprocess, sys, types
+import contextlib, errno, importlib.machinery, importlib.util, os, subprocess, sys, types
 from pathlib import Path
 loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
 spec = importlib.util.spec_from_loader("harness_cli", loader)
@@ -2626,13 +2626,82 @@ run("no-start", 0.5, False, 0, 2, "", "error: codex is not installed (roles.code
 # 시작을 알리지 못한 채 제한을 넘긴 실행기와, 시작 뒤 안쪽 제한을 지나서도 끝나지 않는 실행기는 끊는다
 run("stuck-start", 7.5, True, 1, 0, "signed-in\n")
 run("stuck-after", 1, True, 7 * h.RUNNER_CHECK_AFTER_START + 0.5, 0, "signed-in\n")
+# 시작 알림 통로의 OS 오류는 확인하지 못한 것으로 떨어진다. 그 통로의 파일 기술자는 정확히 한 번씩 닫힌다
+real_pipe, real_close, real_select = os.pipe, os.close, h.select
+def fault(name, where, err):
+    made, closed = [], []
+    def pipe():
+        if where == "pipe":
+            raise err
+        made.extend(real_pipe())
+        return tuple(made)
+    def close(fd):
+        closed.append(fd)
+        real_close(fd)
+        if where == "close" and fd == made[1]:
+            raise err
+    def select_(r, w, x, timeout):
+        raise err
+    def read(fd, n):
+        raise err
+    def popen(argv, **kw):
+        if where == "popen":
+            raise err
+        return fake_popen(argv, **kw)
+    h.os.pipe, h.os.close, h.subprocess.Popen = pipe, close, popen
+    # 실제로 기다리지 않는다 — 읽기 오류는 알림이 왔다고 답한 뒤에 낸다
+    h.select = types.SimpleNamespace(select=(lambda r, w, x, t: (r, [], [])) if where == "read" else select_)
+    h.os.read = read if where == "read" else os.read
+    case["proc"], case["killed"] = None, False
+    try:
+        run(name, 0, True, 0, 0, "signed-in\n")
+    finally:
+        h.os.pipe, h.os.close, h.os.read, h.select, h.subprocess.Popen = real_pipe, real_close, os.read, real_select, fake_popen
+        if case["proc"] is not None:
+            with contextlib.suppress(OSError):
+                real_close(case["proc"].w)
+    leaked = [fd for fd in made if closed.count(fd) != 1]
+    print(name, "fds", "none" if not made else "leaked %s" % leaked if leaked else "closed once")
+for name, where, err in (("pipe-EMFILE", "pipe", OSError(errno.EMFILE, "Too many open files")),
+                         ("popen-E2BIG", "popen", OSError(errno.E2BIG, "Argument list too long")),
+                         ("close-EIO", "close", OSError(errno.EIO, "close failed")),
+                         ("select-EBADF", "select", OSError(errno.EBADF, "bad fd")),
+                         ("select-out-of-range", "select", ValueError("filedescriptor out of range in select()")),
+                         ("read-EIO", "read", OSError(errno.EIO, "read failed"))):
+    fault(name, where, err)
+# 시작 알림 통로를 만들지 못해도 doctor 는 끝까지 돌고 리뷰어 러너 항목을 확인하지 못한 것으로 남긴다
+def emfile():
+    raise OSError(errno.EMFILE, "Too many open files")
+class Quiet:
+    def __init__(self, argv, **kw):
+        self.pid, self.returncode = 0, 1
+    def communicate(self, timeout=None):
+        return "", ""
+h.os.pipe, h.subprocess.Popen = emfile, Quiet
+items = h.doctor_items(cfg, target, remote=True)
+h.os.pipe, h.subprocess.Popen = real_pipe, fake_popen
+last = items[-1]
+print("doctor-emfile", last["section"], last["state"], last["what"], last["detail"])
 PY2
 check "the reviewer runner check waits for the sign-in check from its start, not from the runner's launch" "$(cat "$work/at-doctor")" \
 "slow-start ok signed in exited
 inner-timeout warn could not check exited
 no-start bad codex is not installed (roles.code-reviewer.runner = codex) exited
 stuck-start warn could not check killed
-stuck-after warn could not check killed"
+stuck-after warn could not check killed
+pipe-EMFILE warn could not check exited
+pipe-EMFILE fds none
+popen-E2BIG warn could not check exited
+popen-E2BIG fds closed once
+close-EIO warn could not check killed
+close-EIO fds closed once
+select-EBADF warn could not check killed
+select-EBADF fds closed once
+select-out-of-range warn could not check killed
+select-out-of-range fds closed once
+read-EIO warn could not check killed
+read-EIO fds closed once
+doctor-emfile remote warn reviewer runner \`codex\` could not check"
 cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
 unset -f at_plan at_run
 
