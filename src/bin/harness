@@ -2010,6 +2010,35 @@ def remote_items(cfg, target, line):
     """원격 준비 상태를 읽기만 한다. 원격 URL 과 명령 출력은 결과에 옮기지 않는다."""
     refs = remote_git_items(cfg, target, line)
     remote_forge_items(cfg, target, line, refs)
+    remote_reviewer_items(cfg, target, line)
+
+
+REVIEWER = "code-reviewer"
+
+
+def remote_reviewer_items(cfg, target, line):
+    """리뷰어가 CLI 러너면 그 러너의 설치·로그인을 `run-agent.py --check` 로 본다. 러너의 출력은 옮기지 않는다."""
+    p = run_plan(cfg)["roles"].get(REVIEWER) if REVIEWER in cfg["roles"] else None
+    if not p or p["via"] != "headless":
+        return
+    what = "reviewer runner `%s`" % p["vendor"]
+    runner = target / RUN_AGENT
+    if not runner.is_file():
+        line("bad", what, "`%s` is missing — run `harness render`" % RUN_AGENT)
+        return
+    r = remote_call([sys.executable, str(runner), REVIEWER, "--check"], target)
+    out = r.stdout.strip() if r is not None else ""
+    if r is not None and r.returncode == 0 and out == "signed-in":
+        line("ok", what, "signed in")
+    elif r is not None and r.returncode == 0 and out == "unchecked":
+        line("ok", what, "installed — sign-in is not checked for %s" % VENDORS[p["vendor"]]["name"])
+    elif r is not None and r.returncode == 2:
+        first = (r.stderr.strip().splitlines() or [""])[0]
+        line("bad", what, first[len("error: "):] if first.startswith("error: ") else first)
+    elif r is not None and r.returncode == 3:
+        line("bad", what, "not signed in — `%s` fails" % " ".join(p.get("auth_check") or []))
+    else:
+        line("warn", what, REMOTE_UNCHECKED)
 
 
 def doctor_counts(items):

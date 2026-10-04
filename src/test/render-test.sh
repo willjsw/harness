@@ -1956,8 +1956,9 @@ while IFS= read -r line; do
 done < "$work/uistate.out"
 
 echo "UT-77 doctor collects its checks into one list; the text and status are drawn from it"
-# forge CLI 는 PATH 앞의 빈 스텁이다 — 설치 확인만 지나면 된다.
-stub59="$work/stub59"; mkdir -p "$stub59"; printf '#!/bin/sh\nexit 0\n' > "$stub59/gh"; chmod +x "$stub59/gh"
+# forge CLI 와 리뷰어 러너는 PATH 앞의 빈 스텁이다 — 기기에 깔린 실제 CLI 를 부르지 않는다.
+stub59="$work/stub59"; mkdir -p "$stub59"
+for c in gh codex; do printf '#!/bin/sh\nexit 0\n' > "$stub59/$c"; chmod +x "$stub59/$c"; done
 ready() { # ready <대상> — FAIL 없이 경고만 남는 git 리포 하나를 만든다
   setup "$1"
   "$root/bin/harness" set --target "$1" forge.tracker github forge.review_host github commands.test true >/dev/null 2>&1 \
@@ -2372,6 +2373,48 @@ grep -nE '"(gh|glab|jira)"[],]' "$root/bin/harness" | grep -v '^[0-9]*:FORGE_CLI
 check "the CLI does not call a forge CLI directly" "$(cat "$work/fd-direct")" ""
 cat "$work"/fd-*.txt > "$work/fd-all.log"; no_hangul "$work/fd-all.log" "doctor --remote forge output"
 unset -f fdoc
+
+echo "UT-84 doctor --remote checks the reviewer's CLI runner through run-agent.py --check"
+# 리뷰어 러너는 PATH 앞의 codex 스텁이다. 종료 코드는 CODEX_LOGIN_EXIT 로 정한다.
+t="$work/remote59"; cbin="$work/codexbin59"; mkdir -p "$cbin"
+cat > "$cbin/codex" <<'SH'
+#!/bin/sh
+echo "RUNNER-ACCOUNT-MARK59"; echo "RUNNER-ACCOUNT-MARK59" >&2
+exit "${CODEX_LOGIN_EXIT:-0}"
+SH
+chmod +x "$cbin/codex"
+rvdoc() { # rvdoc <이름> <PATH> [변수=값...] — doctor --remote 의 리뷰어 러너 줄만 남긴다
+  local n="$1" path="$2"; shift 2
+  env FAKE_STATE="$fst83" "$@" PATH="$path" "$root/bin/harness" doctor --remote --target "$t" > "$work/rv-$n.txt" 2>&1
+  grep 'reviewer runner' "$work/rv-$n.txt" > "$work/rv-$n.line"
+}
+rvdoc in "$cbin:$stub59:$PATH" CODEX_LOGIN_EXIT=0
+check "a signed-in reviewer runner" "$(cat "$work/rv-in.line")" '  ok   reviewer runner `codex`  — signed in'
+rvdoc out "$cbin:$stub59:$PATH" CODEX_LOGIN_EXIT=1
+check "a reviewer runner that is not signed in" "$(cat "$work/rv-out.line")" '  FAIL reviewer runner `codex`  — not signed in — `codex login status` fails'
+hasnt "$work/rv-out.txt" "RUNNER-ACCOUNT-MARK59" "the runner's output reached doctor"
+rvdoc none "$minbin"
+check "a reviewer runner that is not installed" "$(cat "$work/rv-none.line")" '  FAIL reviewer runner `codex`  — codex is not installed (roles.code-reviewer.runner = codex)'
+cp "$t/script/harness.plan.json" "$work/rv-plan.bak"
+python3 - "$t/script/harness.plan.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["roles"]["code-reviewer"]["auth_check"] = []
+json.dump(d, open(p, "w"))
+PY
+rvdoc unchecked "$cbin:$stub59:$PATH"
+check "a reviewer runner without a sign-in command" "$(cat "$work/rv-unchecked.line")" '  ok   reviewer runner `codex`  — installed — sign-in is not checked for Codex CLI'
+cp "$work/rv-plan.bak" "$t/script/harness.plan.json"
+mv "$t/script/run-agent.py" "$work/rv-runner.bak"
+rvdoc norunner "$cbin:$stub59:$PATH"
+check "a missing runner script" "$(cat "$work/rv-norunner.line")" '  FAIL reviewer runner `codex`  — `script/run-agent.py` is missing — run `harness render`'
+mv "$work/rv-runner.bak" "$t/script/run-agent.py"
+"$root/bin/harness" set --target "$t" invariants.distinct_reviewer false roles.code-reviewer.runner inproc >/dev/null 2>&1 \
+  || bad "could not make the reviewer a subagent"
+rvdoc inproc "$cbin:$stub59:$PATH"
+check "a subagent reviewer has no runner line" "$(cat "$work/rv-inproc.line")" ""
+has "$work/rv-inproc.txt" 'remote `origin`' "the remote section did not run for a subagent reviewer"
+cat "$work"/rv-*.txt > "$work/rv-all.log"; no_hangul "$work/rv-all.log" "doctor --remote reviewer output"
+unset -f rvdoc
 
 echo
 if [ "$fail" -eq 0 ]; then
