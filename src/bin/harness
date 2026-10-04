@@ -1919,15 +1919,15 @@ def ls_remote(target, branches):
     return head, refs
 
 
-def remote_items(cfg, target, line):
-    """원격 준비 상태를 읽기만 한다. 원격 URL 과 명령 출력은 결과에 옮기지 않는다."""
+def remote_git_items(cfg, target, line):
+    """origin · base 브랜치 · 원격 기본 브랜치. origin 에 있는 refs/heads/* 집합을 돌려준다 — 모르면 빈 집합."""
     base = cfg["branches"]["base"]
     if git(target, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
         line("bad", "remote `origin`", "not a git repository")
-        return
+        return set()
     if git(target, "remote", "get-url", "origin").returncode != 0:
         line("bad", "remote `origin`", "not set — run `git remote add origin <url>`")
-        return
+        return set()
     line("ok", "remote `origin`")
     branches = list(dict.fromkeys([base] + list(cfg["branches"]["protected"])))
     ls = ls_remote(target, branches)
@@ -1935,7 +1935,7 @@ def remote_items(cfg, target, line):
     if ls is None:
         line("warn", "branch `%s` on origin" % base, failed)
         line("warn", "origin default branch", failed)
-        return
+        return set()
     head, refs = ls
     if "refs/heads/%s" % base in refs:
         line("ok", "branch `%s` on origin" % base)
@@ -1948,6 +1948,68 @@ def remote_items(cfg, target, line):
              % (head[len("refs/heads/"):], base))
     else:
         line("warn", "origin default branch", "%s — origin does not report it" % REMOTE_UNCHECKED)
+    return refs
+
+
+def forge_call(target, fn, *a):
+    """forge 어댑터 함수 하나를 원격 호출 규칙으로 부른다. forge CLI 를 직접 부르지 않는다."""
+    return remote_call(["sh", "-c", '. ./script/forge.sh && "$@"', "sh", fn, *a], target)
+
+
+def remote_forge_items(cfg, target, line, refs):
+    """forge 로그인 · 트래커 라벨 · 원격 브랜치 보호. 로그인되지 않은 종류는 그 뒤 항목을 내지 않는다."""
+    tracker, host = cfg["forge"]["tracker"], cfg["forge"]["review_host"]
+    signed = set()
+    for kind in dict.fromkeys([tracker, host]):
+        if not shutil.which(FORGE_CLI.get(kind, kind)):
+            continue
+        r = forge_call(target, "tracker_auth" if kind == tracker else "review_auth")
+        what = "sign-in to `%s`" % kind
+        if r is not None and r.returncode == 0:
+            line("ok", what)
+            signed.add(kind)
+        elif r is not None and r.returncode == 1:
+            hint = (r.stderr.strip().splitlines() or [""])[0]
+            line("bad", what, "not signed in — %s" % hint if hint else "not signed in")
+        else:
+            line("warn", what, REMOTE_UNCHECKED)
+    if tracker in signed:
+        wanted = list(dict.fromkeys(l for l in cfg["issues"]["labels"].values() if l))
+        r = forge_call(target, "tracker_labels") if wanted else None
+        if wanted and not (r is not None and r.returncode == 3):
+            have = None
+            if r is not None and r.returncode == 0:
+                with contextlib.suppress(ValueError):
+                    v = json.loads(r.stdout)
+                    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                        have = {x.lower() for x in v}
+            if have is None:
+                line("warn", "labels", REMOTE_UNCHECKED)
+            else:
+                for l in wanted:
+                    if l.lower() in have:
+                        line("ok", "label `%s`" % l, "on %s" % tracker)
+                    else:
+                        line("warn", "label `%s`" % l, "missing on %s — create it on the forge" % tracker)
+    if host in signed:
+        for b in dict.fromkeys(cfg["branches"]["protected"]):
+            if "refs/heads/%s" % b not in refs:
+                continue
+            r = forge_call(target, "review_branch_protected", b)
+            out = r.stdout.strip() if r is not None and r.returncode == 0 else None
+            what = "branch protection `%s`" % b
+            if out == "true":
+                line("ok", what, "protected on %s" % host)
+            elif out == "false":
+                line("warn", what, "not protected on %s — only local hooks block direct pushes; protect it on the forge" % host)
+            else:
+                line("warn", what, REMOTE_UNCHECKED)
+
+
+def remote_items(cfg, target, line):
+    """원격 준비 상태를 읽기만 한다. 원격 URL 과 명령 출력은 결과에 옮기지 않는다."""
+    refs = remote_git_items(cfg, target, line)
+    remote_forge_items(cfg, target, line, refs)
 
 
 def doctor_counts(items):

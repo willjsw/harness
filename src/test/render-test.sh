@@ -2247,7 +2247,8 @@ hasnt "$work/rd-plain.alljson" "remote checks not run" "the not-run line reached
 
 t2="$work/remote59-nogit"; setup "$t2"
 rdoc nogit "$t2" --remote
-check "not a git repository" "$(rsec nogit)" '  FAIL remote `origin`  — not a git repository'
+check "not a git repository" "$(rsec nogit | head -1)" '  FAIL remote `origin`  — not a git repository'
+rsec nogit | grep -q 'on origin\|origin default branch' && bad "not a git repository, yet the git items ran" || ok
 hasnt "$work/rd-nogit.txt" "remote checks not run" "doctor --remote still says the remote was not checked"
 
 git -C "$t" remote remove origin
@@ -2324,6 +2325,53 @@ cat "$work"/rd-*.txt > "$work/rd-all.log"; no_hangul "$work/rd-all.log" "doctor 
 "$root/bin/harness" help > "$work/rd-help" 2>&1
 grep -E '^  harness doctor +\[--remote\] \[--json\]' "$work/rd-help" >/dev/null && ok || bad "help does not list --remote and --json for doctor"
 grep -E '^  harness status +\[--remote\]' "$work/rd-help" >/dev/null && ok || bad "help does not list --remote for status"
+
+echo "UT-83 doctor --remote checks forge sign-in, tracker labels and branch protection through the adapter"
+# forge 는 script/forge.sh 를 페이크로 바꿔 끼운다. forge CLI 설치 확인은 PATH 앞의 빈 gh 스텁이 지난다.
+t="$work/remote59"; cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+fst83="$work/fake-state83"; mkdir -p "$fst83"
+fdoc() { # fdoc <이름> <변수=값...> — 페이크 환경으로 doctor --remote 를 돌리고 remote 절만 남긴다
+  local n="$1"; shift
+  env FAKE_STATE="$fst83" FAKE_BREAK= "$@" PATH="$stub59:$PATH" "$root/bin/harness" doctor --remote --target "$t" > "$work/fd-$n.txt" 2>&1
+  sed -n '/^remote$/,/^$/p' "$work/fd-$n.txt" | grep '^  ' > "$work/fd-$n.sec"
+}
+fdoc unauth FAKE_AUTH=fail
+has "$work/fd-unauth.sec" '  FAIL sign-in to `github`  — not signed in — run `fake auth login`' "a failed sign-in is not a failure with the adapter's hint"
+hasnt "$work/fd-unauth.sec" 'label' "a failed sign-in still checks labels"
+hasnt "$work/fd-unauth.sec" 'branch protection' "a failed sign-in still checks branch protection"
+fdoc signed FAKE_LABELS="Requirement Task invalid"
+has "$work/fd-signed.sec" '  ok   sign-in to `github`' "a sign-in is not ok"
+check "one sign-in line when the tracker and the host are the same forge" "$(grep -c 'sign-in to' "$work/fd-signed.sec")" "1"
+for l in Requirement Task invalid; do has "$work/fd-signed.sec" "  ok   label \`$l\`  — on github" "label $l is not ok"; done
+fdoc onemissing FAKE_LABELS="Requirement Task"
+has "$work/fd-onemissing.sec" '  warn label `invalid`  — missing on github — create it on the forge' "a missing label is not a warning"
+check "only the missing label warns" "$(grep -c '^  warn label' "$work/fd-onemissing.sec")" "1"
+fdoc case FAKE_LABELS="requirement TASK INVALID"
+check "labels that differ only in case are ok" "$(grep -c '^  ok   label' "$work/fd-case.sec")" "3"
+fdoc nolabels FAKE_LABELS=none
+hasnt "$work/fd-nolabels.sec" 'label' "a tracker that keeps no labels still has label lines"
+fdoc brokenlabels FAKE_BREAK=labels
+check "an unreadable label list is one could-not-check line" "$(grep 'label' "$work/fd-brokenlabels.sec")" '  warn labels  — could not check'
+fdoc prot FAKE_PROTECTED=development
+has "$work/fd-prot.sec" '  ok   branch protection `development`  — protected on github' "a protected base is not ok"
+hasnt "$work/fd-prot.sec" 'branch protection `main`' "a protected branch absent from origin is checked"
+fdoc noprot FAKE_PROTECTED=
+has "$work/fd-noprot.sec" '  warn branch protection `development`  — not protected on github — only local hooks block direct pushes; protect it on the forge' "an unprotected base is not a warning"
+fdoc brokenprot FAKE_BREAK=protected
+has "$work/fd-brokenprot.sec" '  warn branch protection `development`  — could not check' "an odd protection answer is not a could-not-check warning"
+# forge CLI 가 없는 종류는 로그인부터 내지 않는다
+minbin="$work/minbin59"; rm -rf "$minbin"; mkdir -p "$minbin"
+for c in git python3 sh bash; do ln -s "$(command -v "$c")" "$minbin/$c"; done
+FAKE_STATE="$fst83" PATH="$minbin" "$root/bin/harness" doctor --remote --target "$t" > "$work/fd-nocli.txt" 2>&1
+sed -n '/^remote$/,/^$/p' "$work/fd-nocli.txt" > "$work/fd-nocli.sec"
+has "$work/fd-nocli.sec" 'remote `origin`' "the remote section did not run without the forge CLI"
+hasnt "$work/fd-nocli.sec" 'sign-in' "a forge without its CLI still checks sign-in"
+hasnt "$work/fd-nocli.sec" 'label' "a forge without its CLI still checks labels"
+hasnt "$work/fd-nocli.sec" 'branch protection' "a forge without its CLI still checks branch protection"
+grep -nE '"(gh|glab|jira)"[],]' "$root/bin/harness" | grep -v '^[0-9]*:FORGE_CLI = ' > "$work/fd-direct" || true
+check "the CLI does not call a forge CLI directly" "$(cat "$work/fd-direct")" ""
+cat "$work"/fd-*.txt > "$work/fd-all.log"; no_hangul "$work/fd-all.log" "doctor --remote forge output"
+unset -f fdoc
 
 echo
 if [ "$fail" -eq 0 ]; then
