@@ -2100,7 +2100,7 @@ import json, sys
 d = sys.argv[1]
 def cli(exe, auth):
     return {"via": "headless", "vendor": "codex", "exe": exe, "argv": [exe, "exec"], "output": "stdout", "model": "",
-            "usage_format": [], "usage_parser": "", "auth_check": auth, "entry": "script/run-agent.py"}
+            "usage_format": [], "usage_parser": "", "auth_check": auth, "auth_timeout": 30, "entry": "script/run-agent.py"}
 plan = {"roles": {"rev": cli("codex", ["codex", "login", "status"]), "noauth": cli("codex", []),
                   "sub": {"via": "subagent", "vendor": "claude"},
                   "ghost": cli("nosuch-cli-59", ["nosuch-cli-59", "login"]),
@@ -2484,10 +2484,98 @@ h.subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(s
 h.subprocess.Popen = FakePopen
 h.remote_items(cfg, target, lambda *a: None)
 kinds = sorted({a for a, _ in seen})
-print(sorted({t for _, t in seen}), "git" in kinds, "sh" in kinds, sys.executable in kinds)
+# 리뷰어 러너 확인만 실행기 기동 몫을 더 받는다
+print(sorted({t for a, t in seen if a != sys.executable}), sorted({t - h.RUNNER_CHECK_GRACE for a, t in seen if a == sys.executable}),
+      h.RUNNER_CHECK_GRACE > 0, "git" in kinds, "sh" in kinds)
 PY2
-check "every remote call gets doctor.remote_timeout" "$(cat "$work/rt-calls")" "[7] True True True"
+check "every remote call gets doctor.remote_timeout" "$(cat "$work/rt-calls")" "[7] [7] True True True"
 unset -f rt_with rt_schema
+
+echo "UT-86 the reviewer runner check gives its sign-in command doctor.remote_timeout, and the outer call outlasts it"
+t="$work/authto"; setup "$t"
+"$root/bin/harness" set --target "$t" roles.planner.runner codex doctor.remote_timeout 7 >/dev/null 2>&1 \
+  || bad "could not make the planner a codex runner with doctor.remote_timeout 7"
+at_plan() { python3 -c 'import json,sys; print(repr(json.load(open(sys.argv[1]))["roles"]["planner"].get("auth_timeout")))' "$t/script/harness.plan.json" 2>&1; }
+# run-agent.py --check 를 띄우되 로그인 확인 명령은 실행하지 않고, 받은 제한 시간만 적는다
+at_run() { # at_run <이름> <ok|expire> — 결과는 "<종료 코드> <받은 제한 시간 목록>"
+  PATH="$stub59:$PATH" python3 - "$t/script/run-agent.py" "$2" "$work/at-$1.res" > "$work/at-$1.out" 2> "$work/at-$1.err" <<'PY2'
+import runpy, subprocess, sys
+script, mode, res = sys.argv[1:4]
+seen = []
+def fake_run(argv, **kw):
+    seen.append(kw.get("timeout"))
+    if mode == "expire":
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+    return subprocess.CompletedProcess(argv, 0)
+subprocess.run = fake_run
+sys.argv = [script, "planner", "--check"]
+code = None
+try:
+    runpy.run_path(script, run_name="__main__")
+except SystemExit as e:
+    code = e.code
+open(res, "w").write("%s %s" % (code, seen))
+PY2
+}
+check "the plan carries doctor.remote_timeout as the sign-in time limit" "$(at_plan)" "7"
+at_run set ok; check "the sign-in check runs with the configured time limit" "$(cat "$work/at-set.res")" "0 [7]"
+check "a sign-in check within the limit prints signed-in" "$(cat "$work/at-set.out")" "signed-in"
+at_run expire expire; check "a sign-in check past the limit exits 4" "$(cat "$work/at-expire.res")" "4 [7]"
+has "$work/at-expire.err" "error: could not check sign-in for codex" "a sign-in check past the limit does not say so"
+# [doctor] 절이 없는 옛 설정은 기본값으로 끊는다
+python3 - "$t/harness.toml" <<'PY2'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[doctor\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[doctor]" not in s
+open(p, "w").write(s)
+PY2
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render without a doctor section" "$?" "0"
+check "the plan's sign-in time limit without a doctor section" "$(at_plan)" "30"
+at_run default ok; check "the sign-in check without a doctor section runs with 30 seconds" "$(cat "$work/at-default.res")" "0 [30]"
+# 계획에 제한 시간이 없거나 쓸 수 없는 값이면 확인 명령을 띄우지 않고 계획을 다시 만들라고 한다
+cp "$t/script/harness.plan.json" "$work/at-plan.bak"
+for v in none 0 '"30"' true; do
+  python3 - "$t/script/harness.plan.json" "$v" <<'PY2'
+import json, sys
+p, v = sys.argv[1:3]; d = json.load(open(p)); r = d["roles"]["planner"]
+if v == "none":
+    del r["auth_timeout"]
+else:
+    r["auth_timeout"] = json.loads(v)
+json.dump(d, open(p, "w"))
+PY2
+  at_run bad ok; check "a plan with auth_timeout $v" "$(cat "$work/at-bad.res")" "2 []"
+  has "$work/at-bad.err" "error: script/harness.plan.json is missing or broken" "a plan with auth_timeout $v is not called broken"
+  cp "$work/at-plan.bak" "$t/script/harness.plan.json"
+done
+# doctor 는 리뷰어 러너 확인에 안쪽 제한보다 긴 시간을 주고, 안쪽이 시간을 넘긴 결과를 확인하지 못한 항목으로 남긴다
+python3 - "$root/bin/harness" "$work/remote59" > "$work/at-doctor" 2>&1 <<'PY2'
+import importlib.machinery, importlib.util, subprocess, sys, types
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+cfg["roles"]["code-reviewer"]["runner"] = "codex"
+inner = h.run_plan(cfg)["roles"]["code-reviewer"]["auth_timeout"]
+seen = []
+class FakePopen:
+    def __init__(self, argv, **kw):
+        self.argv, self.pid, self.returncode = argv, 0, 4
+    def communicate(self, timeout=None):
+        seen.append(timeout)
+        return "", "error: could not check sign-in for codex\n"
+h.subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith("__")})
+h.subprocess.Popen = FakePopen
+lines = []
+h.remote_reviewer_items(cfg, target, lambda *a: lines.append(a))
+print(len(seen) == 1 and seen[0] > inner == cfg["doctor"]["remote_timeout"], lines)
+PY2
+check "the reviewer runner check outlasts its sign-in limit and reports a timeout as unchecked" "$(cat "$work/at-doctor")" \
+  "True [('warn', 'reviewer runner \`codex\`', 'could not check')]"
+cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
+unset -f at_plan at_run
 
 echo
 if [ "$fail" -eq 0 ]; then
