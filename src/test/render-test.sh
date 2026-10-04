@@ -1869,6 +1869,92 @@ arender; check "render with an exclusion that is not shipped" "$?" "2"
 has "$work/allow-bad.log" "permission exclusion names a script that is not shipped: rollback-work.sh" "the unshipped exclusion is not named"
 unset -f rules arender
 
+echo "UT-76 UI server decisions: the build hash, the server record, the process match and the server state"
+# 판정 함수를 CLI 에서 불러 직접 부른다. 해시 대상 트리는 임시 디렉터리에만 만든다.
+python3 - "$root/bin/harness" "$work/uitree" > "$work/uistate.out" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, json, sys
+from pathlib import Path
+
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec)
+loader.exec_module(h)
+
+def expect(name, actual, wanted):
+    print("ok" if actual == wanted else "bad %s — expected %r, actual %r" % (name, wanted, actual))
+
+ui = Path(sys.argv[2])
+files = ["package.json", "package-lock.json", "jsconfig.json", "next.config.js",
+         "app/page.js", "app/[project]/layout.js", "components/Nav.js", "lib/harness.js",
+         "skills/a/SKILL.md", "app/.hidden.js", "app/.cache/x.js"]
+for rel in files:
+    (ui / rel).parent.mkdir(parents=True, exist_ok=True)
+    (ui / rel).write_text("v1 " + rel, encoding="utf-8")
+
+base = h.ui_source_hash(ui)
+expect("the hash is the same for the same tree", h.ui_source_hash(ui), base)
+expect("the hash is a SHA-256 hex string", len(base), 64)
+for rel in ["package.json", "package-lock.json", "jsconfig.json", "next.config.js",
+            "app/page.js", "app/[project]/layout.js", "components/Nav.js", "lib/harness.js"]:
+    old = (ui / rel).read_text(encoding="utf-8")
+    (ui / rel).write_text(old + " changed", encoding="utf-8")
+    print("ok" if h.ui_source_hash(ui) != base else "bad changing %s does not change the hash" % rel)
+    (ui / rel).write_text(old, encoding="utf-8")
+expect("restoring the files restores the hash", h.ui_source_hash(ui), base)
+for rel in ["skills/a/SKILL.md", "app/.hidden.js", "app/.cache/x.js"]:
+    old = (ui / rel).read_text(encoding="utf-8")
+    (ui / rel).write_text("changed", encoding="utf-8")
+    expect("changing %s leaves the hash alone" % rel, h.ui_source_hash(ui), base)
+    (ui / rel).write_text(old, encoding="utf-8")
+(ui / "skills/b").mkdir(parents=True)
+(ui / "skills/b/new.md").write_text("x", encoding="utf-8")
+expect("a new file under skills/ leaves the hash alone", h.ui_source_hash(ui), base)
+(ui / "lib/new.js").write_text("x", encoding="utf-8")
+print("ok" if h.ui_source_hash(ui) != base else "bad a new file under lib/ does not change the hash")
+
+expect("no build when the stamp matches and the build exists", h.needs_build(base, base + "\n", True), False)
+expect("a build when there is no stamp", h.needs_build(base, None, True), True)
+expect("a build when the stamp differs", h.needs_build(base, "0" * 64, True), True)
+expect("a build when BUILD_ID is missing", h.needs_build(base, base, False), True)
+
+good = {"pid": 4242, "started": "Tue Sep 29 10:00:00 2026", "root": "/opt/ui", "hash": "abc", "port": 7777}
+expect("a well-formed record parses", h.parse_server_record(json.dumps(good)), good)
+bad_records = {"not JSON": "pid=4242", "an array": "[1, 2]", "a JSON string": '"x"'}
+for key in good:
+    bad_records["no %s" % key] = json.dumps({k: v for k, v in good.items() if k != key})
+for label, value in [("pid", 0), ("pid", 1), ("pid", -5), ("pid", True), ("pid", "123"), ("pid", 4.0),
+                     ("port", 0), ("port", 70000), ("port", True), ("root", ""), ("started", ""), ("hash", 7)]:
+    bad_records["%s %r" % (label, value)] = json.dumps(dict(good, **{label: value}))
+for name, text in bad_records.items():
+    expect("a record with %s is unreadable" % name, h.parse_server_record(text), None)
+
+expect("the group id and start time match", h.process_matches(good, "  4242 Tue Sep 29 10:00:00 2026  \n"), True)
+expect("empty ps output does not match", h.process_matches(good, ""), False)
+expect("another group id does not match", h.process_matches(good, "4243 Tue Sep 29 10:00:00 2026\n"), False)
+expect("another start time does not match", h.process_matches(good, "4242 Tue Sep 29 10:00:01 2026\n"), False)
+
+def st(record, matches, port_busy, http_ok, root="/opt/ui", hash_="abc"):
+    return h.server_state(record, matches, root, hash_, port_busy, http_ok)
+expect("a matching record from another root is another copy", st(good, True, True, True, root="/other"), "other-copy")
+expect("a matching record with another hash is another build", st(good, True, True, True, hash_="def"), "other-build")
+expect("a matching record that responds is running", st(good, True, True, True), "running")
+expect("a matching record that does not respond is unresponsive", st(good, True, True, False), "unresponsive")
+expect("no record and a busy port is busy", st(None, False, True, False), "busy")
+expect("no record and a free port is free", st(None, False, False, False), "free")
+expect("a stale record and a busy port is busy", st(good, False, True, False, root="/other", hash_="def"), "busy")
+expect("a stale record and a free port is free", st(good, False, False, False, root="/other", hash_="def"), "free")
+expect("a response alone is not a harness server", st(None, False, True, True), "busy")
+expect("another copy that responds is still another copy", st(good, True, True, True, root="/other"), "other-copy")
+PY
+[ "$?" -eq 0 ] || bad "the UI server decision checks did not run: $(tail -3 "$work/uistate.out")"
+while IFS= read -r line; do
+  case "$line" in
+    ok) ok ;;
+    "bad "*) bad "${line#bad }" ;;
+    *) bad "unexpected output from the UI server decision checks: $line" ;;
+  esac
+done < "$work/uistate.out"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

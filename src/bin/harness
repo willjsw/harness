@@ -15,15 +15,19 @@ import argparse
 import contextlib
 import datetime
 import fcntl
+import hashlib
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 
 try:
@@ -2562,30 +2566,378 @@ def cmd_status(cfg, target, args):
 
 
 UI_PORT = 7777
+# 빌드 결과에 닿는 UI 소스. `skills/` 는 서버가 실행할 때 읽으므로 넣지 않는다.
+UI_HASH_FILES = ("package.json", "package-lock.json", "jsconfig.json", "next.config.js")
+UI_HASH_DIRS = ("app", "components", "lib")
 
 
-def cmd_start_server(_cfg, _target, args):
-    """`harness start-server` — 설정·워크플로·프로젝트 사실을 고치는 웹 UI 를 띄운다.
+def ui_source_hash(ui: Path) -> str:
+    """UI 소스의 SHA-256 16진 문자열. 파일마다 `상대 경로 + NUL + 내용 + NUL` 을 경로 순으로 잇는다.
 
-    UI 는 전역 설치에만 있다. 프로젝트에 고정된 사본은 `templates/` 만 들고 간다.
+    점으로 시작하는 경로 구성 요소는 뺀다. 없는 대상은 건너뛴다.
     """
+    files = [name for name in UI_HASH_FILES if (ui / name).is_file()]
+    for d in UI_HASH_DIRS:
+        for dirpath, dirnames, filenames in os.walk(ui / d):
+            dirnames[:] = [n for n in dirnames if not n.startswith(".")]
+            for f in filenames:
+                p = Path(dirpath) / f
+                if not f.startswith(".") and p.is_file():
+                    files.append(p.relative_to(ui).as_posix())
+    h = hashlib.sha256()
+    for rel in sorted(files):
+        h.update(rel.encode("utf-8") + b"\0" + (ui / rel).read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def needs_build(hash_, stamp, build_id_exists: bool) -> bool:
+    """스탬프가 없거나(None) 해시와 다르거나 빌드 산출물(BUILD_ID)이 없으면 빌드가 필요하다."""
+    return stamp is None or stamp.strip() != hash_ or not build_id_exists
+
+
+def _plain_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def parse_server_record(text):
+    """`ui.pid` 의 내용을 dict 로. 형식이 맞지 않으면 None — 읽지 못한 기록이다.
+
+    pid 가 0 · 1 · 음수면 `killpg` 가 엉뚱한 그룹을 가리키므로 2 이상만 받는다.
+    """
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pid, port = data.get("pid"), data.get("port")
+    if not (_plain_int(pid) and pid >= 2 and _plain_int(port) and 1 <= port <= 65535):
+        return None
+    if not all(isinstance(data.get(k), str) and data[k] for k in ("started", "root", "hash")):
+        return None
+    return data
+
+
+def process_matches(record, ps_output: str) -> bool:
+    """`ps -o pgid=,lstart=` 출력의 그룹 id 와 시작 시각이 기록과 같은가. 빈 출력은 프로세스 없음이다.
+
+    시각을 비교하므로 같은 pid 를 다시 받은 다른 프로세스는 맞지 않는다.
+    """
+    if not record:
+        return False
+    parts = (ps_output or "").strip().split(None, 1)
+    if len(parts) != 2:
+        return False
+    try:
+        pgid = int(parts[0])
+    except ValueError:
+        return False
+    return pgid == record["pid"] and parts[1].strip() == record["started"]
+
+
+def server_state(record, matches: bool, root: str, hash_: str, port_busy: bool, http_ok: bool) -> str:
+    """서버 상태 하나 — other-copy · other-build · running · unresponsive · busy · free.
+
+    살아 있는 프로세스와 맞지 않는 기록은 기록 없음과 같다. 응답만으로는 하네스 서버로 보지 않는다.
+    """
+    if record and matches:
+        if record["root"] != root:
+            return "other-copy"
+        if record["hash"] != hash_:
+            return "other-build"
+        return "running" if http_ok else "unresponsive"
+    return "busy" if port_busy else "free"
+
+
+# 백그라운드 UI 서버의 기록과 출력. 서버 하나가 등록된 프로젝트 전부를 보이므로 등록부 최상위에 둔다.
+def server_files():
+    home = registry()
+    return home / "ui.pid", home / "ui.log"
+
+
+def read_server_record(pidfile: Path):
+    """(파일이 있는가, 기록). 파일이 있으나 형식이 맞지 않거나 읽히지 않으면 기록은 None."""
+    try:
+        text = pidfile.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False, None
+    except (OSError, UnicodeDecodeError):
+        return True, None
+    return True, parse_server_record(text)
+
+
+def remove_server_record(pidfile: Path):
+    try:
+        pidfile.unlink(missing_ok=True)
+    except OSError as e:
+        die("error: could not remove the UI server record\n  --> %s\n\nhelp: %s" % (pidfile, e.strerror or e))
+
+
+def ps_fields(pid: int, fields: str) -> str:
+    """`LC_ALL=C ps -o <fields> -p <pid>` 의 표준 출력. 프로세스가 없으면 빈 문자열."""
+    r = subprocess.run(["ps", "-o", fields, "-p", str(pid)], capture_output=True, text=True,
+                       env=dict(os.environ, LC_ALL="C"))
+    return r.stdout if r.returncode == 0 else ""
+
+
+def port_busy(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def http_ok(port: int) -> bool:
+    """`GET http://127.0.0.1:<port>/` 가 1초 안에 200 인가. 프록시 설정을 타지 않는다."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open("http://127.0.0.1:%d/" % port, timeout=1) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def probe_server(ui: Path, hash_: str):
+    """(상태, 기록, 기록이 살아 있는 프로세스와 맞는가). 파일을 바꾸지 않는다."""
+    pidfile, _log = server_files()
+    _exists, record = read_server_record(pidfile)
+    matches = bool(record) and process_matches(record, ps_fields(record["pid"], "pgid=,lstart="))
+    busy = port_busy(UI_PORT)
+    ok = busy and http_ok(UI_PORT)
+    return server_state(record, matches, str(ui), hash_, busy, ok), record, matches
+
+
+def group_gone(pid: int, reap=None) -> bool:
+    if reap:
+        reap()
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def stop_group(pid: int, reap=None) -> bool:
+    """프로세스 그룹에 SIGTERM, 10초 안에 없어지지 않으면 SIGKILL 과 5초. 그룹이 없어지면 참.
+
+    `reap` 은 그 그룹의 우두머리가 이 프로세스의 자식일 때 좀비를 거두는 함수다. 권한 오류는 그대로 올린다.
+    """
+    for sig, wait in ((signal.SIGTERM, 10), (signal.SIGKILL, 5)):
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return True
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if group_gone(pid, reap):
+                return True
+            time.sleep(0.1)
+    return group_gone(pid, reap)
+
+
+def halt_server(record, pidfile: Path, reap=None):
+    """기록의 서버 그룹을 멈추고 기록을 지운다. 멈추지 못하면 기록을 두고 종료 코드 2 로 멈춘다."""
+    pid = record["pid"]
+    try:
+        stopped = stop_group(pid, reap)
+    except PermissionError:
+        stopped = False
+    if not stopped:
+        die("error: the UI server (pid %d) did not stop\n\n"
+            "help: check the process yourself, then run `harness stop-server` again" % pid)
+    remove_server_record(pidfile)
+
+
+def cmd_stop_server(_cfg, _target, _args):
+    """`harness stop-server` — 기록이 살아 있는 프로세스와 맞을 때만 그 서버 그룹을 멈춘다.
+
+    포트를 쓰는 프로세스를 찾아 멈추지 않는다. 기록 없이 뜬 프로세스는 하네스가 띄운 것으로 확인되지 않는다.
+    """
+    pidfile, _log = server_files()
+    exists, record = read_server_record(pidfile)
+    if not exists:
+        print("stop-server: not running")
+        return 0
+    if record is None:
+        remove_server_record(pidfile)
+        print("stop-server: removed an unreadable record; no process was stopped")
+        return 0
+    # 판정과 신호 사이에 프로세스가 바뀌지 않았는지 신호 직전에 한 번 더 본다.
+    for _ in range(2):
+        if not process_matches(record, ps_fields(record["pid"], "pgid=,lstart=")):
+            remove_server_record(pidfile)
+            print("stop-server: not running (removed a stale record)")
+            return 0
+    halt_server(record, pidfile)
+    print("stop-server: stopped (pid %d)" % record["pid"])
+    return 0
+
+
+def cmd_server_status(_cfg, _target, _args):
+    """`harness server-status` — 서버 상태 한 줄. 파일을 바꾸지 않는다."""
+    ui = ROOT / "ui"
+    pidfile, _log = server_files()
+    exists, record = read_server_record(pidfile)
+    if exists and record is None:
+        die("error: the UI server record could not be read\n  --> %s\n\n"
+            "help: run `harness stop-server` to clear it" % pidfile)
+    state, record, _matches = probe_server(ui, ui_source_hash(ui))
+    url = "http://localhost:%d" % UI_PORT
+    if state in ("running", "other-copy", "other-build"):
+        print("server-status: running at %s (pid %d)" % (url, record["pid"]))
+        if state != "running":
+            print("note: this server is from another copy or an older build — "
+                  "run `harness stop-server`, then `harness start-server`")
+        return 0
+    if state == "unresponsive":
+        print("server-status: pid %d is running but %s does not respond" % (record["pid"], url))
+    elif state == "busy":
+        print("server-status: not running (port %d is in use by another process)" % UI_PORT)
+    else:
+        print("server-status: not running")
+    return 1
+
+def open_private(path: Path):
+    """쓰기용으로 비우고 연다. 권한은 0600 — 이미 있던 파일도 맞춘다."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    return os.fdopen(fd, "w", encoding="utf-8")
+
+
+def write_server_record(pidfile: Path, record):
+    tmp = pidfile.with_name(pidfile.name + ".tmp")
+    with open_private(tmp) as f:
+        f.write(json.dumps(record) + "\n")
+    os.replace(tmp, pidfile)
+
+
+def server_state_error(state, record, log: Path) -> str:
+    """기동하지 않는 상태의 안내. running 은 `--dev` 만 쓴다."""
+    url = "http://localhost:%d" % UI_PORT
+    again = "help: run `harness stop-server`, then `harness start-server` again"
+    if state == "running":
+        return "error: a harness UI is already running on %s\n  --> %s\n\n%s" % (url, record["root"], again)
+    if state == "other-copy":
+        return "error: a harness UI from another copy is already running on %s\n  --> %s\n\n%s" % (
+            url, record["root"], again)
+    if state == "other-build":
+        return "error: the running harness UI was built from an older version of this copy\n  --> %s\n\n%s" % (
+            record["root"], again)
+    if state == "unresponsive":
+        return "error: the harness UI (pid %d) is running but does not respond on %s\n  --> %s\n\n%s" % (
+            record["pid"], url, log, again)
+    # 기록 없이 포트를 쓰는 프로세스는 하네스가 띄운 것으로 확인되지 않았다 — stop-server 를 권하지 않는다.
+    return ("error: port %d is in use by another process\n  --> %s\n\n"
+            "help: stop the process using the port, then run `harness start-server` again" % (UI_PORT, url))
+
+
+def ui_copy() -> Path:
+    """UI 는 전역 설치에만 있다. 프로젝트에 고정된 사본은 `templates/` 만 들고 간다."""
     ui = ROOT / "ui"
     if not (ui / "package.json").is_file():
         die("error: the UI is not part of this copy of the harness\n  --> %s\n\n"
             "help: run the globally installed harness, not the one vendored in .harness/" % ui)
     if not shutil.which("npm"):
         die("error: start-server needs Node.js (npm not found)\n\nhelp: brew install node")
+    return ui
+
+
+def build_ui(ui: Path, hash_: str, out, log: Path):
+    """`next build` 를 하고 성공하면 해시를 스탬프로 남긴다. 출력은 `out` 으로 간다."""
+    modules = ui / "node_modules"
+    if modules.is_symlink():
+        die("error: the UI's node_modules is a symbolic link, which the UI build cannot use\n  --> %s\n\n"
+            "help: remove the link and run `harness start-server` again — it reinstalls the dependencies" % modules)
+    print("start-server: building the UI", flush=True)
+    stamp = ui / ".next" / "harness-ui-hash"
+    stamp.unlink(missing_ok=True)   # 실패한 빌드 뒤에 옛 스탬프가 남지 않는다
+    try:
+        code = subprocess.run([str(modules / ".bin" / "next"), "build"], cwd=ui,
+                              stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT).returncode
+    except OSError as e:
+        out.write("%s\n" % e)
+        code = 1
+    if code:
+        die("error: the UI build failed\n  --> %s\n\n"
+            "help: read the log above, fix the cause, and run `harness start-server` again" % log)
+    stamp.write_text(hash_ + "\n", encoding="utf-8")
+
+
+def ui_env():
+    """UI 가 실행할 때 읽는 값. 빌드가 굳히지 않도록 서버 프로세스의 환경으로만 넘긴다."""
+    return dict(os.environ, HARNESS_HOME=str(registry()), HARNESS_BIN=str(HERE / "harness"))
+
+
+def start_dev_server(ui: Path):
+    """`start-server --dev` — 포그라운드 `next dev`. 기록을 남기지 않는다."""
     if not (ui / "node_modules").is_dir():
-        print("start-server: installing UI dependencies (first run)")
+        print("start-server: installing UI dependencies (first run)", flush=True)
         if subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=ui).returncode:
             die("error: npm install failed")
-    os.environ["HARNESS_HOME"] = str(registry())
-    os.environ["HARNESS_BIN"] = str(HERE / "harness")
-    print("start-server: http://localhost:%d" % UI_PORT)
+    state, record, _matches = probe_server(ui, ui_source_hash(ui))
+    if state != "free":
+        die(server_state_error(state, record, server_files()[1]))
+    os.environ.update(ui_env())
+    print("start-server: http://localhost:%d" % UI_PORT, flush=True)
     os.chdir(ui)
     # 로컬 파일을 쓰는 서버다. 루프백에만 묶는다.
     os.execvp("npx", ["npx", "next", "dev", "-H", "127.0.0.1", "-p", str(UI_PORT)])
 
+
+def cmd_start_server(_cfg, _target, args):
+    """`harness start-server` — 설정·워크플로·프로젝트 사실을 고치는 웹 UI 를 백그라운드로 띄운다.
+
+    UI 소스가 지난 빌드와 다를 때만 빌드한다. 응답이 오면 URL 한 줄을 내고 돌아온다.
+    """
+    ui = ui_copy()
+    if args.dev:
+        return start_dev_server(ui)
+    pidfile, log = server_files()
+    hash_ = ui_source_hash(ui)
+    state, record, matches = probe_server(ui, hash_)
+    if record and not matches:
+        remove_server_record(pidfile)
+    url = "http://localhost:%d" % UI_PORT
+    if state == "running":
+        print("start-server: already running at %s" % url)
+        return 0
+    if state != "free":
+        die(server_state_error(state, record, log))
+
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open_private(log) as out:
+        if not (ui / "node_modules").is_dir():
+            print("start-server: installing UI dependencies (first run)", flush=True)
+            if subprocess.run(["npm", "install", "--no-audit", "--no-fund"], cwd=ui,
+                              stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT).returncode:
+                die("error: npm install failed\n  --> %s" % log)
+        try:
+            stamp = (ui / ".next" / "harness-ui-hash").read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            stamp = None
+        if needs_build(hash_, stamp, (ui / ".next" / "BUILD_ID").is_file()):
+            build_ui(ui, hash_, out, log)
+        out.flush()
+        # 새 세션으로 띄워 서버 pid 가 그 프로세스 그룹 id 가 되게 한다. 루프백에만 묶는다.
+        proc = subprocess.Popen([str(ui / "node_modules" / ".bin" / "next"), "start", "-H", "127.0.0.1",
+                                 "-p", str(UI_PORT)], cwd=ui, stdin=subprocess.DEVNULL, stdout=out,
+                                stderr=subprocess.STDOUT, env=ui_env(), start_new_session=True)
+    record = {"pid": proc.pid, "started": ps_fields(proc.pid, "lstart=").strip(), "root": str(ui),
+              "hash": hash_, "port": UI_PORT}
+    if record["started"]:
+        write_server_record(pidfile, record)
+        deadline = time.monotonic() + 30
+        while proc.poll() is None and time.monotonic() < deadline:
+            if http_ok(UI_PORT):
+                print("start-server: %s" % url)
+                return 0
+            time.sleep(0.25)
+    halt_server(record, pidfile, reap=proc.poll)
+    die("error: the UI server did not come up on %s\n  --> %s\n\n"
+        "help: read the log for the cause, then run `harness start-server` again" % (url, log))
 
 COMMANDS = {
     # 이름          (함수, 설정이 필요한가, 인수, 설명)
@@ -2600,7 +2952,10 @@ COMMANDS = {
     "metrics":   (None, True,  "[import|prune] [--since 7d] [--trace ID]", "run metrics as JSON for the Metrics tab; import reads new session logs first; prune applies retention"),
     "vars":      (None, True,  "", "print template variables (debugging)"),
     "uninstall": (None, False, "[--purge] [--yes]", "remove what the harness installed; --purge also removes yours"),
-    "start-server": (None, False, "", "open the web UI on http://localhost:%d" % UI_PORT),
+    "start-server": (None, False, "[--dev]", "build if needed and start the web UI in the background on "
+                     "http://localhost:%d (--dev: foreground next dev)" % UI_PORT),
+    "stop-server": (None, False, "", "stop the web UI started by start-server"),
+    "server-status": (None, False, "", "whether the web UI is running and responding"),
     "schema":    (None, True,  "", "agent registry and resolved roles as JSON (for the UI)"),
     "status":    (None, True,  "", "project health for the home screen as JSON: check, doctor, facts, git"),
     "tools":     (None, False, "[--sync]", "list agent CLIs and decision-record tools on this machine"),
@@ -2622,7 +2977,7 @@ def cmd_help(_cfg, _target, _args):
     print(__doc__.strip().splitlines()[0])
     print()
     for name, (_f, _n, usage, desc) in COMMANDS.items():
-        print("  harness %-12s %-22s %s" % (name, usage, desc))
+        print("  harness %-13s %-22s %s" % (name, usage, desc))
     print()
     print("  --target DIR   target repository (default: current directory)")
     print()
@@ -2670,7 +3025,8 @@ def main():
     handlers = {"install": cmd_install, "render": cmd_render, "check": cmd_check,
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
-                "start-server": cmd_start_server, "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
+                "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
+                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,
@@ -2688,6 +3044,7 @@ def main():
     ap.add_argument("--worktree", action="store_true", help="run: start the workflow in a worktree of its own for the issue")
     ap.add_argument("--since", help="metrics: how far back, like 24h, 7d or 30d (default 7d)")
     ap.add_argument("--trace", help="metrics: include the span tree of this trace")
+    ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
     ap.add_argument("-h", "--help", action="store_true")
     # 옵션 뒤에 오는 위치 인자도 args 에 모은다. 3.11 의 parse_args 는 `set --target X a.b v` 의
     # `a.b v` 를 받지 못하고 unrecognized arguments 로 멈춘다.
@@ -2697,8 +3054,8 @@ def main():
 
     if args.command == "help":
         return cmd_help(None, None, args)
-    if args.command == "start-server":   # 대상 리포가 없다 — 등록된 프로젝트 전부를 본다
-        return cmd_start_server(None, None, args)
+    if args.command in ("start-server", "stop-server", "server-status"):   # 대상 리포가 없다 — UI 는 전역 설치의 것이다
+        return handlers[args.command](None, None, args)
     if args.command == "tools":          # 기기의 사실이다 — 대상 리포가 필요 없다
         return cmd_tools(None, None, args)
 
