@@ -7,7 +7,7 @@
 
 ### 구성 요소
 
-- `src/bin/harness` — CLI 본체. 설정을 읽어 검증(`validate()`)하고, 생성물을 만들고(`plan()` · `render`), 검사하고(`check`), 점검하고(`doctor`), 설정을 고치고(`set` · `steps` · `checks`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`). 명령 전부가 여기 있다. 지표 집계와 세션 가져오기는 옆의 `src/bin/harness_metrics.py` 모듈이 갖는다. 둘 다 python3 표준 라이브러리만 쓴다
+- `src/bin/harness` — CLI 본체. 설정을 읽어 검증(`validate()`)하고, 생성물을 만들고(`plan()` · `render`), 검사하고(`check`), 점검하고(`doctor`), 설정을 고치고(`set` · `steps` · `checks`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`). 명령 전부가 여기 있다. doctor 는 점검 결과를 항목 목록으로 모으고 텍스트·JSON 으로 그린다. `status` 는 그 목록을 쓴다. 지표 집계와 세션 가져오기는 옆의 `src/bin/harness_metrics.py` 모듈이 갖는다. 둘 다 python3 표준 라이브러리만 쓴다
 - `src/templates/` — 대상 리포로 가는 것 전부. `harness.toml`(기본 설정) · `generated/`({{VAR}} 치환) · `managed/`(그대로 복사) · `owned/`(없을 때만 복사) · `agents/`(역할 어댑터 본문과 선언) · `workflows/<절차>/`(절차 조각) · `forge/<kind>/`(forge 명령 사전 조각) · `adr/<style>/`(결정 기록 문서 세트) · `ci/<host>/`(CI 골격) · `vendors.toml`(에이전트 CLI 등록부)
 - `src/ui/` — Next.js 앱. `harness start-server` 가 필요할 때 빌드하고 루프백에 백그라운드로 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
@@ -24,7 +24,7 @@
 
 ### 신뢰 경계
 
-- 들어오는 입력: `harness.toml`(TOML)과 `.ai/project/` 마크다운(프로젝트가 쓴다), 오케스트레이터 훅이 stdin 으로 주는 도구 호출 JSON(`script/hooks/bash-guard.sh`), forge CLI 의 출력, 에이전트 CLI 의 출력(JSON · JSONL)과 대화 기록, 리뷰어의 판정 데이터(스키마로 엄격히 검증하고, 어기면 등록하지 않는다), UI 요청(루프백에만 묶인다), 명령줄 인자(경로는 리포 기준 상대 경로만 받는다 — 절대 경로 · `..` · 공백 · glob 거부)
+- 들어오는 입력: `harness.toml`(TOML)과 `.ai/project/` 마크다운(프로젝트가 쓴다), 오케스트레이터 훅이 stdin 으로 주는 도구 호출 JSON(`script/hooks/bash-guard.sh`), forge CLI 의 출력, 에이전트 CLI 의 출력(JSON · JSONL)과 대화 기록, 리뷰어의 판정 데이터(스키마로 엄격히 검증하고, 어기면 등록하지 않는다), `doctor --remote` 가 읽는 git·forge·러너 CLI 의 응답(원격 점검은 읽기 전용이고, 원격 URL 과 CLI 출력을 결과에 옮기지 않는다), UI 요청(루프백에만 묶인다), 명령줄 인자(경로는 리포 기준 상대 경로만 받는다 — 절대 경로 · `..` · 공백 · glob 거부)
 - 다루는 민감 정보: forge 와 에이전트 CLI 의 인증은 각 CLI 가 갖고 리포에 두지 않는다. 실행 지표는 프롬프트·명령줄·문서 본문을 남기지 않고, 실패 로그는 토큰·쿠키·URL 쿼리·이메일·홈 경로를 지운 뒤 끝부분만 남긴다(디렉터리 0700 · 파일 0600). `script/secret-scan.sh` 가 커밋에 새로 들어오는 자격증명을 막고, 막을 때 값을 출력에 옮기지 않는다
 - 가드는 미탐을 허용하고 오탐을 피한다. 규칙이 정본이고 가드·권한은 보조다. 단 가드가 설정을 읽지 못하면 통과가 아니라 차단이다
 - `worktree.include` 는 git 이 무시하는 로컬 파일만 worktree 로 복사하고 그 경로·내용을 출력하지 않는다. 기존 worktree 는 git 공통 디렉터리가 같을 때만 연다

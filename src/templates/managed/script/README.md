@@ -15,6 +15,7 @@
 |---|---|---|
 | `run-lint-test.sh` | 검증 일괄 — 생성물 일치 + 셸 회귀 테스트 + 프로젝트 검증 | 커밋 전 수동, post-commit 훅, CI |
 | `metric.py` | 실행 지표 기록 — 명령·단계·에이전트·스크립트를 스팬으로 남긴다. `wrap -- <명령>` 은 출력·종료 코드를 바꾸지 않는다. 보관·로테이션은 `harness.toml` 의 `[metrics]` | 스크립트·`run-agent.py`·`harness run` |
+| `run-agent.py` | CLI 러너 역할 하나를 실행 계획(`harness.plan.json`)대로 한 번 돌리는 공용 실행기. `--check` 는 실행하지 않고 러너 설치·로그인만 확인한다 — 0=준비됨, 2=실행 불가, 3=미로그인, 4=확인 못 함 | 절차의 CLI 러너 단계, `harness doctor --remote` |
 | `harness-verify.sh` | **생성.** `harness.toml` 의 `[verify]` 검사 → 코드 검사 → 테스트. 0=통과, 1=실패, 3=명령을 아직 정하지 않음 | `run-lint-test.sh` |
 | `work-preflight.sh` | 착수 판정 — 열린 리뷰 요청 → 분해 → 명세 순으로 확인하고 `plan`/`standalone` 출력. 0=가능, 1=불가, 2=실패 | 착수 전과 위임 직전 |
 | `check-open-mrs.sh` | 이슈에 연결된 **열린** 리뷰 요청 조회. 0=없음, 1=있음, 2=실패 | `work-preflight.sh` 의 첫 검사 |
@@ -31,7 +32,7 @@
 | `harness-format.sh` | **기계가 읽는 문자열의 정본.** 쓰는 쪽(계약·양식)과 읽는 쪽(파서)이 같은 값을 보게 한다 | 리뷰·이슈 스크립트 |
 | `forge/_common.sh` | forge 어댑터 **계약**과 기본 구현 | `forge.sh` |
 | `forge/<kind>.sh` | forge 어댑터 구현. CLI 이름과 응답 형태를 여기서만 안다 | `forge.sh` |
-| `forge-selftest.sh` | **어댑터가 계약을 지키는지 실제 forge 로 확인.** 읽기 9종이 기본이고, 흔적이 남는 3종은 `--write`, 되돌릴 수 없는 1종은 `--create-issue` 로 따로 켠다 | 새 forge 를 쓰기 전 1회 |
+| `forge-selftest.sh` | **어댑터가 계약을 지키는지 실제 forge 로 확인.** 읽기 13종이 기본이고, 흔적이 남는 3종은 `--write`, 되돌릴 수 없는 1종은 `--create-issue` 로 따로 켠다 | 새 forge 를 쓰기 전 1회 |
 | `usage-vocab.sh` | 사용 기록 어휘의 정본 — 허용 이벤트·출처·라벨과 키별 값 형식 | 기록·집계 |
 | `usage-log.sh` | 하네스 사용 기록 — 가드 차단·착수 판정·리뷰 회차. **명령 내용·본문·사람 이름은 남기지 않는다.** 항상 0 으로 끝난다 | 훅, 판정, 리뷰 |
 | `usage-report.sh` | 사용 기록 집계 → 마크다운 표 + `KEY=VALUE`. 0=출력, 2=실패 | 회고 |

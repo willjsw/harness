@@ -85,6 +85,7 @@ s = in_section(s, "adr", r'^dir = .*$', 'dir = "docs/adr"')
 s = in_section(s, "metrics", r'^dir = .*$', 'dir = "%s/metrics"' % rec)
 s = in_section(s, "usage", r'^log_path = .*$', 'log_path = "%s/usage.log"' % rec)
 s = in_section(s, "permissions", r'^allow_push = .*$', 'allow_push = false')
+s = in_section(s, "doctor", r'^remote_timeout = .*$', 'remote_timeout = 30')
 p.write_text(s, encoding="utf-8")
 PY
   "$root/bin/harness" render --target "$1" >/dev/null
@@ -1954,6 +1955,539 @@ while IFS= read -r line; do
     *) bad "unexpected output from the UI server decision checks: $line" ;;
   esac
 done < "$work/uistate.out"
+
+echo "UT-77 doctor collects its checks into one list; the text and status are drawn from it"
+# forge CLI 와 리뷰어 러너는 PATH 앞의 빈 스텁이다 — 기기에 깔린 실제 CLI 를 부르지 않는다.
+stub59="$work/stub59"; mkdir -p "$stub59"
+for c in gh codex; do printf '#!/bin/sh\nexit 0\n' > "$stub59/$c"; chmod +x "$stub59/$c"; done
+ready() { # ready <대상> — FAIL 없이 경고만 남는 git 리포 하나를 만든다
+  setup "$1"
+  "$root/bin/harness" set --target "$1" forge.tracker github forge.review_host github commands.test true >/dev/null 2>&1 \
+    || bad "$1: could not configure the ready repo"
+  ( cd "$1" && git init -q -b development . && git add -A && git -c user.email=t@t -c user.name=t commit -qm init \
+    && git config core.hooksPath script/githooks ) || bad "$1: could not commit the ready repo"
+}
+doc_lines() { # doc_lines <doctor 텍스트> <JSON 파일> <status|doctor> — 텍스트의 항목 줄과 JSON 의 항목을 견준다
+  python3 - "$@" <<'PY'
+import json, re, sys
+text, data, kind = sys.argv[1:4]
+items, sec = [], ""
+for ln in open(text, encoding="utf-8").read().splitlines():
+    m = re.match(r"  (ok  |warn|FAIL) (.+?)(?:  — (.*))?$", ln)
+    if m:
+        items.append({"section": sec, "state": {"ok  ": "ok", "warn": "warn", "FAIL": "bad"}[m.group(1)],
+                      "what": m.group(2), "detail": m.group(3) or ""})
+    elif ln and not ln.startswith(" "):
+        sec = ln
+d = json.load(open(data, encoding="utf-8"))
+d = d["doctor"] if kind == "status" else d
+print(items == d["items"], len(items) > 0, d["bad"] == sum(i["state"] == "bad" for i in items),
+      d["warn"] == sum(i["state"] == "warn" for i in items))
+PY
+}
+no_hangul() { # no_hangul <파일> <설명> — 터미널 출력에 한글이 없는지 본다
+  python3 - "$1" > "$1.hits" <<'HANGUL'
+import re, sys
+for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
+    if re.search(r"[가-힣]", line):
+        print(f"{n}: {line.rstrip()}")
+HANGUL
+  if [ -s "$1.hits" ]; then bad "Korean is in $2: $(head -1 "$1.hits")"; else ok; fi
+}
+t="$work/doclist"; setup "$t"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dl.txt" 2>&1; check "doctor with failures exits 1" "$?" "1"
+PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/dl.json" 2>&1; check "status exits 0" "$?" "0"
+grep -q '^  FAIL ' "$work/dl.txt" && grep -q '^  warn ' "$work/dl.txt" && ok || bad "the mixed repo does not have both failures and warnings"
+check "status items are the doctor text lines, in order" "$(doc_lines "$work/dl.txt" "$work/dl.json" status)" "True True True True"
+no_hangul "$work/dl.txt" "doctor output"
+python3 - "$work/dl.json" > "$work/dl.keys" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(sorted(d), sorted(d["doctor"]), sorted({tuple(sorted(i)) for i in d["doctor"]["items"]}), sorted(d["facts"]))
+PY
+check "status keys stay the same" "$(cat "$work/dl.keys")" \
+  "['check_ok', 'custom', 'doctor', 'facts', 'git', 'version'] ['bad', 'items', 'warn'] [('detail', 'section', 'state', 'what')] ['filled', 'total']"
+printf '# stack\n\nPython 3.11\n' > "$t/.ai/project/stack.md"
+"$root/bin/harness" status --target "$t" | python3 -c 'import json,sys; d=json.load(sys.stdin)["facts"]; print(d["total"], d["filled"])' > "$work/dl.facts"
+check "a filled fact counts toward the progress" "$(cat "$work/dl.facts")" "7 1"
+t="$work/docready"; ready "$t"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dr.txt" 2>&1; check "doctor without failures exits 0" "$?" "0"
+grep -q '^  FAIL ' "$work/dr.txt" && bad "the ready repo still fails: $(grep '^  FAIL ' "$work/dr.txt" | head -1)" || ok
+# 수집 함수는 표준 출력에 쓰지 않는다
+python3 - "$root/bin/harness" "$t" > "$work/dl.quiet" 2>&1 <<'PY'
+import contextlib, importlib.machinery, importlib.util, io, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    items = h.doctor_items(cfg, target, False)
+print(repr(buf.getvalue()), len(items) > 0, [i["section"] for i in items][0], [i["section"] for i in items][-1])
+PY
+check "the collection writes nothing to standard output" "$(cat "$work/dl.quiet")" "'' True config git"
+
+echo "UT-78 doctor --json prints the same items as one JSON object, with the same exit code"
+t="$work/doclist"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dj.txt" 2>/dev/null; rc_text=$?
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --json --target "$t" > "$work/dj.json" 2>/dev/null; rc_json=$?
+check "text and JSON exit codes match where something fails" "$rc_json:$rc_text" "1:1"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sorted(d))' "$work/dj.json" > "$work/dj.keys" 2>&1
+check "standard output is one JSON object" "$(cat "$work/dj.keys")" "['bad', 'items', 'warn']"
+check "each JSON item is one text line, and the counts match" "$(doc_lines "$work/dj.txt" "$work/dj.json" doctor)" "True True True True"
+PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/dj.status" 2>/dev/null
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["doctor"] == json.load(open(sys.argv[2])))' "$work/dj.status" "$work/dj.json" > "$work/dj.same"
+check "status carries what doctor --json prints" "$(cat "$work/dj.same")" "True"
+no_hangul "$work/dj.json" "doctor --json output"
+t="$work/docready"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > /dev/null 2>&1; rc_text=$?
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --json --target "$t" > "$work/dj.ready" 2>/dev/null; rc_json=$?
+check "text and JSON exit codes match where nothing fails" "$rc_json:$rc_text" "0:0"
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bad"])' "$work/dj.ready" > "$work/dj.bad" 2>&1
+check "the ready repo has no failing item" "$(cat "$work/dj.bad")" "0"
+"$root/bin/harness" help > "$work/dj.help" 2>&1
+grep -E '^  harness doctor .*\[--json\]' "$work/dj.help" >/dev/null && ok || bad "help does not list --json for doctor"
+# 고정 사본이 있는 대상에서는 전역 CLI 가 인자를 그대로 넘긴다
+t="$work/pinjson"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install the pinned repo"
+[ -x "$t/.harness/bin/harness" ] && ok || bad "install did not pin a copy"
+"$root/bin/harness" doctor --json --target "$t" > "$work/dj.pin" 2>/dev/null; rc_glob=$?
+"$t/.harness/bin/harness" doctor --target "$t" > /dev/null 2>&1; rc_pin=$?
+python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))))' "$work/dj.pin" > "$work/dj.pinkeys" 2>&1
+check "the delegated doctor --json prints one JSON object" "$(cat "$work/dj.pinkeys")" "['bad', 'items', 'warn']"
+check "the delegated exit code is the pinned copy's" "$rc_glob" "$rc_pin"
+"$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1
+
+echo "UT-79 placeholders and unverified adapters are judged by their markers only"
+t="$work/markers"; setup "$t"
+item() { # item <대상> <what> — doctor --json 에서 그 항목의 state 와 detail
+  "$root/bin/harness" doctor --json --target "$1" 2>/dev/null | python3 -c '
+import json, sys
+hit = [i for i in json.load(sys.stdin)["items"] if i["what"] == sys.argv[1]]
+print("%s|%s" % (hit[0]["state"], hit[0]["detail"]) if hit else "none")' "$2"
+}
+printf '# stack\n\nTBD 라는 낱말은 본문에 남아도 된다. Python 3.11\n' > "$t/.ai/project/stack.md"
+check "the word TBD alone is not a placeholder" "$(item "$t" .ai/project/stack.md)" "ok|"
+printf '# stack\n\n- 언어 <!-- TBD: 확인 필요 -->\n- 버전 <!-- TBD -->\n- TBD\n' > "$t/.ai/project/stack.md"
+check "two placeholders are counted" "$(item "$t" .ai/project/stack.md)" "warn|2 placeholder(s) still to fill"
+a="$t/script/forge/gitlab.sh"; cp "$a" "$work/markers.adapter"
+check "a header marker leaves the adapter unverified" "$(item "$t" 'adapter `gitlab`')" "warn|unverified — run \`script/forge-selftest.sh\`"
+grep -v '검증 상태: 미검증' "$work/markers.adapter" > "$a"; printf '\n# 이 분기는 아직 미검증이다\n' >> "$a"
+check "unverified in a body comment is not the marker" "$(item "$t" 'adapter `gitlab`')" "ok|"
+{ sed -n '1,2p' "$work/markers.adapter"; printf '\n# 검증 상태: 미검증\n'; sed -n '3,$p' "$work/markers.adapter" | grep -v '검증 상태: 미검증'; } > "$a"
+check "the marker after the first comment block is not the header" "$(item "$t" 'adapter `gitlab`')" "ok|"
+cp "$work/markers.adapter" "$a"
+grep -c 'ADAPTER_UNVERIFIED = "검증 상태: 미검증"' "$root/bin/harness" > "$work/markers.const"
+check "the header marker is one constant in the CLI" "$(cat "$work/markers.const")" "1"
+check "the marker string appears once in the CLI" "$(grep -c '검증 상태: 미검증' "$root/bin/harness")" "1"
+has "$root/templates/managed/script/forge/_common.sh" '머리글의 `검증 상태:` 줄이 검증 상태의 표지다' "the adapter contract does not name the header marker"
+unset -f item
+
+echo "UT-80 run-agent.py --check reports whether a CLI runner is installed and signed in, without running it"
+d="$work/racheck"; rm -rf "$d"; mkdir -p "$d/script" "$d/bin"
+cp "$root/templates/managed/script/run-agent.py" "$root/templates/managed/script/metric.py" "$d/script/"
+cat > "$d/bin/codex" <<'SH'
+#!/bin/sh
+echo "$*" >> "$CODEX_CALLS"
+echo "ACCOUNT-MARK-59"; echo "ACCOUNT-MARK-59" >&2
+exit "${CODEX_LOGIN_EXIT:-0}"
+SH
+printf '#!/nonexistent/interpreter-59\n' > "$d/bin/brokencodex"; chmod +x "$d/bin/codex" "$d/bin/brokencodex"
+python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]
+def cli(exe, auth):
+    return {"via": "headless", "vendor": "codex", "exe": exe, "argv": [exe, "exec"], "output": "stdout", "model": "",
+            "usage_format": [], "usage_parser": "", "auth_check": auth, "entry": "script/run-agent.py"}
+plan = {"roles": {"rev": cli("codex", ["codex", "login", "status"]), "noauth": cli("codex", []),
+                  "sub": {"via": "subagent", "vendor": "claude"},
+                  "ghost": cli("nosuch-cli-59", ["nosuch-cli-59", "login"]),
+                  "broken": cli("brokencodex", ["brokencodex", "login", "status"])},
+        "metrics": {"dir": d + "/metrics", "retention_days": 30, "max_file_mb": 10, "max_total_mb": 100,
+                    "stale_after_hours": 6, "capture_logs": "errors"}}
+json.dump(plan, open(d + "/script/harness.plan.json", "w"))
+PY
+export CODEX_CALLS="$d/calls"
+rac() { # rac <이름> <역할> [인자...] — 표준 출력·표준 오류를 따로 받는다
+  local n="$1"; shift
+  PATH="$d/bin:$PATH" python3 "$d/script/run-agent.py" "$@" > "$d/$n.out" 2> "$d/$n.err"
+}
+: > "$CODEX_CALLS"
+rac in rev --check; check "signed in exits 0" "$?" "0"
+check "signed in prints signed-in" "$(cat "$d/in.out")" "signed-in"
+check "the sign-in command is the plan's" "$(cat "$CODEX_CALLS")" "login status"
+CODEX_LOGIN_EXIT=1 rac out rev --check; check "not signed in exits 3" "$?" "3"
+has "$d/out.err" "error: codex is not signed in (\`codex login status\` failed)" "not signed in does not say so"
+cat "$d/out.out" "$d/out.err" > "$d/out.all"; hasnt "$d/out.all" "ACCOUNT-MARK-59" "the sign-in command's output was passed on"
+: > "$CODEX_CALLS"
+rac un noauth --check; check "no sign-in command exits 0" "$?" "0"
+check "no sign-in command prints unchecked" "$(cat "$d/un.out")" "unchecked"
+check "no sign-in command runs nothing" "$(cat "$CODEX_CALLS")" ""
+rac sub sub --check; check "a subagent role cannot be checked" "$?" "2"
+has "$d/sub.err" "error: " "a subagent role does not say error"
+rac ghost ghost --check; check "a CLI not on PATH exits 2" "$?" "2"
+has "$d/ghost.err" "error: nosuch-cli-59 is not installed" "a missing CLI does not say so"
+rac broken broken --check; check "a sign-in command that cannot start exits 4" "$?" "4"
+has "$d/broken.err" "error: could not check sign-in for codex" "a command that cannot start does not say so"
+[ -e "$d/metrics" ] && bad "--check left metrics behind" || ok
+rac out2 rev --check --out "$d/never.txt" --prompt x extra; check "--check with other arguments only checks" "$?" "0"
+check "--check with other arguments prints only the check" "$(cat "$d/out2.out")" "signed-in"
+[ -e "$d/never.txt" ] && bad "--check wrote the --out file" || ok
+[ -e "$d/metrics" ] && bad "--check with other arguments left metrics behind" || ok
+rac run rev x; check "a run without --check still runs the CLI" "$?" "0"
+ls "$d/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "a run without --check left no span"
+mv "$d/script/harness.plan.json" "$d/plan.bak"
+rac noplan rev --check; check "no plan exits 2" "$?" "2"
+mv "$d/plan.bak" "$d/script/harness.plan.json"
+cat "$d"/*.out "$d"/*.err > "$d/all.log"; no_hangul "$d/all.log" "run-agent.py --check output"
+unset CODEX_CALLS; unset -f rac
+t="$work/authplan"; setup "$t"
+"$root/bin/harness" set --target "$t" roles.planner.runner codex >/dev/null 2>&1
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["roles"]; print(r["planner"]["auth_check"], r["developer"].get("auth_check", "none"))' "$t/script/harness.plan.json" > "$work/authplan.sum" 2>&1
+check "a codex runner carries its sign-in command in the plan" "$(cat "$work/authplan.sum")" "['codex', 'login', 'status'] none"
+authdecl() { # authdecl <이름> <codex 의 auth_check 값> — 그 선언으로 렌더가 멈추는지
+  local h="$work/auth-$1"
+  rm -rf "$h"; mkdir -p "$h"; cp -R "$root/bin" "$root/templates" "$h/"
+  python3 - "$h/templates/vendors.toml" "$2" <<'PY'
+import re, sys
+p, val = sys.argv[1:3]
+s = open(p, encoding="utf-8").read()
+s, n = re.subn(r'(?m)^auth_check = \["codex".*$', "auth_check = " + val, s)
+assert n == 1
+open(p, "w", encoding="utf-8").write(s)
+PY
+  "$h/bin/harness" render --target "$t" > "$h.out" 2>&1
+  check "render stops on auth_check $1" "$?" "2"
+  has "$h.out" "vendor \`codex\` auth_check must be a non-empty list of strings starting with its exe" "auth_check $1 is not named"
+}
+authdecl other-exe '["claude", "login", "status"]'
+authdecl empty '[]'
+authdecl not-strings '["codex", 1]'
+authdecl not-a-list '"codex login status"'
+unset -f authdecl
+
+echo "UT-81 the forge read functions for the remote checks, and the self-test that holds adapters to them"
+t="$work/selftest59"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install the self-test repo"
+cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+fst59="$work/fake-state59"; mkdir -p "$fst59"
+base59=$(sed -n 's/^BASE_BRANCH=//p' "$t/script/harness.env" | tr -d "\"'")
+st59() { # st59 <변수=값...> -- <인수...> — 페이크를 끼운 자체 검사의 종료 코드
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  rm -f "$fst59/labels" "$fst59/notes.json"
+  ( cd "$t" && env FAKE_STATE="$fst59" FAKE_BREAK= "${envs[@]}" ./script/forge-selftest.sh "$@" > "$work/st59.log" 2>&1 )
+  echo $?
+}
+fake59() { # fake59 <변수=값...> -- <함수와 인수> — 페이크 함수 하나를 부른다
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  env FAKE_STATE="$fst59" "${envs[@]}" sh -c '. "$0"; "$@"' "$root/test/fake-forge.sh" "$@" > "$work/f59.out" 2> "$work/f59.err"
+  echo $?
+}
+check "the self-test passes the four reads on the fake" "$(st59 -- 1 100)" "0"
+for f in "ok    tracker_auth" "ok    review_auth" "ok    tracker_labels" "ok    review_branch_protected $base59 → false"; do
+  has "$work/st59.log" "$f" "the self-test does not report: $f"
+done
+check "a tracker without labels passes" "$(st59 FAKE_LABELS=none -- 1 100)" "0"
+has "$work/st59.log" "ok    tracker_labels — this tracker keeps no labels" "the self-test does not accept exit code 3 for labels"
+check "tracker_labels exits 3 when the tracker keeps no labels" "$(fake59 FAKE_LABELS=none -- tracker_labels)" "3"
+check "and prints nothing" "$(cat "$work/f59.out")" ""
+check "catches a contract violation: labels" "$(st59 FAKE_BREAK=labels -- 1 100)" "1"
+has "$work/st59.log" "FAIL  tracker_labels" "the self-test does not name tracker_labels"
+check "catches a contract violation: protected" "$(st59 FAKE_BREAK=protected -- 1 100)" "1"
+has "$work/st59.log" "FAIL  review_branch_protected" "the self-test does not name review_branch_protected"
+check "a failed sign-in fails the self-test" "$(st59 FAKE_AUTH=fail -- 1 100)" "1"
+for fn in tracker_auth review_auth; do
+  check "$fn exits 1 when not signed in" "$(fake59 FAKE_AUTH=fail -- $fn)" "1"
+  check "$fn says how to sign in, in one line" "$(wc -l < "$work/f59.err" | tr -d ' '):$(cat "$work/f59.err")" "1:run \`fake auth login\`"
+  check "$fn exits 0 when signed in" "$(fake59 -- $fn)" "0"
+done
+check "a protected branch" "$(fake59 FAKE_PROTECTED="main $base59" -- review_branch_protected "$base59"):$(cat "$work/f59.out")" "0:true"
+check "a branch that is not protected" "$(fake59 FAKE_PROTECTED="$base59" -- review_branch_protected other):$(cat "$work/f59.out")" "0:false"
+check "the labels come back as a JSON array" "$(fake59 FAKE_LABELS="Task Bug" -- tracker_labels):$(cat "$work/f59.out")" '0:["Task", "Bug"]'
+for a in gitlab jira; do
+  head -5 "$root/templates/managed/script/forge/$a.sh" | grep -q '검증 상태: 미검증' && ok || bad "$a.sh lost its unverified header"
+done
+for fn in tracker_auth tracker_labels review_auth review_branch_protected; do
+  grep -q "^#   $fn" "$root/templates/managed/script/forge/_common.sh" && ok || bad "the adapter contract does not list $fn"
+  grep -q "^$fn()" "$root/templates/managed/script/forge/github.sh" && ok || bad "github.sh has no $fn"
+  grep -q "^$fn()" "$root/templates/managed/script/forge/gitlab.sh" && ok || bad "gitlab.sh has no $fn"
+done
+for fn in tracker_auth tracker_labels; do
+  grep -q "^$fn()" "$root/templates/managed/script/forge/jira.sh" && ok || bad "jira.sh has no $fn"
+done
+unset -f st59 fake59
+
+echo "UT-82 doctor --remote checks origin, the base branch and origin's default branch, read-only"
+# 원격은 테스트 작업 디렉터리 아래의 bare 리포다. 실제 네트워크에 닿지 않는다.
+rdoc() { # rdoc <이름> <대상> [인자...] — PATH 에 forge CLI 스텁을 두고 doctor 를 돌려 텍스트와 종료 코드를 남긴다
+  local n="$1" t="$2"; shift 2
+  PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" "$@" > "$work/rd-$n.txt" 2>&1
+  echo $? > "$work/rd-$n.rc"
+}
+rsec() { # rsec <이름> — remote 절의 항목 줄만
+  sed -n '/^remote$/,/^$/p' "$work/rd-$1.txt" | grep '^  '
+}
+t="$work/remote59"; ready "$t"
+rdoc plain "$t"
+grep -q '^remote$' "$work/rd-plain.txt" && bad "doctor without --remote has a remote section" || ok
+has "$work/rd-plain.txt" 'remote checks not run — use `harness doctor --remote`' "doctor without --remote does not say the remote was not checked"
+check "the not-run line sits right before the summary" "$(tail -2 "$work/rd-plain.txt" | head -1)" 'remote checks not run — use `harness doctor --remote`'
+git -C "$t" remote add origin "$work/nowhere59/never.git"
+rdoc plain2 "$t"
+cmp -s "$work/rd-plain.txt" "$work/rd-plain2.txt" && ok || bad "doctor without --remote changed with an unreachable origin"
+check "doctor without --remote keeps its exit code" "$(cat "$work/rd-plain2.rc")" "$(cat "$work/rd-plain.rc")"
+PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/rd-status.json" 2>/dev/null
+python3 -c 'import json,sys; print(sum(i["section"] == "remote" for i in json.load(open(sys.argv[1]))["doctor"]["items"]))' "$work/rd-status.json" > "$work/rd-status.n"
+check "status without --remote has no remote items" "$(cat "$work/rd-status.n")" "0"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --json --target "$t" > "$work/rd-plain.json" 2>/dev/null
+cat "$work/rd-status.json" "$work/rd-plain.json" > "$work/rd-plain.alljson"
+hasnt "$work/rd-plain.alljson" "remote checks not run" "the not-run line reached JSON"
+
+t2="$work/remote59-nogit"; setup "$t2"
+rdoc nogit "$t2" --remote
+check "not a git repository" "$(rsec nogit | head -1)" '  FAIL remote `origin`  — not a git repository'
+rsec nogit | grep -q 'on origin\|origin default branch' && bad "not a git repository, yet the git items ran" || ok
+hasnt "$work/rd-nogit.txt" "remote checks not run" "doctor --remote still says the remote was not checked"
+
+git -C "$t" remote remove origin
+rdoc noorigin "$t" --remote
+rsec noorigin > "$work/rd-noorigin.sec"
+has "$work/rd-noorigin.sec" '  FAIL remote `origin`  — not set — run `git remote add origin <url>`' "a missing origin is not a failure"
+hasnt "$work/rd-noorigin.sec" "on origin" "a missing origin still checks the base branch"
+hasnt "$work/rd-noorigin.sec" "origin default branch" "a missing origin still checks the default branch"
+check "a missing origin exits 1" "$(cat "$work/rd-noorigin.rc")" "1"
+
+bare="$work/remote59.git"; rm -rf "$bare"; git init -q --bare "$bare"
+git -C "$t" remote add origin "$bare"
+rdoc nobase "$t" --remote
+rsec nobase > "$work/rd-nobase.sec"
+has "$work/rd-nobase.sec" '  ok   remote `origin`' "a set origin is not ok"
+has "$work/rd-nobase.sec" '  FAIL branch `development` on origin  — missing — run `git push origin development`' "a base missing on origin is not a failure"
+
+git -C "$t" -c core.hooksPath=/dev/null push -q origin development 2>/dev/null || bad "could not push the base"
+git -C "$bare" symbolic-ref HEAD refs/heads/development
+rdoc ready "$t" --remote
+rsec ready > "$work/rd-ready.sec"
+has "$work/rd-ready.sec" '  ok   branch `development` on origin' "the pushed base is not ok"
+has "$work/rd-ready.sec" '  ok   origin default branch  — `development`' "origin's default branch is not ok"
+
+git -C "$t" -c core.hooksPath=/dev/null push -q origin development:trunk 2>/dev/null || bad "could not push another branch"
+git -C "$bare" symbolic-ref HEAD refs/heads/trunk
+rdoc otherhead "$t" --remote
+has "$work/rd-otherhead.txt" '  warn origin default branch  — is `trunk`, not branches.base `development` — new clones and review requests start from it' "another default branch is not a warning that names it"
+
+git -C "$t" remote set-url origin "$work/nowhere-MARK59-SECRET/never.git"
+rdoc unreach "$t" --remote
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --remote --json --target "$t" > "$work/rd-unreach.json" 2>/dev/null
+has "$work/rd-unreach.txt" '  warn branch `development` on origin  — could not check — git ls-remote failed' "an unreachable origin is not a could-not-check warning"
+has "$work/rd-unreach.txt" '  warn origin default branch  — could not check — git ls-remote failed' "an unreachable origin still judges the default branch"
+cat "$work/rd-unreach.txt" "$work/rd-unreach.json" > "$work/rd-unreach.all"
+hasnt "$work/rd-unreach.all" "MARK59" "the origin URL reached the output"
+
+# 자격증명을 묻는 원격 — git 이 입력을 기다리지 않도록 GIT_TERMINAL_PROMPT=0 을 받는다
+mkdir -p "$work/askbin59"
+cat > "$work/askbin59/git-remote-ask59" <<'SH'
+#!/bin/sh
+echo "${GIT_TERMINAL_PROMPT:-unset}" > "$ASK59_SEEN"
+exit 128
+SH
+chmod +x "$work/askbin59/git-remote-ask59"
+git -C "$t" remote set-url origin "ask59://forge.invalid/repo.git"
+export ASK59_SEEN="$work/ask59.seen"; rm -f "$ASK59_SEEN"
+python3 - "$root/bin/harness" "$t" "$work/askbin59:$stub59" > "$work/rd-ask.out" 2>&1 <<'PY'
+import os, subprocess, sys
+env = dict(os.environ, PATH=sys.argv[3] + ":" + os.environ["PATH"])
+try:
+    r = subprocess.run([sys.argv[1], "doctor", "--remote", "--target", sys.argv[2]], env=env, capture_output=True,
+                       text=True, timeout=120, stdin=subprocess.PIPE)
+    print("finished", "could not check — git ls-remote failed" in r.stdout)
+except subprocess.TimeoutExpired:
+    print("hung")
+PY
+check "doctor --remote does not wait for credentials" "$(cat "$work/rd-ask.out")" "finished True"
+check "the remote helper got no terminal prompt" "$(cat "$ASK59_SEEN" 2>/dev/null)" "0"
+unset ASK59_SEEN
+
+git -C "$t" remote set-url origin "$bare"
+PATH="$stub59:$PATH" "$root/bin/harness" status --remote --target "$t" > "$work/rd-st.json" 2>/dev/null
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --remote --json --target "$t" > "$work/rd-dj.json" 2>/dev/null
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["doctor"]; b=json.load(open(sys.argv[2])); print(a == b, any(i["section"] == "remote" for i in b["items"]))' "$work/rd-st.json" "$work/rd-dj.json" > "$work/rd-same"
+check "status --remote carries what doctor --remote --json prints" "$(cat "$work/rd-same")" "True True"
+
+md59="$t.records/metrics"
+before=$(cat "$md59"/spans-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+rdoc metrics "$t" --remote
+after=$(cat "$md59"/spans-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+check "doctor --remote leaves no metrics" "$after" "$before"
+cat "$work"/rd-*.txt > "$work/rd-all.log"; no_hangul "$work/rd-all.log" "doctor --remote output"
+"$root/bin/harness" help > "$work/rd-help" 2>&1
+grep -E '^  harness doctor +\[--remote\] \[--json\]' "$work/rd-help" >/dev/null && ok || bad "help does not list --remote and --json for doctor"
+grep -E '^  harness status +\[--remote\]' "$work/rd-help" >/dev/null && ok || bad "help does not list --remote for status"
+
+echo "UT-83 doctor --remote checks forge sign-in, tracker labels and branch protection through the adapter"
+# forge 는 script/forge.sh 를 페이크로 바꿔 끼운다. forge CLI 설치 확인은 PATH 앞의 빈 gh 스텁이 지난다.
+t="$work/remote59"; cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+fst83="$work/fake-state83"; mkdir -p "$fst83"
+fdoc() { # fdoc <이름> <변수=값...> — 페이크 환경으로 doctor --remote 를 돌리고 remote 절만 남긴다
+  local n="$1"; shift
+  env FAKE_STATE="$fst83" FAKE_BREAK= "$@" PATH="$stub59:$PATH" "$root/bin/harness" doctor --remote --target "$t" > "$work/fd-$n.txt" 2>&1
+  sed -n '/^remote$/,/^$/p' "$work/fd-$n.txt" | grep '^  ' > "$work/fd-$n.sec"
+}
+fdoc unauth FAKE_AUTH=fail
+has "$work/fd-unauth.sec" '  FAIL sign-in to `github`  — not signed in — run `fake auth login`' "a failed sign-in is not a failure with the adapter's hint"
+hasnt "$work/fd-unauth.sec" 'label' "a failed sign-in still checks labels"
+hasnt "$work/fd-unauth.sec" 'branch protection' "a failed sign-in still checks branch protection"
+fdoc signed FAKE_LABELS="Requirement Task invalid"
+has "$work/fd-signed.sec" '  ok   sign-in to `github`' "a sign-in is not ok"
+check "one sign-in line when the tracker and the host are the same forge" "$(grep -c 'sign-in to' "$work/fd-signed.sec")" "1"
+for l in Requirement Task invalid; do has "$work/fd-signed.sec" "  ok   label \`$l\`  — on github" "label $l is not ok"; done
+fdoc onemissing FAKE_LABELS="Requirement Task"
+has "$work/fd-onemissing.sec" '  warn label `invalid`  — missing on github — create it on the forge' "a missing label is not a warning"
+check "only the missing label warns" "$(grep -c '^  warn label' "$work/fd-onemissing.sec")" "1"
+fdoc case FAKE_LABELS="requirement TASK INVALID"
+check "labels that differ only in case are ok" "$(grep -c '^  ok   label' "$work/fd-case.sec")" "3"
+fdoc nolabels FAKE_LABELS=none
+hasnt "$work/fd-nolabels.sec" 'label' "a tracker that keeps no labels still has label lines"
+fdoc brokenlabels FAKE_BREAK=labels
+check "an unreadable label list is one could-not-check line" "$(grep 'label' "$work/fd-brokenlabels.sec")" '  warn labels  — could not check'
+fdoc prot FAKE_PROTECTED=development
+has "$work/fd-prot.sec" '  ok   branch protection `development`  — protected on github' "a protected base is not ok"
+hasnt "$work/fd-prot.sec" 'branch protection `main`' "a protected branch absent from origin is checked"
+fdoc noprot FAKE_PROTECTED=
+has "$work/fd-noprot.sec" '  warn branch protection `development`  — not protected on github — only local hooks block direct pushes; protect it on the forge' "an unprotected base is not a warning"
+fdoc brokenprot FAKE_BREAK=protected
+has "$work/fd-brokenprot.sec" '  warn branch protection `development`  — could not check' "an odd protection answer is not a could-not-check warning"
+# forge CLI 가 없는 종류는 로그인부터 내지 않는다
+minbin="$work/minbin59"; rm -rf "$minbin"; mkdir -p "$minbin"
+for c in git python3 sh bash; do ln -s "$(command -v "$c")" "$minbin/$c"; done
+FAKE_STATE="$fst83" PATH="$minbin" "$root/bin/harness" doctor --remote --target "$t" > "$work/fd-nocli.txt" 2>&1
+sed -n '/^remote$/,/^$/p' "$work/fd-nocli.txt" > "$work/fd-nocli.sec"
+has "$work/fd-nocli.sec" 'remote `origin`' "the remote section did not run without the forge CLI"
+hasnt "$work/fd-nocli.sec" 'sign-in' "a forge without its CLI still checks sign-in"
+hasnt "$work/fd-nocli.sec" 'label' "a forge without its CLI still checks labels"
+hasnt "$work/fd-nocli.sec" 'branch protection' "a forge without its CLI still checks branch protection"
+grep -nE '"(gh|glab|jira)"[],]' "$root/bin/harness" | grep -v '^[0-9]*:FORGE_CLI = ' > "$work/fd-direct" || true
+check "the CLI does not call a forge CLI directly" "$(cat "$work/fd-direct")" ""
+cat "$work"/fd-*.txt > "$work/fd-all.log"; no_hangul "$work/fd-all.log" "doctor --remote forge output"
+unset -f fdoc
+
+echo "UT-84 doctor --remote checks the reviewer's CLI runner through run-agent.py --check"
+# 리뷰어 러너는 PATH 앞의 codex 스텁이다. 종료 코드는 CODEX_LOGIN_EXIT 로 정한다.
+t="$work/remote59"; cbin="$work/codexbin59"; mkdir -p "$cbin"
+cat > "$cbin/codex" <<'SH'
+#!/bin/sh
+echo "RUNNER-ACCOUNT-MARK59"; echo "RUNNER-ACCOUNT-MARK59" >&2
+exit "${CODEX_LOGIN_EXIT:-0}"
+SH
+chmod +x "$cbin/codex"
+rvdoc() { # rvdoc <이름> <PATH> [변수=값...] — doctor --remote 의 리뷰어 러너 줄만 남긴다
+  local n="$1" path="$2"; shift 2
+  env FAKE_STATE="$fst83" "$@" PATH="$path" "$root/bin/harness" doctor --remote --target "$t" > "$work/rv-$n.txt" 2>&1
+  grep 'reviewer runner' "$work/rv-$n.txt" > "$work/rv-$n.line"
+}
+rvdoc in "$cbin:$stub59:$PATH" CODEX_LOGIN_EXIT=0
+check "a signed-in reviewer runner" "$(cat "$work/rv-in.line")" '  ok   reviewer runner `codex`  — signed in'
+rvdoc out "$cbin:$stub59:$PATH" CODEX_LOGIN_EXIT=1
+check "a reviewer runner that is not signed in" "$(cat "$work/rv-out.line")" '  FAIL reviewer runner `codex`  — not signed in — `codex login status` fails'
+hasnt "$work/rv-out.txt" "RUNNER-ACCOUNT-MARK59" "the runner's output reached doctor"
+rvdoc none "$minbin"
+check "a reviewer runner that is not installed" "$(cat "$work/rv-none.line")" '  FAIL reviewer runner `codex`  — codex is not installed (roles.code-reviewer.runner = codex)'
+cp "$t/script/harness.plan.json" "$work/rv-plan.bak"
+python3 - "$t/script/harness.plan.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p)); d["roles"]["code-reviewer"]["auth_check"] = []
+json.dump(d, open(p, "w"))
+PY
+rvdoc unchecked "$cbin:$stub59:$PATH"
+check "a reviewer runner without a sign-in command" "$(cat "$work/rv-unchecked.line")" '  ok   reviewer runner `codex`  — installed — sign-in is not checked for Codex CLI'
+cp "$work/rv-plan.bak" "$t/script/harness.plan.json"
+mv "$t/script/run-agent.py" "$work/rv-runner.bak"
+rvdoc norunner "$cbin:$stub59:$PATH"
+check "a missing runner script" "$(cat "$work/rv-norunner.line")" '  FAIL reviewer runner `codex`  — `script/run-agent.py` is missing — run `harness render`'
+mv "$work/rv-runner.bak" "$t/script/run-agent.py"
+"$root/bin/harness" set --target "$t" invariants.distinct_reviewer false roles.code-reviewer.runner inproc >/dev/null 2>&1 \
+  || bad "could not make the reviewer a subagent"
+rvdoc inproc "$cbin:$stub59:$PATH"
+check "a subagent reviewer has no runner line" "$(cat "$work/rv-inproc.line")" ""
+has "$work/rv-inproc.txt" 'remote `origin`' "the remote section did not run for a subagent reviewer"
+cat "$work"/rv-*.txt > "$work/rv-all.log"; no_hangul "$work/rv-all.log" "doctor --remote reviewer output"
+unset -f rvdoc
+
+echo "UT-85 doctor.remote_timeout: default, refused values, an old config without the section, and the value reaching every remote call"
+grep -A1 '^\[doctor\]$' "$root/templates/harness.toml" | tail -1 > "$work/rt-default"
+check "the shipped default remote_timeout" "$(cat "$work/rt-default")" "remote_timeout = 30"
+t="$work/rtcfg"; setup "$t"; cp "$t/harness.toml" "$work/rtcfg.orig"
+rt_with() { # rt_with <remote_timeout 줄 대체> — 원본 설정의 [doctor] 값만 바꾸고 render 한다
+  cp "$work/rtcfg.orig" "$t/harness.toml"
+  python3 - "$t/harness.toml" "$1" <<'PY2'
+import sys; p = sys.argv[1]; s = open(p).read()
+assert "[doctor]\nremote_timeout = 30\n" in s
+open(p, "w").write(s.replace("[doctor]\nremote_timeout = 30\n", "[doctor]\n%s\n" % sys.argv[2]))
+PY2
+  "$root/bin/harness" render --target "$t" > "$work/rtcfg.log" 2>&1
+}
+for v in 0 -1 601 '"30"' 1.5 true; do
+  rt_with "remote_timeout = $v"; check "render with doctor.remote_timeout = $v" "$?" "2"
+  has "$work/rtcfg.log" "error: doctor.remote_timeout must be a whole number of seconds from 1 to 600 (got " "doctor.remote_timeout = $v is not refused by name"
+done
+for v in 1 600; do
+  rt_with "remote_timeout = $v"; check "render with doctor.remote_timeout = $v" "$?" "0"
+done
+rt_with $'remote_timeout = 30\nretries = 2'; check "render with an unknown doctor key" "$?" "2"
+has "$work/rtcfg.log" "unknown key(s) in [doctor]: retries" "the unknown doctor key is not named"
+has "$work/rtcfg.log" "the keys are remote_timeout" "the doctor keys are not listed"
+# 절이 없는 옛 설정은 기본값으로 돌고, set 이 절을 만들어 값을 넣는다
+cp "$work/rtcfg.orig" "$t/harness.toml"
+python3 - "$t/harness.toml" <<'PY2'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[doctor\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[doctor]" not in s
+open(p, "w").write(s)
+PY2
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render without a doctor section" "$?" "0"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check without a doctor section" "$?" "0"
+rt_schema() { "$root/bin/harness" schema --target "$t" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["doctor"]["remote_timeout"])'; }
+check "schema fills the default without a doctor section" "$(rt_schema)" "30"
+cp "$t/harness.toml" "$work/rtcfg.nosec"
+"$root/bin/harness" set --target "$t" doctor.remote_timeout 0 > "$work/rtcfg.set0" 2>&1; check "set doctor.remote_timeout 0" "$?" "2"
+has "$work/rtcfg.set0" "doctor.remote_timeout must be a whole number of seconds from 1 to 600 (got 0)" "set 0 is not refused by name"
+cmp -s "$t/harness.toml" "$work/rtcfg.nosec" && ok || bad "a refused set left the config changed"
+"$root/bin/harness" set --target "$t" doctor.remote_timeout 45 >/dev/null 2>&1; check "set doctor.remote_timeout on a config without the section" "$?" "0"
+python3 -c 'import sys,tomllib; print(repr(tomllib.load(open(sys.argv[1],"rb"))["doctor"]["remote_timeout"]))' "$t/harness.toml" > "$work/rtcfg.val" 2>&1
+check "the set value is an integer in the config" "$(cat "$work/rtcfg.val")" "45"
+check "schema reports the set value" "$(rt_schema)" "45"
+# 원격 호출마다 설정 값을 제한 시간으로 받는다. 호출은 띄우지 않고 받은 제한만 적는다
+t="$work/remote59"
+"$root/bin/harness" set --target "$t" doctor.remote_timeout 7 >/dev/null 2>&1 || bad "could not set doctor.remote_timeout on the remote repo"
+PATH="$stub59:$PATH" python3 - "$root/bin/harness" "$t" > "$work/rt-calls" 2>&1 <<'PY2'
+import importlib.machinery, importlib.util, subprocess, sys, types
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+cfg["roles"]["code-reviewer"]["runner"] = "codex"
+seen = []
+class FakePopen:
+    def __init__(self, argv, **kw):
+        self.argv, self.pid, self.returncode = argv, 0, 1
+    def communicate(self, timeout=None):
+        seen.append((self.argv[0], timeout))
+        return "", ""
+# 원격 호출이 쓰는 Popen 만 바꾼다. git() 같은 로컬 호출은 진짜 subprocess 로 돈다
+h.subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith("__")})
+h.subprocess.Popen = FakePopen
+h.remote_items(cfg, target, lambda *a: None)
+kinds = sorted({a for a, _ in seen})
+print(sorted({t for _, t in seen}), "git" in kinds, "sh" in kinds, sys.executable in kinds)
+PY2
+check "every remote call gets doctor.remote_timeout" "$(cat "$work/rt-calls")" "[7] True True True"
+unset -f rt_with rt_schema
 
 echo
 if [ "$fail" -eq 0 ]; then

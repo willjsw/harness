@@ -111,6 +111,11 @@ INCLUDE_PATH = re.compile(r"(?!/)(?!(.*/)?\.\.(/|$))[^\s*?\[]+")
 # Claude Code 권한. 허용 목록 자체는 settings_json() 이 만든다 — 여기는 프로젝트가 고르는 값뿐이다.
 PERMISSIONS_DEFAULTS = {"allow_push": False}
 
+# 준비 점검. remote_timeout 은 원격 점검의 호출 하나에 주는 시간(초)이다 — 넘으면 그 항목은 확인하지 못한 것이다.
+DOCTOR_DEFAULTS = {"remote_timeout": 30}
+# remote_timeout 의 상한(초). 원격 점검은 호출을 순차로 하므로 이보다 길면 한 번의 점검이 끝나지 않는 것처럼 보인다.
+REMOTE_TIMEOUT_LIMIT = 600
+
 
 def worktree_dir(cfg: dict) -> str:
     """[worktree].dir 에 프로젝트 이름을 채우고 `~` 와 환경 변수를 확장한 것."""
@@ -205,6 +210,8 @@ def normalize(cfg: dict):
         cfg.setdefault("worktree", {}).setdefault(k, list(x) if isinstance(x, list) else x)
     for k, x in PERMISSIONS_DEFAULTS.items():   # 권한 — 옛 설정에는 없다
         cfg.setdefault("permissions", {}).setdefault(k, x)
+    for k, x in DOCTOR_DEFAULTS.items():   # 준비 점검 — 옛 설정에는 없다
+        cfg.setdefault("doctor", {}).setdefault(k, x)
     b = cfg["branches"]
     if b["base"] not in b["protected"]:
         b["protected"] = b["protected"] + [b["base"]]
@@ -229,6 +236,13 @@ def normalize(cfg: dict):
 # 여기는 그 선언을 읽는 일반 엔진뿐이다 — 벤더 이름으로 분기하지 않는다.
 with (TEMPLATES / "vendors.toml").open("rb") as _f:
     VENDORS = {v["id"]: v for v in tomllib.load(_f)["vendor"]}
+for _i, _v in VENDORS.items():
+    # 로그인 확인 명령은 그대로 실행된다 — 자기 CLI 를 부르는 문자열 argv 만 받는다
+    if "auth_check" in _v:
+        _a = _v["auth_check"]
+        if not (isinstance(_a, list) and _a and all(isinstance(x, str) for x in _a) and _a[0] == _v["exe"]):
+            die("error: templates/vendors.toml: vendor `%s` auth_check must be a non-empty list of strings "
+                "starting with its exe `%s`" % (_i, _v["exe"]))
 ORCHESTRATORS = [i for i, v in VENDORS.items() if v.get("launch")]
 RUNNERS = [i for i, v in VENDORS.items() if v.get("headless")]
 # UI·schema 가 보던 모양. 고를 수 있는지는 선언에 명령이 있는지로 정한다
@@ -317,6 +331,7 @@ def run_plan(cfg: dict) -> dict:
                         "model": role_model(cfg, n),
                         "usage_format": VENDORS[r["runner"]].get("usage_format", []),
                         "usage_parser": VENDORS[r["runner"]].get("usage_parser", ""),
+                        "auth_check": VENDORS[r["runner"]].get("auth_check", []),
                         "entry": role_meta(n).get("entry") or "%s %s" % (RUN_AGENT, n)}
     return {"_generated": "harness.toml 에서 생성된다. 직접 고치지 않는다 — harness render 가 다시 만든다.",
             "roles": roles, "metrics": metrics_cfg(cfg)}
@@ -437,6 +452,14 @@ def validate(cfg: dict):
         die("error: unknown key(s) in [permissions]: %s\n\nhelp: the keys are %s" % (", ".join(unknown), ", ".join(PERMISSIONS_DEFAULTS)))
     if not isinstance(pm["allow_push"], bool):
         die("error: permissions.allow_push must be true or false (got %r)" % (pm["allow_push"],))
+
+    dc = cfg["doctor"]
+    unknown = sorted(set(dc) - set(DOCTOR_DEFAULTS))
+    if unknown:
+        die("error: unknown key(s) in [doctor]: %s\n\nhelp: the keys are %s" % (", ".join(unknown), ", ".join(DOCTOR_DEFAULTS)))
+    n = dc["remote_timeout"]
+    if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= REMOTE_TIMEOUT_LIMIT:
+        die("error: doctor.remote_timeout must be a whole number of seconds from 1 to %d (got %r)" % (REMOTE_TIMEOUT_LIMIT, n))
 
     validate_workflows(cfg)
 
@@ -1703,19 +1726,39 @@ def same_checkout_position(a: Path, b: Path) -> bool:
     return pa is not None and pa == checkout_position(b)
 
 
-def cmd_doctor(cfg, target, _args):
-    """쓸 준비가 됐는지 본다. 설정 자체는 여기 오기 전에 이미 검증됐다."""
+# 사실 문서의 채우지 않은 자리. 본문에 낱말 TBD 가 따로 나오는 것은 자리표시자가 아니다.
+PLACEHOLDER = "<!-- TBD"
+# 어댑터 머리글의 검증 상태 표지. 머리글 밖의 주석·코드에 나오는 같은 낱말은 판정에 쓰지 않는다.
+ADAPTER_UNVERIFIED = "검증 상태: 미검증"
+
+
+def adapter_header(text: str) -> str:
+    """어댑터 파일의 머리글 — 1행부터 `#` 로 시작하는 줄이 이어지는 첫 주석 덩어리."""
+    head = []
+    for ln in text.splitlines():
+        if not ln.startswith("#"):
+            break
+        head.append(ln)
+    return "\n".join(head)
+
+
+def doctor_items(cfg, target, remote=False):
+    """쓸 준비가 됐는지 본 결과 — `{"section", "state", "what", "detail"}` 목록. 표준 출력에 쓰지 않는다.
+
+    목록의 순서가 출력 순서다. 설정 자체는 여기 오기 전에 이미 검증됐다.
+    """
     v = derive(cfg)
-    bad = warn = 0
+    items = []
+    sec = ""
+
+    def section(name):
+        nonlocal sec
+        sec = name
 
     def line(state, what, detail=""):
-        nonlocal bad, warn
-        mark = {"ok": "  ok  ", "warn": "  warn", "bad": "  FAIL"}[state]
-        bad += state == "bad"
-        warn += state == "warn"
-        print("%s %s%s" % (mark, what, ("  — " + detail) if detail else ""))
+        items.append({"section": sec, "state": state, "what": what, "detail": detail})
 
-    print("config")
+    section("config")
     line("ok", "harness.toml is valid")
     for rev, dev in distinct_pairs(cfg):
         line("ok", "%s (%s) differs from %s (%s)" % (dev, vendor(cfg, dev), rev, vendor(cfg, rev)))
@@ -1739,27 +1782,27 @@ def cmd_doctor(cfg, target, _args):
             line("warn", "roles.%s.model = %s" % (n, cfg["roles"][n]["model"]),
                  "not a model of %s on this machine (harness tools --sync to refresh)" % vendor(cfg, n))
 
-    print("\ngenerated files")
+    section("generated files")
     diff = drift(cfg, target)
     if diff:
         line("bad", "%d files differ from the config" % len(diff), "run `harness render`")
     else:
         line("ok", "%d files match the config" % len(plan(cfg, target)))
 
-    print("\nproject facts")
+    section("project facts")
     for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
                       for p in (TEMPLATES / "owned").rglob("*") if p.is_file()):
         f = target / rel
         if not f.is_file():
             line("bad", rel, "missing")
             continue
-        n = f.read_text(encoding="utf-8").count("TBD")
+        n = f.read_text(encoding="utf-8").count(PLACEHOLDER)
         if n:
             line("warn", rel, "%d placeholder(s) still to fill" % n)
         else:
             line("ok", rel)
 
-    print("\nverification")
+    section("verification")
     if legacy_verify(target):
         # 손으로 쓴 스크립트가 있으면 run-lint-test.sh 가 그것을 돈다 — 옮기기 전까지 동작을 바꾸지 않는다
         r = subprocess.run(["bash", LEGACY_VERIFY], capture_output=True, cwd=target, env=QUIET_ENV())
@@ -1780,7 +1823,7 @@ def cmd_doctor(cfg, target, _args):
     if (target / LEGACY_COMMANDS).is_file() and any(cfg["commands"].values()):
         line("warn", "%s is no longer read" % LEGACY_COMMANDS, "[commands] in harness.toml replaced it — delete the file")
 
-    print("\nreferences")
+    section("references")
     dr = dangling_roles(cfg, target)
     if dr:
         for name, rel, ln in dr:
@@ -1797,7 +1840,7 @@ def cmd_doctor(cfg, target, _args):
     else:
         line("ok", "every path a document names exists")
 
-    print("\ntools and connections")
+    section("tools and connections")
     for cli in v["FORGE_CLIS"].split():
         line("ok" if shutil.which(cli) else "bad", "forge CLI `%s`" % cli,
              "" if shutil.which(cli) else "not installed")
@@ -1805,7 +1848,7 @@ def cmd_doctor(cfg, target, _args):
         a = target / "script" / "forge" / ("%s.sh" % kind)
         if not a.is_file():
             line("bad", "adapter `%s`" % kind, "file is missing")
-        elif "미검증" in a.read_text(encoding="utf-8"):
+        elif ADAPTER_UNVERIFIED in adapter_header(a.read_text(encoding="utf-8")):
             line("warn", "adapter `%s`" % kind,
                  "unverified — run `script/forge-selftest.sh`")
         else:
@@ -1816,7 +1859,7 @@ def cmd_doctor(cfg, target, _args):
         line("ok" if shutil.which(exe) else "warn", "decision-record tool `%s`" % t,
              "" if shutil.which(exe) else "`%s` is not installed" % exe)
 
-    print("\nregistry")
+    section("registry")
     name = cfg["project"]["name"]
     at = registered_path(name)
     if at is None:
@@ -1826,7 +1869,7 @@ def cmd_doctor(cfg, target, _args):
     else:
         line("warn", "`%s` is registered to another path" % name, at)
 
-    print("\ngit")
+    section("git")
     hp = hooks_path(target)
     line("ok" if hp == "script/githooks" else "bad", "git hooks enabled",
          "" if hp == "script/githooks" else "run `git config core.hooksPath script/githooks`")
@@ -1842,7 +1885,208 @@ def cmd_doctor(cfg, target, _args):
         if not left:
             line("ok", "no worktrees left")
 
+    if remote:
+        section("remote")
+        remote_items(cfg, target, line)
+    return items
+
+
+REMOTE_UNCHECKED = "could not check"
+
+
+def remote_call(cfg, argv, cwd):
+    """원격에 닿는 호출 하나 — 표준 입력을 닫고 제어 터미널 없이 띄운다. 자격증명 입력을 기다리며 멈추지 않는다.
+
+    제한 시간은 doctor.remote_timeout(초)이다. 띄우지 못했거나 그 시간을 넘기면 None.
+    출력은 판정에만 쓰고 결과 문구로 옮기지 않는다.
+    """
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", HARNESS_METRICS="off")
+    try:
+        p = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, err = p.communicate(timeout=cfg["doctor"]["remote_timeout"])
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        return None
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
+def ls_remote(cfg, target, branches):
+    """origin 의 HEAD 심볼릭 참조와 있는 브랜치 — (HEAD 가 가리키는 참조 또는 "", 있는 refs/heads/* 집합). 실패하면 None."""
+    r = remote_call(cfg, ["git", "ls-remote", "--symref", "origin", "HEAD"] + ["refs/heads/%s" % b for b in branches], target)
+    if r is None or r.returncode != 0:
+        return None
+    head, refs = "", set()
+    for ln in r.stdout.splitlines():
+        parts = ln.split("\t")
+        if len(parts) != 2:
+            return None
+        if parts[0].startswith("ref: ") and parts[1] == "HEAD":
+            head = parts[0][len("ref: "):]
+        elif parts[1].startswith("refs/heads/"):
+            refs.add(parts[1])
+    return head, refs
+
+
+def remote_git_items(cfg, target, line):
+    """origin · base 브랜치 · 원격 기본 브랜치. origin 에 있는 refs/heads/* 집합을 돌려준다 — 모르면 빈 집합."""
+    base = cfg["branches"]["base"]
+    if git(target, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+        line("bad", "remote `origin`", "not a git repository")
+        return set()
+    if git(target, "remote", "get-url", "origin").returncode != 0:
+        line("bad", "remote `origin`", "not set — run `git remote add origin <url>`")
+        return set()
+    line("ok", "remote `origin`")
+    branches = list(dict.fromkeys([base] + list(cfg["branches"]["protected"])))
+    ls = ls_remote(cfg, target, branches)
+    failed = "%s — git ls-remote failed" % REMOTE_UNCHECKED
+    if ls is None:
+        line("warn", "branch `%s` on origin" % base, failed)
+        line("warn", "origin default branch", failed)
+        return set()
+    head, refs = ls
+    if "refs/heads/%s" % base in refs:
+        line("ok", "branch `%s` on origin" % base)
+    else:
+        line("bad", "branch `%s` on origin" % base, "missing — run `git push origin %s`" % base)
+    if head == "refs/heads/%s" % base:
+        line("ok", "origin default branch", "`%s`" % base)
+    elif head.startswith("refs/heads/"):
+        line("warn", "origin default branch", "is `%s`, not branches.base `%s` — new clones and review requests start from it"
+             % (head[len("refs/heads/"):], base))
+    else:
+        line("warn", "origin default branch", "%s — origin does not report it" % REMOTE_UNCHECKED)
+    return refs
+
+
+def forge_call(cfg, target, fn, *a):
+    """forge 어댑터 함수 하나를 원격 호출 규칙으로 부른다. forge CLI 를 직접 부르지 않는다."""
+    return remote_call(cfg, ["sh", "-c", '. ./script/forge.sh && "$@"', "sh", fn, *a], target)
+
+
+def remote_forge_items(cfg, target, line, refs):
+    """forge 로그인 · 트래커 라벨 · 원격 브랜치 보호. 로그인되지 않은 종류는 그 뒤 항목을 내지 않는다."""
+    tracker, host = cfg["forge"]["tracker"], cfg["forge"]["review_host"]
+    signed = set()
+    for kind in dict.fromkeys([tracker, host]):
+        if not shutil.which(FORGE_CLI.get(kind, kind)):
+            continue
+        r = forge_call(cfg, target, "tracker_auth" if kind == tracker else "review_auth")
+        what = "sign-in to `%s`" % kind
+        if r is not None and r.returncode == 0:
+            line("ok", what)
+            signed.add(kind)
+        elif r is not None and r.returncode == 1:
+            hint = (r.stderr.strip().splitlines() or [""])[0]
+            line("bad", what, "not signed in — %s" % hint if hint else "not signed in")
+        else:
+            line("warn", what, REMOTE_UNCHECKED)
+    if tracker in signed:
+        wanted = list(dict.fromkeys(l for l in cfg["issues"]["labels"].values() if l))
+        r = forge_call(cfg, target, "tracker_labels") if wanted else None
+        if wanted and not (r is not None and r.returncode == 3):
+            have = None
+            if r is not None and r.returncode == 0:
+                with contextlib.suppress(ValueError):
+                    v = json.loads(r.stdout)
+                    if isinstance(v, list) and all(isinstance(x, str) for x in v):
+                        have = {x.lower() for x in v}
+            if have is None:
+                line("warn", "labels", REMOTE_UNCHECKED)
+            else:
+                for l in wanted:
+                    if l.lower() in have:
+                        line("ok", "label `%s`" % l, "on %s" % tracker)
+                    else:
+                        line("warn", "label `%s`" % l, "missing on %s — create it on the forge" % tracker)
+    if host in signed:
+        for b in dict.fromkeys(cfg["branches"]["protected"]):
+            if "refs/heads/%s" % b not in refs:
+                continue
+            r = forge_call(cfg, target, "review_branch_protected", b)
+            out = r.stdout.strip() if r is not None and r.returncode == 0 else None
+            what = "branch protection `%s`" % b
+            if out == "true":
+                line("ok", what, "protected on %s" % host)
+            elif out == "false":
+                line("warn", what, "not protected on %s — only local hooks block direct pushes; protect it on the forge" % host)
+            else:
+                line("warn", what, REMOTE_UNCHECKED)
+
+
+def remote_items(cfg, target, line):
+    """원격 준비 상태를 읽기만 한다. 원격 URL 과 명령 출력은 결과에 옮기지 않는다."""
+    refs = remote_git_items(cfg, target, line)
+    remote_forge_items(cfg, target, line, refs)
+    remote_reviewer_items(cfg, target, line)
+
+
+REVIEWER = "code-reviewer"
+
+
+def remote_reviewer_items(cfg, target, line):
+    """리뷰어가 CLI 러너면 그 러너의 설치·로그인을 `run-agent.py --check` 로 본다. 러너의 출력은 옮기지 않는다."""
+    p = run_plan(cfg)["roles"].get(REVIEWER) if REVIEWER in cfg["roles"] else None
+    if not p or p["via"] != "headless":
+        return
+    what = "reviewer runner `%s`" % p["vendor"]
+    runner = target / RUN_AGENT
+    if not runner.is_file():
+        line("bad", what, "`%s` is missing — run `harness render`" % RUN_AGENT)
+        return
+    r = remote_call(cfg, [sys.executable, str(runner), REVIEWER, "--check"], target)
+    out = r.stdout.strip() if r is not None else ""
+    if r is not None and r.returncode == 0 and out == "signed-in":
+        line("ok", what, "signed in")
+    elif r is not None and r.returncode == 0 and out == "unchecked":
+        line("ok", what, "installed — sign-in is not checked for %s" % VENDORS[p["vendor"]]["name"])
+    elif r is not None and r.returncode == 2:
+        first = (r.stderr.strip().splitlines() or [""])[0]
+        line("bad", what, first[len("error: "):] if first.startswith("error: ") else first)
+    elif r is not None and r.returncode == 3:
+        line("bad", what, "not signed in — `%s` fails" % " ".join(p.get("auth_check") or []))
+    else:
+        line("warn", what, REMOTE_UNCHECKED)
+
+
+def doctor_counts(items):
+    return (sum(i["state"] == "bad" for i in items), sum(i["state"] == "warn" for i in items))
+
+
+def doctor_json(items):
+    bad, warn = doctor_counts(items)
+    return {"bad": bad, "warn": warn, "items": items}
+
+
+def doctor_text(items):
+    """항목 목록을 절마다 그린다. 항목이 없는 절은 제목도 없다."""
+    mark = {"ok": "  ok  ", "warn": "  warn", "bad": "  FAIL"}
+    sec = None
+    for i in items:
+        if i["section"] != sec:
+            print(("\n" if sec is not None else "") + i["section"])
+            sec = i["section"]
+        print("%s %s%s" % (mark[i["state"]], i["what"], ("  — " + i["detail"]) if i["detail"] else ""))
+
+
+def cmd_doctor(cfg, target, args):
+    """쓸 준비가 됐는지 보고한다. 종료 코드는 실패 항목이 있으면 1 — 텍스트든 JSON 이든 같다."""
+    remote = getattr(args, "remote", False)
+    items = doctor_items(cfg, target, remote)
+    bad, warn = doctor_counts(items)
+    if getattr(args, "json", False):
+        print(json.dumps(doctor_json(items), ensure_ascii=False, indent=2))
+        return 1 if bad else 0
+    doctor_text(items)
     print()
+    if not remote:
+        print("remote checks not run — use `harness doctor --remote`")
     sys.stdout.flush()
     if bad:
         print("%d failing · %d warning — not ready to use" % (bad, warn))
@@ -1882,11 +2126,13 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
             hit = i
             break
     command = section == "commands" and key in {k for k, _ in COMMAND_KEYS}
-    permission = section == "permissions" and key in PERMISSIONS_DEFAULTS
-    if hit is None and (command or permission) and not any(ln.strip() == want for ln in lines):
+    # 기본값이 있는 절(권한 · 준비 점검)은 옛 설정에 없을 수 있다
+    defaulted = (section == "permissions" and key in PERMISSIONS_DEFAULTS
+                 or section == "doctor" and key in DOCTOR_DEFAULTS)
+    if hit is None and (command or defaulted) and not any(ln.strip() == want for ln in lines):
         lines += ["\n" if lines and lines[-1].strip() else "", "%s\n" % want]   # 옛 설정에는 절이 없다
     if hit is None and (re.fullmatch(r"roles\.[\w-]+", section) and key in OPTIONAL_ROLE_KEYS
-                        or dotted == "harness.model" or command or permission):
+                        or dotted == "harness.model" or command or defaulted):
         # 선택 키는 적지 않아도 되는 값이라(옛 설정에 없다), 처음 정할 때는 그 절 끝에 한 줄을 더한다
         head = next((i for i, ln in enumerate(lines) if ln.strip() == want), None)
         if head is not None:
@@ -2480,6 +2726,8 @@ def cmd_schema(cfg, _target, _args):
         # 명령 탭의 값. 이 키가 없는 옛 하네스 사본은 명령을 문서(.ai/project/commands.md)로만 받는다
         "commands": cfg["commands"], "checks": cfg["verify"]["checks"],
         "legacy_verify": legacy_verify(_target),
+        # 기본값을 채운 준비 점검 설정. 설정 파일에 [doctor] 가 없어도 설정 화면이 그 값을 그린다
+        "doctor": cfg["doctor"],
         "workflow_notes": {wf: "%s/%s.md" % (WORKFLOW_NOTES, wf) for wf in cfg["workflows"]},
         # 절차 목록: 제목과, 이 프로젝트가 만든 것인지(하네스 기본 조각이 없는 것)
         "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None}
@@ -2524,22 +2772,9 @@ def cmd_metrics(cfg, target, args):
 
 
 def cmd_status(cfg, target, args):
-    """`harness status` — 홈 화면용 프로젝트 상태(JSON). 검사를 새로 만들지 않고 check·doctor 를 그대로 돌려 읽는다.
-
-    doctor 의 한 줄은 `  ok   무엇  — 설명` 이고 절 제목 아래에 모인다. 그 구조를 그대로 옮긴다.
-    """
+    """`harness status` — 홈 화면용 프로젝트 상태(JSON). 검사를 새로 만들지 않고 doctor 의 항목 목록과 check 를 쓴다."""
     import contextlib, io
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
-        cmd_doctor(cfg, target, args)
-    items, section = [], ""
-    for ln in buf.getvalue().splitlines():
-        m = re.match(r"  (ok  |warn|FAIL) (.+?)(?:  — (.*))?$", ln)
-        if m:
-            items.append({"section": section, "state": {"ok  ": "ok", "warn": "warn", "FAIL": "bad"}[m.group(1)],
-                          "what": m.group(2).strip(), "detail": m.group(3) or ""})
-        elif ln and not ln.startswith(" ") and "·" not in ln:
-            section = ln.strip()
+    items = doctor_items(cfg, target, getattr(args, "remote", False))
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         check_ok = cmd_check(cfg, target, argparse.Namespace(staged=False)) == 0
     # 설정 진행도: 소유 문서 중 자리표시자가 남지 않은 것
@@ -2554,8 +2789,7 @@ def cmd_status(cfg, target, args):
     print(json.dumps({
         "version": v.read_text(encoding="utf-8").strip() if v.is_file() else "",
         "check_ok": check_ok,
-        "doctor": {"bad": sum(i["state"] == "bad" for i in items), "warn": sum(i["state"] == "warn" for i in items),
-                   "items": items},   # 통과한 줄도 싣는다 — Doctor 화면이 절마다 통과 수를 보인다
+        "doctor": doctor_json(items),   # 통과한 줄도 싣는다 — Doctor 화면이 절마다 통과 수를 보인다
         "facts": {"total": len(facts), "filled": len([f for f in facts if f not in todo])},
         "git": {"branch": git("branch", "--show-current"), "dirty": bool(git("status", "--porcelain")),
                 "last_commit": git("log", "-1", "--format=%cI")},
@@ -2944,7 +3178,8 @@ COMMANDS = {
     "install":   (None, True,  "[--target DIR]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
     "render":    (None, True,  "[--target DIR]", "harness.toml + .ai/project/ -> generated files"),
     "check":     (None, True,  "[--staged]", "verify generated files match the config"),
-    "doctor":    (None, True,  "", "report readiness: config, files, tools, hooks"),
+    "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, tools, hooks (--remote: also the remote, read-only; "
+                  "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
@@ -2957,7 +3192,7 @@ COMMANDS = {
     "stop-server": (None, False, "", "stop the web UI started by start-server"),
     "server-status": (None, False, "", "whether the web UI is running and responding"),
     "schema":    (None, True,  "", "agent registry and resolved roles as JSON (for the UI)"),
-    "status":    (None, True,  "", "project health for the home screen as JSON: check, doctor, facts, git"),
+    "status":    (None, True,  "[--remote]", "project health for the home screen as JSON: check, doctor, facts, git (--remote: passed to doctor)"),
     "tools":     (None, False, "[--sync]", "list agent CLIs and decision-record tools on this machine"),
     "version":   (None, False, "", "version of this harness"),
     "help":      (None, False, "", "this help"),
@@ -3045,6 +3280,8 @@ def main():
     ap.add_argument("--since", help="metrics: how far back, like 24h, 7d or 30d (default 7d)")
     ap.add_argument("--trace", help="metrics: include the span tree of this trace")
     ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
+    ap.add_argument("--json", action="store_true", help="doctor: print the items as one JSON object")
+    ap.add_argument("--remote", action="store_true", help="doctor, status: also check the remote, read-only")
     ap.add_argument("-h", "--help", action="store_true")
     # 옵션 뒤에 오는 위치 인자도 args 에 모은다. 3.11 의 parse_args 는 `set --target X a.b v` 의
     # `a.b v` 를 받지 못하고 unrecognized arguments 로 멈춘다.

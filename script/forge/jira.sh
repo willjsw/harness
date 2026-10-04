@@ -163,6 +163,18 @@ tracker_current_user() {
   "$JIRA_CLI" me
 }
 
+# 로그인 여부만 본다. jira-cli 의 출력에는 계정 정보가 있어 옮기지 않는다.
+tracker_auth() {
+  "$JIRA_CLI" me </dev/null >/dev/null 2>&1 && return 0
+  echo 'run `jira init`' >&2
+  return 1
+}
+
+# Jira 는 라벨을 미리 두지 않는다 — 붙이는 순간 생긴다.
+tracker_labels() {
+  return 3
+}
+
 fi
 
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────

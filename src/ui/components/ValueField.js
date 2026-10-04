@@ -12,8 +12,8 @@ import HelpTip from "@/components/HelpTip";
 
 // 저장 전에 거르는 값. CLI 가 같은 검사를 다시 한다.
 const CHECKS = { "adr.dir": dirProblem };
-// 범위가 있는 정수. CLI 의 validate() 가 같은 범위를 검사한다(REVIEW_LIMIT).
-const RANGES = { "review.max_rounds": [1, 20], "review.repeat_file_max": [1, 20] };
+// 범위가 있는 정수. CLI 의 validate() 가 같은 범위를 검사한다(REVIEW_LIMIT · REMOTE_TIMEOUT_LIMIT).
+const RANGES = { "review.max_rounds": [1, 20], "review.repeat_file_max": [1, 20], "doctor.remote_timeout": [1, 600] };
 
 // 값 하나. 바꾸면 `harness set` 이 검증하고, 성립하지 않으면 설정을 되돌린 채 이유를 돌려준다.
 // 선택형(참/거짓·정해진 값)은 고르는 즉시 저장하고, 글자·목록은 저장 버튼을 누를 때 저장한다.

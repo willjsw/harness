@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # forge 어댑터가 계약을 지키는지 **실제 forge 를 상대로** 확인한다.
 #
-#   script/forge-selftest.sh <리뷰요청번호> [이슈번호]           읽기 전용 9종
+#   script/forge-selftest.sh <리뷰요청번호> [이슈번호]           읽기 전용 13종
 #   script/forge-selftest.sh --write <리뷰요청번호> [이슈번호]    + 쓰기 4종
 #   script/forge-selftest.sh --create-issue <리뷰요청번호> <이슈번호>  + 이슈 생성 1종
 #
@@ -130,6 +130,41 @@ if review_mr_list_open > "$work/open.json" 2>"$work/err"; then
   shape "review_mr_list_open shape" "$work/open.json" array iid source_branch description
 else
   bad "review_mr_list_open" "$(head -1 "$work/err")"
+fi
+
+# 원격 점검이 쓰는 읽기 함수. 인증 실패 안내는 어댑터의 고정 문구 한 줄이다.
+if tracker_auth 2>"$work/err"; then ok "tracker_auth"; else bad "tracker_auth" "$(head -1 "$work/err")"; fi
+if review_auth 2>"$work/err"; then ok "review_auth"; else bad "review_auth" "$(head -1 "$work/err")"; fi
+
+tracker_labels > "$work/labels.json" 2>"$work/err"
+rc=$?
+if [ $rc -eq 3 ]; then
+  if [ -s "$work/labels.json" ]; then bad "tracker_labels" "exit code 3 must come with no output"
+  else ok "tracker_labels — this tracker keeps no labels"; fi
+elif [ $rc -eq 0 ]; then
+  msg=$(python3 - "$work/labels.json" <<'PY'
+import json, sys
+try:
+    v = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as e:
+    print("not JSON: %s" % e); raise SystemExit(0)
+if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+    print("not an array of strings: %s" % type(v).__name__)
+PY
+)
+  if [ -z "$msg" ]; then ok "tracker_labels"; else bad "tracker_labels" "$msg"; fi
+else
+  bad "tracker_labels" "exit code $rc ($(head -1 "$work/err"))"
+fi
+
+prot=$(review_branch_protected "$BASE_BRANCH" 2>"$work/err")
+rc=$?
+if [ $rc -eq 0 ] && { [ "$prot" = true ] || [ "$prot" = false ]; }; then
+  ok "review_branch_protected $BASE_BRANCH → $prot"
+elif [ $rc -eq 0 ]; then
+  bad "review_branch_protected" "expected one line, true or false — got '$(printf '%s' "$prot" | head -c 80)'"
+else
+  bad "review_branch_protected" "exit code $rc ($(head -1 "$work/err"))"
 fi
 
 if [ -n "$issue" ]; then
@@ -331,7 +366,7 @@ if [ "$skip" -gt 0 ]; then
   echo "some checks were skipped — the adapter counts as verified only once all of them run"
   exit 0
 fi
-echo "all 14 contract functions checked — clear the unverified note in the adapter header:"
+echo "all 18 contract functions checked — clear the unverified note in the adapter header:"
 for a in $(printf '%s\n%s\n' "$FORGE_TRACKER" "$FORGE_REVIEW_HOST" | sort -u); do
   echo "   script/forge/$a.sh"
 done

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { explain, SECTIONS } from "./doctor.js";
+import fs from "node:fs";
+import { explain, SECTIONS, STATUS_TIMEOUT_MS, REMOTE_TIMEOUT_DEFAULT, REMOTE_TIMEOUT_LIMIT, remoteCallLimit, remoteCallTimeoutMs, remoteStatusTimeoutMs } from "./doctor.js";
 
 test("explain", () => {
   const b = "/demo";
@@ -29,4 +30,75 @@ test("explain registry lines", () => {
   assert.equal(none.cmd, "harness install");
   assert.notEqual(none.title, "this repository is not registered");
   assert.equal(SECTIONS.registry, "등록");
+});
+
+test("explain remote lines", () => {
+  const b = "/demo";
+  const r = (what, detail, state = "bad") => ({ section: "remote", state, what, detail });
+  const differs = (line) => { const x = explain(line, b); assert.notEqual(x.title, line.what); return x; };
+  assert.equal(SECTIONS.remote, "원격");
+
+  const nogit = differs(r("remote `origin`", "not a git repository"));
+  assert.equal(nogit.cmd, undefined); assert.equal(nogit.href, undefined); assert.equal(nogit.run, undefined);
+  assert.match(nogit.title, /git 리포가 아니/);
+
+  assert.equal(differs(r("remote `origin`", "not set — run `git remote add origin <url>`")).cmd, "git remote add origin <url>");
+  assert.equal(differs(r("branch `develop` on origin", "missing — run `git push origin develop`")).cmd, "git push origin develop");
+
+  const head = differs(r("origin default branch", "is `trunk`, not branches.base `develop` — new clones and review requests start from it", "warn"));
+  assert.match(head.title, /trunk/);
+  assert.equal(head.href, "/demo/settings");
+
+  assert.equal(differs(r("sign-in to `github`", "not signed in — run `gh auth login`")).cmd, "gh auth login");
+
+  const label = differs(r("label `Task`", "missing on github — create it on the forge", "warn"));
+  assert.equal(label.cmd, undefined); assert.equal(label.href, undefined); assert.equal(label.run, undefined);
+  const prot = differs(r("branch protection `main`", "not protected on github — only local hooks block direct pushes; protect it on the forge", "warn"));
+  assert.equal(prot.cmd, undefined); assert.equal(prot.href, undefined); assert.equal(prot.run, undefined);
+  assert.notEqual(prot.title, label.title);
+
+  const runner = differs(r("reviewer runner `codex`", "codex is not installed (roles.code-reviewer.runner = codex)"));
+  assert.match(runner.body, /codex is not installed/);
+  assert.equal(runner.href, "/demo/agents");
+
+  for (const line of [r("branch `develop` on origin", "could not check — git ls-remote failed", "warn"),
+                      r("labels", "could not check", "warn"),
+                      r("sign-in to `github`", "could not check", "warn")]) {
+    const x = differs(line);
+    assert.match(x.title, /확인하지 못했습니다/);
+  }
+});
+
+test("the remote call timeout defaults and limits match the CLI's", () => {
+  const cli = fs.readFileSync(new URL("../../bin/harness", import.meta.url), "utf8");
+  assert.equal(REMOTE_TIMEOUT_DEFAULT, Number(cli.match(/^DOCTOR_DEFAULTS = \{"remote_timeout": (\d+)\}$/m)?.[1]));
+  assert.equal(REMOTE_TIMEOUT_LIMIT, Number(cli.match(/^REMOTE_TIMEOUT_LIMIT = (\d+)$/m)?.[1]));
+});
+
+test("the remote call timeout comes from doctor.remote_timeout, else the default", () => {
+  assert.equal(remoteCallTimeoutMs({ doctor: { remote_timeout: 45 } }), 45_000);
+  assert.equal(remoteCallTimeoutMs({ doctor: { remote_timeout: 1 } }), 1_000);
+  assert.equal(remoteCallTimeoutMs({ doctor: { remote_timeout: 600 } }), 600_000);
+  for (const cfg of [null, {}, { doctor: {} }, { doctor: { remote_timeout: 0 } }, { doctor: { remote_timeout: -5 } },
+                     { doctor: { remote_timeout: 601 } }, { doctor: { remote_timeout: "45" } }, { doctor: { remote_timeout: 2.5 } },
+                     { doctor: { remote_timeout: true } }]) {
+    assert.equal(remoteCallTimeoutMs(cfg), REMOTE_TIMEOUT_DEFAULT * 1000, JSON.stringify(cfg));
+  }
+  const cfg = { doctor: { remote_timeout: 45 }, branches: { protected: ["main", "develop"] } };
+  assert.equal(remoteStatusTimeoutMs(cfg), 60_000 + 7 * 45_000);
+});
+
+test("remote status waits longer than every remote call timing out in turn", () => {
+  assert.equal(remoteCallLimit(null), 5);
+  assert.equal(remoteCallLimit({ branches: { protected: "main" } }), 5);
+  assert.equal(remoteCallLimit({ forge: { tracker: "github", review_host: "github" }, branches: { protected: ["main", "develop", "main"] } }), 7);
+
+  for (const cfg of [null, { branches: { protected: ["main", "develop"] } }, { branches: { protected: ["a", "b", "c", "d", "e", "f"] } },
+                     { doctor: { remote_timeout: 120 }, branches: { protected: ["main", "develop"] } }]) {
+    const t = remoteStatusTimeoutMs(cfg);
+    const perCall = (cfg?.doctor?.remote_timeout ?? REMOTE_TIMEOUT_DEFAULT) * 1000;
+    assert.ok(t > remoteCallLimit(cfg) * perCall, JSON.stringify(cfg));
+    assert.ok(t - remoteCallLimit(cfg) * perCall >= STATUS_TIMEOUT_MS, JSON.stringify(cfg));
+  }
+  assert.equal(remoteStatusTimeoutMs({ branches: { protected: ["main", "develop"] } }), 60_000 + 7 * 30_000);
 });

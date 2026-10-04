@@ -2,15 +2,20 @@
 """역할 하나를 그 역할의 CLI 러너로 한 번 돌린다 — 모든 CLI 러너 역할의 공용 실행기.
 
     script/run-agent.py <역할> [--out <파일>] [--prompt <지시>] [<입력> ...]
+    script/run-agent.py <역할> --check
 
 무엇을 어떻게 띄울지는 `script/harness.plan.json` 이 이미 정했다(harness.toml + 벤더 선언에서 생성).
 이 스크립트는 그 argv 에 결과 받는 인자와 프롬프트만 붙여 실행한다 — 벤더 이름으로 분기하지 않는다.
 
   --out      결과를 이 파일에 받는다. 벤더가 결과 파일 인자를 받으면 그것을 쓰고, 아니면 표준 출력을 옮긴다
   --prompt   지시를 통째로 준다. 없으면 역할 계약을 읽고 따르라는 기본 지시에 <입력> 을 붙인다
+  --check    역할을 실행하지 않고 그 러너가 설치·로그인되어 있는지만 본다. 다른 인자는 보지 않는다.
+             실행 계획의 auth_check 를 30초 제한으로 돌리고 그 출력은 버린다. 실행 지표를 남기지 않는다
   표준 입력은 그대로 넘어간다.
 
 종료 코드: 그 CLI 의 종료 코드 · 2 = 실행하지 못함(서브에이전트 역할, 설치 안 됨, 계획 없음)
+  --check: 0 = 준비됨(표준 출력 `signed-in`, 확인 명령이 없으면 `unchecked`) · 2 = 실행하지 못함
+           · 3 = 로그인되어 있지 않음 · 4 = 로그인을 확인하지 못함(제한 시간 초과·띄우지 못함)
 """
 import json
 import os
@@ -126,8 +131,11 @@ if not args or args[0].startswith("-"):
 role, rest = args[0], args[1:]
 out = prompt = None
 inputs = []
+check_only = "--check" in rest
 while rest:
     a = rest.pop(0)
+    if a == "--check":
+        continue
     if a in ("--out", "--prompt") and rest:
         if a == "--out":
             out = os.path.abspath(rest.pop(0))   # 아래에서 리포 루트로 옮겨 가도 같은 파일
@@ -149,6 +157,29 @@ if p["via"] != "headless":
          "        harness set roles.%s.runner <claude|codex>" % (role, p["vendor"], role))
 if not shutil.which(p["exe"]):
     fail("error: %s is not installed (roles.%s.runner = %s)" % (p["exe"], role, p["vendor"]))
+
+
+def check_sign_in():
+    """러너가 로그인되어 있는지 확인 명령의 종료 코드로만 본다. 그 명령의 출력은 옮기지 않는다."""
+    auth = p.get("auth_check") or []
+    if not auth:
+        print("unchecked")
+        sys.exit(0)
+    try:
+        r = subprocess.run(auth, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        print("error: could not check sign-in for %s" % p["vendor"], file=sys.stderr)
+        sys.exit(4)
+    if r.returncode != 0:
+        print("error: %s is not signed in (`%s` failed)" % (p["vendor"], " ".join(auth)), file=sys.stderr)
+        sys.exit(3)
+    print("signed-in")
+    sys.exit(0)
+
+
+if check_only:
+    check_sign_in()
 
 if prompt is None:
     prompt = ("당신은 이 리포의 %s 역할이다. 역할 계약 .ai/templates/%s.md 를 먼저 읽고 그대로 따른다. "

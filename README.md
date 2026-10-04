@@ -57,7 +57,8 @@ harness doctor
 
 `install` 은 하네스를 `<프로젝트>/.harness/` 에 넣고, 설정이 없으면 기본값을 깔아 프로젝트
 이름까지 채운 뒤 렌더한다. **기본값은 그 프로젝트의 사실이 아니다** — `harness doctor` 가
-무엇이 비어 있는지 알려 준다.
+무엇이 비어 있는지 알려 준다. 원격 준비(origin·base 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너)는
+`harness doctor --remote` 로 확인한다. 읽기만 하고 원격 설정을 바꾸지 않는다.
 
 **한 기기에 같은 리포는 하나만 설치한다.** 같은 `project.name` 이 아직 쓰이는 다른 경로에 등록돼
 있으면 `install` 이 거부한다 — 그 클론에서 `harness uninstall` 하거나 이 리포의 `project.name` 을
@@ -105,7 +106,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness install` | 하네스를 `.harness/` 에 넣고 렌더까지 |
 | `harness render` | 설정과 프로젝트 사실 → 생성 파일 |
 | `harness check` | 생성 파일이 설정과 일치하는지. pre-commit 이 `--staged` 로 부른다 |
-| `harness doctor` | 쓸 준비가 됐는지 — 설정·생성물·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅 |
+| `harness doctor [--remote] [--json]` | 쓸 준비가 됐는지 — 설정·생성물·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅. `--remote` 면 origin·base 브랜치·원격 기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너까지 읽기 전용으로 점검한다. `--json` 이면 결과를 JSON 으로 낸다 |
 | `harness set <절.키> <값> ...` | 설정 값을 (여러 쌍이면 함께) 바꾸고 렌더까지. 성립하지 않으면 되돌린다 |
 | `harness steps [<절차> <JSON>]` | 절차의 단계를 JSON 으로 보거나, 한 절차의 단계를 통째로 바꾸고 렌더까지. `--dry-run` 이면 검사만 |
 | `harness checks [<JSON>]` | 검증 검사(`[verify]`)를 JSON 으로 보거나 통째로 바꾸고 렌더까지 |
@@ -115,7 +116,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness server-status` | 웹 UI 가 떠서 응답하는지 한 줄로. 떠 있으면 종료 코드 0, 아니면 1 |
 | `harness tools [--sync]` | 이 기기에 설치된 에이전트 CLI·결정 기록 도구. 결과는 `~/.harness/tools.json` |
 | `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). UI 가 선택지를 그린다 |
-| `harness status` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git |
+| `harness status [--remote]` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git. `--remote` 를 받아 doctor 에 넘긴다 |
 | `harness uninstall` | 하네스가 깐 것만 지운다. `--purge` 면 소유 파일과 설정도 (확인을 받는다) |
 | `harness metrics [import\|prune] [--since 7d] [--trace ID]` | 실행 지표 집계(JSON, Metrics 탭이 읽는다). `import` 는 새 대화 기록의 사용량을 먼저 가져오고, `prune` 은 보관 기간·용량 상한을 적용한다 |
 | `harness vars` | 템플릿 변수 출력(디버깅용) |
@@ -186,7 +187,7 @@ UI 자체를 고칠 때는 `harness start-server --dev` 가 지금 터미널에�
 | Workflows | 단계 블럭을 끌어 순서 바꾸기·끼우기·빼기, 고른 블럭 하나를 우측 패널에서 편집 | `harness steps` (편집 중에는 `--dry-run` 으로 검사만) · `harness set` |
 | Agents | 역할 카드를 넘겨 보고, 역할 계약(읽기 전용)과 이 프로젝트의 지시(`.ai/project/roles/<역할>.md`)를 본다·고친다 | 파일 쓰기 후 `harness render` · `harness set` |
 | Metrics | 토큰·실행 시간·상태·단계별 사용량·실패 로그. 열 때마다 새 대화 기록을 가져온다 | `harness metrics import` (읽기만) |
-| Doctor | `doctor` 결과를 절별로, 막힌 것부터. 정해 둔 조치는 ▷ 로 바로 실행 | `harness status` · 조치별 명령 |
+| Doctor | `doctor` 결과를 절별로, 막힌 것부터. 정해 둔 조치는 ▷ 로 바로 실행. 원격 점검은 `원격까지 점검` 을 누를 때만 돈다 — 홈은 원격을 점검하지 않는다 | `harness status` · `harness status --remote` · 조치별 명령 |
 
 UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌림·렌더는 CLI 가 한다.
 
@@ -244,6 +245,7 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `permissions.allow_push` | `.claude/settings.json` 의 허용 목록에 `git push` 를 넣는지 |
 | `usage.log_path` · `env_var` | 기록·집계 스크립트, 회고 절차 |
 | `worktree.dir` · `include` | 생성 파일은 없다. `harness run --worktree` · `doctor` · 세션 가져오기가 읽는다 |
+| `doctor.remote_timeout` | 생성 파일은 없다. `doctor --remote` 의 원격 호출 하나에 주는 시간(초, 1~600, 기본 30)이고, UI 의 원격 점검은 이 값으로 기다릴 시간을 정한다 |
 | `workflows.<절차>.steps` | `.ai/workflows/<절차>.md` — 단계 순서·종류(`type`)·제목. 없으면 하네스 기본값. 절차 끝에 붙일 지시는 `.ai/project/workflows/<절차>.md` |
 
 `invariants.distinct_reviewer` 는 파일을 만들지 않고 **render 를 막는다.** 구현자와 리뷰어의
@@ -314,7 +316,7 @@ src/test/render-test.sh
 | 대상 | 어댑터 | 실제 forge 검증 |
 |---|---|---|
 | GitLab (`glab`) | 이슈·리뷰 양쪽 | **미검증** |
-| GitHub (`gh`) | 이슈·리뷰 양쪽 | 계약 13종 통과 |
+| GitHub (`gh`) | 이슈·리뷰 양쪽 | 계약 17종 통과 |
 | Jira (`jira`) | **이슈만** | **미검증** |
 
 `forge.tracker` 와 `forge.review_host` 는 따로 고른다. **Jira 는 리뷰 호스트가 될 수 없다** —
@@ -329,7 +331,7 @@ Jira 는 이슈 식별자가 번호가 아니라 키(`PROJ-12`)다. `commit.issu
 어댑터를 한 줄도 타지 않는다.
 
 ```bash
-script/forge-selftest.sh <리뷰요청번호> <이슈번호>                 # 읽기 9종, 흔적 없음
+script/forge-selftest.sh <리뷰요청번호> <이슈번호>                 # 읽기 13종, 흔적 없음
 script/forge-selftest.sh --write <리뷰요청번호> <이슈번호>          # + 쓰기 3종, 댓글 2건이 남는다
 script/forge-selftest.sh --create-issue <리뷰요청번호> <이슈번호>   # + 이슈 1건, 되돌릴 수 없다
 ```
