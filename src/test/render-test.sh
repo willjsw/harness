@@ -1983,11 +1983,21 @@ print(items == d["items"], len(items) > 0, d["bad"] == sum(i["state"] == "bad" f
       d["warn"] == sum(i["state"] == "warn" for i in items))
 PY
 }
+no_hangul() { # no_hangul <파일> <설명> — 터미널 출력에 한글이 없는지 본다
+  python3 - "$1" > "$1.hits" <<'HANGUL'
+import re, sys
+for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
+    if re.search(r"[가-힣]", line):
+        print(f"{n}: {line.rstrip()}")
+HANGUL
+  if [ -s "$1.hits" ]; then bad "Korean is in $2: $(head -1 "$1.hits")"; else ok; fi
+}
 t="$work/doclist"; setup "$t"
 PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dl.txt" 2>&1; check "doctor with failures exits 1" "$?" "1"
 PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/dl.json" 2>&1; check "status exits 0" "$?" "0"
 grep -q '^  FAIL ' "$work/dl.txt" && grep -q '^  warn ' "$work/dl.txt" && ok || bad "the mixed repo does not have both failures and warnings"
 check "status items are the doctor text lines, in order" "$(doc_lines "$work/dl.txt" "$work/dl.json" status)" "True True True True"
+no_hangul "$work/dl.txt" "doctor output"
 python3 - "$work/dl.json" > "$work/dl.keys" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -2016,6 +2026,37 @@ with contextlib.redirect_stdout(buf):
 print(repr(buf.getvalue()), len(items) > 0, [i["section"] for i in items][0], [i["section"] for i in items][-1])
 PY
 check "the collection writes nothing to standard output" "$(cat "$work/dl.quiet")" "'' True config git"
+
+echo "UT-78 doctor --json prints the same items as one JSON object, with the same exit code"
+t="$work/doclist"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dj.txt" 2>/dev/null; rc_text=$?
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --json --target "$t" > "$work/dj.json" 2>/dev/null; rc_json=$?
+check "text and JSON exit codes match where something fails" "$rc_json:$rc_text" "1:1"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sorted(d))' "$work/dj.json" > "$work/dj.keys" 2>&1
+check "standard output is one JSON object" "$(cat "$work/dj.keys")" "['bad', 'items', 'warn']"
+check "each JSON item is one text line, and the counts match" "$(doc_lines "$work/dj.txt" "$work/dj.json" doctor)" "True True True True"
+PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/dj.status" 2>/dev/null
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["doctor"] == json.load(open(sys.argv[2])))' "$work/dj.status" "$work/dj.json" > "$work/dj.same"
+check "status carries what doctor --json prints" "$(cat "$work/dj.same")" "True"
+no_hangul "$work/dj.json" "doctor --json output"
+t="$work/docready"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > /dev/null 2>&1; rc_text=$?
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --json --target "$t" > "$work/dj.ready" 2>/dev/null; rc_json=$?
+check "text and JSON exit codes match where nothing fails" "$rc_json:$rc_text" "0:0"
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bad"])' "$work/dj.ready" > "$work/dj.bad" 2>&1
+check "the ready repo has no failing item" "$(cat "$work/dj.bad")" "0"
+"$root/bin/harness" help > "$work/dj.help" 2>&1
+grep -E '^  harness doctor +\[--json\]' "$work/dj.help" >/dev/null && ok || bad "help does not list --json for doctor"
+# 고정 사본이 있는 대상에서는 전역 CLI 가 인자를 그대로 넘긴다
+t="$work/pinjson"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install the pinned repo"
+[ -x "$t/.harness/bin/harness" ] && ok || bad "install did not pin a copy"
+"$root/bin/harness" doctor --json --target "$t" > "$work/dj.pin" 2>/dev/null; rc_glob=$?
+"$t/.harness/bin/harness" doctor --target "$t" > /dev/null 2>&1; rc_pin=$?
+python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))))' "$work/dj.pin" > "$work/dj.pinkeys" 2>&1
+check "the delegated doctor --json prints one JSON object" "$(cat "$work/dj.pinkeys")" "['bad', 'items', 'warn']"
+check "the delegated exit code is the pinned copy's" "$rc_glob" "$rc_pin"
+"$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1
 
 echo
 if [ "$fail" -eq 0 ]; then
