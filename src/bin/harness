@@ -1703,19 +1703,23 @@ def same_checkout_position(a: Path, b: Path) -> bool:
     return pa is not None and pa == checkout_position(b)
 
 
-def cmd_doctor(cfg, target, _args):
-    """쓸 준비가 됐는지 본다. 설정 자체는 여기 오기 전에 이미 검증됐다."""
+def doctor_items(cfg, target, remote=False):
+    """쓸 준비가 됐는지 본 결과 — `{"section", "state", "what", "detail"}` 목록. 표준 출력에 쓰지 않는다.
+
+    목록의 순서가 출력 순서다. 설정 자체는 여기 오기 전에 이미 검증됐다.
+    """
     v = derive(cfg)
-    bad = warn = 0
+    items = []
+    sec = ""
+
+    def section(name):
+        nonlocal sec
+        sec = name
 
     def line(state, what, detail=""):
-        nonlocal bad, warn
-        mark = {"ok": "  ok  ", "warn": "  warn", "bad": "  FAIL"}[state]
-        bad += state == "bad"
-        warn += state == "warn"
-        print("%s %s%s" % (mark, what, ("  — " + detail) if detail else ""))
+        items.append({"section": sec, "state": state, "what": what, "detail": detail})
 
-    print("config")
+    section("config")
     line("ok", "harness.toml is valid")
     for rev, dev in distinct_pairs(cfg):
         line("ok", "%s (%s) differs from %s (%s)" % (dev, vendor(cfg, dev), rev, vendor(cfg, rev)))
@@ -1739,14 +1743,14 @@ def cmd_doctor(cfg, target, _args):
             line("warn", "roles.%s.model = %s" % (n, cfg["roles"][n]["model"]),
                  "not a model of %s on this machine (harness tools --sync to refresh)" % vendor(cfg, n))
 
-    print("\ngenerated files")
+    section("generated files")
     diff = drift(cfg, target)
     if diff:
         line("bad", "%d files differ from the config" % len(diff), "run `harness render`")
     else:
         line("ok", "%d files match the config" % len(plan(cfg, target)))
 
-    print("\nproject facts")
+    section("project facts")
     for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
                       for p in (TEMPLATES / "owned").rglob("*") if p.is_file()):
         f = target / rel
@@ -1759,7 +1763,7 @@ def cmd_doctor(cfg, target, _args):
         else:
             line("ok", rel)
 
-    print("\nverification")
+    section("verification")
     if legacy_verify(target):
         # 손으로 쓴 스크립트가 있으면 run-lint-test.sh 가 그것을 돈다 — 옮기기 전까지 동작을 바꾸지 않는다
         r = subprocess.run(["bash", LEGACY_VERIFY], capture_output=True, cwd=target, env=QUIET_ENV())
@@ -1780,7 +1784,7 @@ def cmd_doctor(cfg, target, _args):
     if (target / LEGACY_COMMANDS).is_file() and any(cfg["commands"].values()):
         line("warn", "%s is no longer read" % LEGACY_COMMANDS, "[commands] in harness.toml replaced it — delete the file")
 
-    print("\nreferences")
+    section("references")
     dr = dangling_roles(cfg, target)
     if dr:
         for name, rel, ln in dr:
@@ -1797,7 +1801,7 @@ def cmd_doctor(cfg, target, _args):
     else:
         line("ok", "every path a document names exists")
 
-    print("\ntools and connections")
+    section("tools and connections")
     for cli in v["FORGE_CLIS"].split():
         line("ok" if shutil.which(cli) else "bad", "forge CLI `%s`" % cli,
              "" if shutil.which(cli) else "not installed")
@@ -1816,7 +1820,7 @@ def cmd_doctor(cfg, target, _args):
         line("ok" if shutil.which(exe) else "warn", "decision-record tool `%s`" % t,
              "" if shutil.which(exe) else "`%s` is not installed" % exe)
 
-    print("\nregistry")
+    section("registry")
     name = cfg["project"]["name"]
     at = registered_path(name)
     if at is None:
@@ -1826,7 +1830,7 @@ def cmd_doctor(cfg, target, _args):
     else:
         line("warn", "`%s` is registered to another path" % name, at)
 
-    print("\ngit")
+    section("git")
     hp = hooks_path(target)
     line("ok" if hp == "script/githooks" else "bad", "git hooks enabled",
          "" if hp == "script/githooks" else "run `git config core.hooksPath script/githooks`")
@@ -1841,7 +1845,34 @@ def cmd_doctor(cfg, target, _args):
                 "missing": "missing — run `git worktree prune`"}[state])
         if not left:
             line("ok", "no worktrees left")
+    return items
 
+
+def doctor_counts(items):
+    return (sum(i["state"] == "bad" for i in items), sum(i["state"] == "warn" for i in items))
+
+
+def doctor_json(items):
+    bad, warn = doctor_counts(items)
+    return {"bad": bad, "warn": warn, "items": items}
+
+
+def doctor_text(items):
+    """항목 목록을 절마다 그린다. 항목이 없는 절은 제목도 없다."""
+    mark = {"ok": "  ok  ", "warn": "  warn", "bad": "  FAIL"}
+    sec = None
+    for i in items:
+        if i["section"] != sec:
+            print(("\n" if sec is not None else "") + i["section"])
+            sec = i["section"]
+        print("%s %s%s" % (mark[i["state"]], i["what"], ("  — " + i["detail"]) if i["detail"] else ""))
+
+
+def cmd_doctor(cfg, target, _args):
+    """쓸 준비가 됐는지 보고한다. 종료 코드는 실패 항목이 있으면 1."""
+    items = doctor_items(cfg, target)
+    bad, warn = doctor_counts(items)
+    doctor_text(items)
     print()
     sys.stdout.flush()
     if bad:
@@ -2524,22 +2555,9 @@ def cmd_metrics(cfg, target, args):
 
 
 def cmd_status(cfg, target, args):
-    """`harness status` — 홈 화면용 프로젝트 상태(JSON). 검사를 새로 만들지 않고 check·doctor 를 그대로 돌려 읽는다.
-
-    doctor 의 한 줄은 `  ok   무엇  — 설명` 이고 절 제목 아래에 모인다. 그 구조를 그대로 옮긴다.
-    """
+    """`harness status` — 홈 화면용 프로젝트 상태(JSON). 검사를 새로 만들지 않고 doctor 의 항목 목록과 check 를 쓴다."""
     import contextlib, io
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
-        cmd_doctor(cfg, target, args)
-    items, section = [], ""
-    for ln in buf.getvalue().splitlines():
-        m = re.match(r"  (ok  |warn|FAIL) (.+?)(?:  — (.*))?$", ln)
-        if m:
-            items.append({"section": section, "state": {"ok  ": "ok", "warn": "warn", "FAIL": "bad"}[m.group(1)],
-                          "what": m.group(2).strip(), "detail": m.group(3) or ""})
-        elif ln and not ln.startswith(" ") and "·" not in ln:
-            section = ln.strip()
+    items = doctor_items(cfg, target)
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         check_ok = cmd_check(cfg, target, argparse.Namespace(staged=False)) == 0
     # 설정 진행도: 소유 문서 중 자리표시자가 남지 않은 것
@@ -2554,8 +2572,7 @@ def cmd_status(cfg, target, args):
     print(json.dumps({
         "version": v.read_text(encoding="utf-8").strip() if v.is_file() else "",
         "check_ok": check_ok,
-        "doctor": {"bad": sum(i["state"] == "bad" for i in items), "warn": sum(i["state"] == "warn" for i in items),
-                   "items": items},   # 통과한 줄도 싣는다 — Doctor 화면이 절마다 통과 수를 보인다
+        "doctor": doctor_json(items),   # 통과한 줄도 싣는다 — Doctor 화면이 절마다 통과 수를 보인다
         "facts": {"total": len(facts), "filled": len([f for f in facts if f not in todo])},
         "git": {"branch": git("branch", "--show-current"), "dirty": bool(git("status", "--porcelain")),
                 "last_commit": git("log", "-1", "--format=%cI")},

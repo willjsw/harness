@@ -1955,6 +1955,68 @@ while IFS= read -r line; do
   esac
 done < "$work/uistate.out"
 
+echo "UT-77 doctor collects its checks into one list; the text and status are drawn from it"
+# forge CLI 는 PATH 앞의 빈 스텁이다 — 설치 확인만 지나면 된다.
+stub59="$work/stub59"; mkdir -p "$stub59"; printf '#!/bin/sh\nexit 0\n' > "$stub59/gh"; chmod +x "$stub59/gh"
+ready() { # ready <대상> — FAIL 없이 경고만 남는 git 리포 하나를 만든다
+  setup "$1"
+  "$root/bin/harness" set --target "$1" forge.tracker github forge.review_host github commands.test true >/dev/null 2>&1 \
+    || bad "$1: could not configure the ready repo"
+  ( cd "$1" && git init -q -b development . && git add -A && git -c user.email=t@t -c user.name=t commit -qm init \
+    && git config core.hooksPath script/githooks ) || bad "$1: could not commit the ready repo"
+}
+doc_lines() { # doc_lines <doctor 텍스트> <JSON 파일> <status|doctor> — 텍스트의 항목 줄과 JSON 의 항목을 견준다
+  python3 - "$@" <<'PY'
+import json, re, sys
+text, data, kind = sys.argv[1:4]
+items, sec = [], ""
+for ln in open(text, encoding="utf-8").read().splitlines():
+    m = re.match(r"  (ok  |warn|FAIL) (.+?)(?:  — (.*))?$", ln)
+    if m:
+        items.append({"section": sec, "state": {"ok  ": "ok", "warn": "warn", "FAIL": "bad"}[m.group(1)],
+                      "what": m.group(2), "detail": m.group(3) or ""})
+    elif ln and not ln.startswith(" "):
+        sec = ln
+d = json.load(open(data, encoding="utf-8"))
+d = d["doctor"] if kind == "status" else d
+print(items == d["items"], len(items) > 0, d["bad"] == sum(i["state"] == "bad" for i in items),
+      d["warn"] == sum(i["state"] == "warn" for i in items))
+PY
+}
+t="$work/doclist"; setup "$t"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dl.txt" 2>&1; check "doctor with failures exits 1" "$?" "1"
+PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/dl.json" 2>&1; check "status exits 0" "$?" "0"
+grep -q '^  FAIL ' "$work/dl.txt" && grep -q '^  warn ' "$work/dl.txt" && ok || bad "the mixed repo does not have both failures and warnings"
+check "status items are the doctor text lines, in order" "$(doc_lines "$work/dl.txt" "$work/dl.json" status)" "True True True True"
+python3 - "$work/dl.json" > "$work/dl.keys" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(sorted(d), sorted(d["doctor"]), sorted({tuple(sorted(i)) for i in d["doctor"]["items"]}), sorted(d["facts"]))
+PY
+check "status keys stay the same" "$(cat "$work/dl.keys")" \
+  "['check_ok', 'custom', 'doctor', 'facts', 'git', 'version'] ['bad', 'items', 'warn'] [('detail', 'section', 'state', 'what')] ['filled', 'total']"
+printf '# stack\n\nPython 3.11\n' > "$t/.ai/project/stack.md"
+"$root/bin/harness" status --target "$t" | python3 -c 'import json,sys; d=json.load(sys.stdin)["facts"]; print(d["total"], d["filled"])' > "$work/dl.facts"
+check "a filled fact counts toward the progress" "$(cat "$work/dl.facts")" "7 1"
+t="$work/docready"; ready "$t"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" > "$work/dr.txt" 2>&1; check "doctor without failures exits 0" "$?" "0"
+grep -q '^  FAIL ' "$work/dr.txt" && bad "the ready repo still fails: $(grep '^  FAIL ' "$work/dr.txt" | head -1)" || ok
+# 수집 함수는 표준 출력에 쓰지 않는다
+python3 - "$root/bin/harness" "$t" > "$work/dl.quiet" 2>&1 <<'PY'
+import contextlib, importlib.machinery, importlib.util, io, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    items = h.doctor_items(cfg, target, False)
+print(repr(buf.getvalue()), len(items) > 0, [i["section"] for i in items][0], [i["section"] for i in items][-1])
+PY
+check "the collection writes nothing to standard output" "$(cat "$work/dl.quiet")" "'' True config git"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
