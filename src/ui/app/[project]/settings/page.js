@@ -16,7 +16,7 @@ const READONLY = new Set(["harness.version"]);
 // 절을 의미로 묶는다. 여기 없는 절(설정에 새로 생긴 것)은 "기타" 로 간다.
 const GROUPS = [
   ["general", "General", ["harness", "project", "usage"]],
-  ["scm", "Source Control", ["branches", "commit"]],
+  ["scm", "Source Control", ["branches", "commit", "permissions"]],
   ["review", "Code Review", ["review", "mr", "invariants"]],
   ["integrations", "Integrations", ["forge", "issues"]],
   ["documents", "Documents", ["docs", "adr"]],
