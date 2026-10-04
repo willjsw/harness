@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -1894,31 +1895,74 @@ def doctor_items(cfg, target, remote=False):
 
 
 REMOTE_UNCHECKED = "could not check"
-# 리뷰어 러너 확인에 더 주는 시간(초). 그 안의 로그인 확인 명령이 doctor.remote_timeout 을 다 쓰므로,
-# 실행기를 띄우고 계획을 읽는 몫을 더해 바깥 호출이 안쪽 제한보다 먼저 끊지 않게 한다.
-RUNNER_CHECK_GRACE = 5
+# 리뷰어 러너 확인은 실행기가 로그인 확인 명령을 띄우기 직전에 알린 뒤로 doctor.remote_timeout 의 이 배수만큼 기다린다.
+# 실행기가 그 명령을 같은 제한 시간에 끊고 0/3/4 로 끝나므로, 하나는 그 제한 몫이고 하나는 결과를 내고 끝나는 몫이다.
+RUNNER_CHECK_AFTER_START = 2
+# 실행기가 로그인 확인 직전에 한 바이트를 쓰는 파일 기술자 번호를 넘기는 환경 변수
+CHECK_START_FD_ENV = "HARNESS_CHECK_START_FD"
 
 
-def remote_call(cfg, argv, cwd, grace=0):
-    """원격에 닿는 호출 하나 — 표준 입력을 닫고 제어 터미널 없이 띄운다. 자격증명 입력을 기다리며 멈추지 않는다.
+def remote_env():
+    return dict(os.environ, GIT_TERMINAL_PROMPT="0", HARNESS_METRICS="off")
 
-    제한 시간은 doctor.remote_timeout(초)에 grace 를 더한 것이다. 띄우지 못했거나 그 시간을 넘기면 None.
-    출력은 판정에만 쓰고 결과 문구로 옮기지 않는다.
-    """
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", HARNESS_METRICS="off")
+
+def remote_finish(p, argv, timeout):
+    """띄운 호출을 timeout(초) 안에 끝까지 읽는다. 넘기면 그 프로세스 그룹을 죽이고 None."""
     try:
-        p = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
-    except OSError:
-        return None
-    try:
-        out, err = p.communicate(timeout=cfg["doctor"]["remote_timeout"] + grace)
+        out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(p.pid, signal.SIGKILL)
         p.communicate()
         return None
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
+def remote_call(cfg, argv, cwd):
+    """원격에 닿는 호출 하나 — 표준 입력을 닫고 제어 터미널 없이 띄운다. 자격증명 입력을 기다리며 멈추지 않는다.
+
+    제한 시간은 doctor.remote_timeout(초)이다. 띄우지 못했거나 그 시간을 넘기면 None.
+    출력은 판정에만 쓰고 결과 문구로 옮기지 않는다.
+    """
+    try:
+        p = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=remote_env(), start_new_session=True)
+    except OSError:
+        return None
+    return remote_finish(p, argv, cfg["doctor"]["remote_timeout"])
+
+
+def runner_check_call(cfg, argv, cwd):
+    """`run-agent.py --check` 호출 — 바깥 제한이 실행기 안의 로그인 확인보다 먼저 끝나지 않게 두 단계로 기다린다.
+
+    실행기는 로그인 확인 명령을 띄우기 직전에 넘겨받은 파일 기술자에 한 바이트를 쓴다. 그 알림까지는
+    doctor.remote_timeout 을 기다린다 — 그 전의 일(실행기 기동 · 계획 읽기)은 원격에 닿지 않는다. 알림 뒤로는
+    그 제한의 RUNNER_CHECK_AFTER_START 배를 기다린다. 알림 없이 끝난 실행기(확인 명령 없음 · 실행하지 못함)는
+    끝난 것을 읽는다. 어느 단계든 넘기면 None — 실행기가 제한 시간을 넘겼다고 낸 결과(4)와 같게 다룬다.
+    """
+    limit = cfg["doctor"]["remote_timeout"]
+    rfd, wfd = os.pipe()
+    try:
+        p = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=dict(remote_env(), **{CHECK_START_FD_ENV: str(wfd)}),
+                             pass_fds=(wfd,), start_new_session=True)
+    except OSError:
+        os.close(rfd)
+        os.close(wfd)
+        return None
+    os.close(wfd)
+    try:
+        ready = select.select([rfd], [], [], limit)[0]
+        started = os.read(rfd, 1) if ready else None
+    finally:
+        os.close(rfd)
+    if started is None:
+        with contextlib.suppress(OSError):
+            os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        return None
+    # 빈 바이트면 알림 없이 쓰는 쪽이 닫혔다 — 실행기가 끝났다
+    return remote_finish(p, argv, limit * RUNNER_CHECK_AFTER_START if started else limit)
 
 
 def ls_remote(cfg, target, branches):
@@ -2045,7 +2089,7 @@ def remote_reviewer_items(cfg, target, line):
     if not runner.is_file():
         line("bad", what, "`%s` is missing — run `harness render`" % RUN_AGENT)
         return
-    r = remote_call(cfg, [sys.executable, str(runner), REVIEWER, "--check"], target, grace=RUNNER_CHECK_GRACE)
+    r = runner_check_call(cfg, [sys.executable, str(runner), REVIEWER, "--check"], target)
     out = r.stdout.strip() if r is not None else ""
     if r is not None and r.returncode == 0 and out == "signed-in":
         line("ok", what, "signed in")

@@ -17,14 +17,14 @@ export const SECTIONS = {
 // `status --remote` 에 줄 실행 제한(ms). 원격 점검은 호출을 순차로 하고 호출 하나를 설정의
 // doctor.remote_timeout(초)에 끊는다 — 원격이 모두 응답하지 않으면 호출 수 × 그 제한이 걸린 뒤에야
 // 확인하지 못한 줄을 낸다. 호출 수의 상한은 ls-remote 1 · forge 로그인 최대 2(트래커 · 리뷰 호스트) ·
-// 라벨 1 · 보호 브랜치마다 1 · 리뷰어 러너 1 이다. 리뷰어 러너 호출은 그 제한에 실행기 기동 몫을 더 받는다.
-// 로컬 점검 몫으로 기본 제한을 더한다.
+// 라벨 1 · 보호 브랜치마다 1 · 리뷰어 러너 1 이다. 리뷰어 러너 호출은 실행기가 로그인 확인을 시작했다고
+// 알리기까지 그 제한 하나, 알린 뒤로 그 제한의 RUNNER_CHECK_AFTER_START 배를 기다린다. 로컬 점검 몫으로 기본 제한을 더한다.
 export const STATUS_TIMEOUT_MS = 60_000;
 // doctor.remote_timeout 의 기본값과 상한(초). CLI 의 DOCTOR_DEFAULTS · REMOTE_TIMEOUT_LIMIT 과 같다
 export const REMOTE_TIMEOUT_DEFAULT = 30;
 export const REMOTE_TIMEOUT_LIMIT = 600;
-// 리뷰어 러너 호출이 더 받는 시간(초). CLI 의 RUNNER_CHECK_GRACE 와 같다
-export const RUNNER_CHECK_GRACE = 5;
+// 리뷰어 러너 호출이 로그인 확인 시작 알림 뒤로 기다리는 호출 제한의 배수. CLI 의 RUNNER_CHECK_AFTER_START 와 같다
+export const RUNNER_CHECK_AFTER_START = 2;
 
 // 설정의 호출 하나 제한(ms). 없거나 CLI 가 받지 않을 값이면 기본값 — 그때 CLI 는 설정 검증에서 멈춘다
 export function remoteCallTimeoutMs(cfg) {
@@ -41,7 +41,7 @@ export function remoteCallLimit(cfg) {
 }
 
 export function remoteStatusTimeoutMs(cfg) {
-  return STATUS_TIMEOUT_MS + remoteCallLimit(cfg) * remoteCallTimeoutMs(cfg) + RUNNER_CHECK_GRACE * 1000;
+  return STATUS_TIMEOUT_MS + (remoteCallLimit(cfg) + RUNNER_CHECK_AFTER_START) * remoteCallTimeoutMs(cfg);
 }
 
 // 원격 절의 줄. 확인하지 못한 줄은 항목마다 다르지 않다 — 다시 점검하는 것 말고는 할 일이 없다
