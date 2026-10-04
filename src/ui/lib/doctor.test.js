@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { explain, SECTIONS } from "./doctor.js";
+import fs from "node:fs";
+import { explain, SECTIONS, STATUS_TIMEOUT_MS, REMOTE_CALL_TIMEOUT_MS, remoteCallLimit, remoteStatusTimeoutMs } from "./doctor.js";
 
 test("explain", () => {
   const b = "/demo";
@@ -66,4 +67,21 @@ test("explain remote lines", () => {
     const x = differs(line);
     assert.match(x.title, /확인하지 못했습니다/);
   }
+});
+
+test("remote status waits longer than every remote call timing out in turn", () => {
+  const cli = fs.readFileSync(new URL("../../bin/harness", import.meta.url), "utf8");
+  const perCall = Number(cli.match(/^REMOTE_TIMEOUT = (\d+)$/m)?.[1]) * 1000;
+  assert.equal(REMOTE_CALL_TIMEOUT_MS, perCall);
+
+  assert.equal(remoteCallLimit(null), 5);
+  assert.equal(remoteCallLimit({ branches: { protected: "main" } }), 5);
+  assert.equal(remoteCallLimit({ forge: { tracker: "github", review_host: "github" }, branches: { protected: ["main", "develop", "main"] } }), 7);
+
+  for (const cfg of [null, { branches: { protected: ["main", "develop"] } }, { branches: { protected: ["a", "b", "c", "d", "e", "f"] } }]) {
+    const t = remoteStatusTimeoutMs(cfg);
+    assert.ok(t > remoteCallLimit(cfg) * perCall, JSON.stringify(cfg));
+    assert.ok(t - remoteCallLimit(cfg) * perCall >= STATUS_TIMEOUT_MS, JSON.stringify(cfg));
+  }
+  assert.equal(remoteStatusTimeoutMs({ branches: { protected: ["main", "develop"] } }), 60_000 + 7 * 30_000);
 });
