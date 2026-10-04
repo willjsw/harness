@@ -1703,6 +1703,22 @@ def same_checkout_position(a: Path, b: Path) -> bool:
     return pa is not None and pa == checkout_position(b)
 
 
+# 사실 문서의 채우지 않은 자리. 본문에 낱말 TBD 가 따로 나오는 것은 자리표시자가 아니다.
+PLACEHOLDER = "<!-- TBD"
+# 어댑터 머리글의 검증 상태 표지. 머리글 밖의 주석·코드에 나오는 같은 낱말은 판정에 쓰지 않는다.
+ADAPTER_UNVERIFIED = "검증 상태: 미검증"
+
+
+def adapter_header(text: str) -> str:
+    """어댑터 파일의 머리글 — 1행부터 `#` 로 시작하는 줄이 이어지는 첫 주석 덩어리."""
+    head = []
+    for ln in text.splitlines():
+        if not ln.startswith("#"):
+            break
+        head.append(ln)
+    return "\n".join(head)
+
+
 def doctor_items(cfg, target, remote=False):
     """쓸 준비가 됐는지 본 결과 — `{"section", "state", "what", "detail"}` 목록. 표준 출력에 쓰지 않는다.
 
@@ -1757,7 +1773,7 @@ def doctor_items(cfg, target, remote=False):
         if not f.is_file():
             line("bad", rel, "missing")
             continue
-        n = f.read_text(encoding="utf-8").count("TBD")
+        n = f.read_text(encoding="utf-8").count(PLACEHOLDER)
         if n:
             line("warn", rel, "%d placeholder(s) still to fill" % n)
         else:
@@ -1809,7 +1825,7 @@ def doctor_items(cfg, target, remote=False):
         a = target / "script" / "forge" / ("%s.sh" % kind)
         if not a.is_file():
             line("bad", "adapter `%s`" % kind, "file is missing")
-        elif "미검증" in a.read_text(encoding="utf-8"):
+        elif ADAPTER_UNVERIFIED in adapter_header(a.read_text(encoding="utf-8")):
             line("warn", "adapter `%s`" % kind,
                  "unverified — run `script/forge-selftest.sh`")
         else:

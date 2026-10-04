@@ -2058,6 +2058,31 @@ check "the delegated doctor --json prints one JSON object" "$(cat "$work/dj.pink
 check "the delegated exit code is the pinned copy's" "$rc_glob" "$rc_pin"
 "$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1
 
+echo "UT-79 placeholders and unverified adapters are judged by their markers only"
+t="$work/markers"; setup "$t"
+item() { # item <대상> <what> — doctor --json 에서 그 항목의 state 와 detail
+  "$root/bin/harness" doctor --json --target "$1" 2>/dev/null | python3 -c '
+import json, sys
+hit = [i for i in json.load(sys.stdin)["items"] if i["what"] == sys.argv[1]]
+print("%s|%s" % (hit[0]["state"], hit[0]["detail"]) if hit else "none")' "$2"
+}
+printf '# stack\n\nTBD 라는 낱말은 본문에 남아도 된다. Python 3.11\n' > "$t/.ai/project/stack.md"
+check "the word TBD alone is not a placeholder" "$(item "$t" .ai/project/stack.md)" "ok|"
+printf '# stack\n\n- 언어 <!-- TBD: 확인 필요 -->\n- 버전 <!-- TBD -->\n- TBD\n' > "$t/.ai/project/stack.md"
+check "two placeholders are counted" "$(item "$t" .ai/project/stack.md)" "warn|2 placeholder(s) still to fill"
+a="$t/script/forge/gitlab.sh"; cp "$a" "$work/markers.adapter"
+check "a header marker leaves the adapter unverified" "$(item "$t" 'adapter `gitlab`')" "warn|unverified — run \`script/forge-selftest.sh\`"
+grep -v '검증 상태: 미검증' "$work/markers.adapter" > "$a"; printf '\n# 이 분기는 아직 미검증이다\n' >> "$a"
+check "unverified in a body comment is not the marker" "$(item "$t" 'adapter `gitlab`')" "ok|"
+{ sed -n '1,2p' "$work/markers.adapter"; printf '\n# 검증 상태: 미검증\n'; sed -n '3,$p' "$work/markers.adapter" | grep -v '검증 상태: 미검증'; } > "$a"
+check "the marker after the first comment block is not the header" "$(item "$t" 'adapter `gitlab`')" "ok|"
+cp "$work/markers.adapter" "$a"
+grep -c 'ADAPTER_UNVERIFIED = "검증 상태: 미검증"' "$root/bin/harness" > "$work/markers.const"
+check "the header marker is one constant in the CLI" "$(cat "$work/markers.const")" "1"
+check "the marker string appears once in the CLI" "$(grep -c '검증 상태: 미검증' "$root/bin/harness")" "1"
+has "$root/templates/managed/script/forge/_common.sh" '머리글의 `검증 상태:` 줄이 검증 상태의 표지다' "the adapter contract does not name the header marker"
+unset -f item
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
