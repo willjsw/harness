@@ -18,6 +18,10 @@
 #   tracker_issue_note <id> <본문>          이슈 댓글 1건
 #   tracker_issue_close <id> <라벨>         이슈를 닫는다. 라벨이 비지 않으면 함께 붙인다
 #   tracker_current_user                    현재 사용자명 한 줄
+#   tracker_auth                            로그인 확인. 되면 0. 안 되면 1 과 함께 표준 오류에 로그인 방법 한 줄
+#                                           (어댑터가 정한 고정 문구). 확인하지 못하면 그 밖의 코드. CLI 의 출력을 옮기지 않는다
+#   tracker_labels                          트래커 라벨 이름 전부를 JSON 문자열 배열로 (전 페이지).
+#                                           라벨을 미리 두지 않는 트래커는 아무것도 내지 않고 종료 코드 3
 #
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────
 #   review_require                          CLI 설치·인증 확인
@@ -30,6 +34,10 @@
 #   review_mr_thread_reply <n> <스레드id> <본문>   기존 스레드에 답글 1건. 없는 id 면 0 이 아닌 코드
 #   review_mr_list_open                     열린 리뷰 요청 전부를 정규화 JSON 배열로
 #   review_mr_close <n>                     리뷰 요청을 닫는다. **머지하지 않는다**
+#   review_auth                             tracker_auth 와 같은 계약
+#   review_branch_protected <브랜치>         보호되어 있으면 `true`, 아니면 `false` 한 줄. 판단하지 못하면 0 이 아닌 코드
+#
+# tracker_auth · tracker_labels · review_auth · review_branch_protected 는 읽기만 한다.
 #
 # ── 정규화 JSON ──────────────────────────────────────────────────────────────
 #   이슈   {"iid","title","state","description","labels":[],"assignee","milestone"}

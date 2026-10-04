@@ -113,6 +113,23 @@ tracker_current_user() {
   "$GITLAB_CLI" api user | python3 -c 'import json,sys; print(json.load(sys.stdin).get("username",""))'
 }
 
+# 로그인 여부만 본다. glab 의 출력에는 계정 정보가 있어 옮기지 않는다.
+tracker_auth() {
+  "$GITLAB_CLI" auth status </dev/null >/dev/null 2>&1 && return 0
+  echo 'run `glab auth login`' >&2
+  return 1
+}
+
+tracker_labels() {
+  _gl_paged "projects/:id/labels" </dev/null | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+if not isinstance(v, list):
+    raise SystemExit("label list is not an array")
+json.dump([x["name"] for x in v], sys.stdout, ensure_ascii=False)
+'
+}
+
 fi
 
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────
@@ -179,6 +196,22 @@ review_mr_thread_reply() {
 
 review_mr_list_open() {
   "$GITLAB_CLI" api "projects/:id/merge_requests?state=opened&per_page=100" | python3 -c "$_gl_norm_mr"
+}
+
+review_auth() {
+  "$GITLAB_CLI" auth status </dev/null >/dev/null 2>&1 && return 0
+  echo 'run `glab auth login`' >&2
+  return 1
+}
+
+# 보호 브랜치 API 는 보호되지 않은 브랜치에 404 를 준다. 그 밖의 실패는 판단하지 못한 것이다.
+review_branch_protected() {
+  _b=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1") || return 1
+  _err=$("$GITLAB_CLI" api "projects/:id/protected_branches/$_b" </dev/null 2>&1 >/dev/null) && { echo true; return 0; }
+  case "$_err" in
+    *404*) echo false ;;
+    *) return 1 ;;
+  esac
 }
 
 review_mr_close() {

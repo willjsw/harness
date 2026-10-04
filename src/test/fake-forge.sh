@@ -14,8 +14,18 @@
 #   thread_id    스레드에 id 키를 뺀다
 #   reply_any    없는 스레드 id 에도 답글이 성공한다
 #   reply_new    답글을 지목한 스레드가 아니라 새 노트로 단다
+#   labels       라벨 목록으로 배열이 아니라 객체를 낸다
+#   protected    브랜치 보호 여부로 true/false 가 아닌 값을 낸다
+#
+# 읽기 함수의 결과는 환경 변수로 정한다.
+#   FAKE_AUTH       fail 이면 인증 함수가 종료 코드 1 과 안내 한 줄
+#   FAKE_LABELS     tracker_labels 가 낼 라벨(공백 구분). none 이면 종료 코드 3. 비우면 빈 배열
+#   FAKE_PROTECTED  review_branch_protected 가 true 를 낼 브랜치(공백 구분)
 set -u
 : "${FAKE_BREAK:=}"
+: "${FAKE_AUTH:=}"
+: "${FAKE_LABELS:=}"
+: "${FAKE_PROTECTED:=}"
 : "${FAKE_STATE:?FAKE_STATE 가 필요하다}"
 
 forge_require()       { return 0; }
@@ -151,4 +161,26 @@ PY
 tracker_issue_create() {
   [ "$FAKE_BREAK" = create_url ] && { echo "https://forge.invalid/proj/-/issues/42"; return 0; }
   echo 42
+}
+
+_fake_auth() {
+  [ "$FAKE_AUTH" = fail ] || return 0
+  echo 'run `fake auth login`' >&2
+  return 1
+}
+tracker_auth() { _fake_auth; }
+review_auth()  { _fake_auth; }
+
+tracker_labels() {
+  [ "$FAKE_LABELS" = none ] && return 3
+  [ "$FAKE_BREAK" = labels ] && { printf '{"labels":[]}'; return 0; }
+  python3 -c 'import json, sys; json.dump(sys.argv[1].split(), sys.stdout)' "$FAKE_LABELS"
+}
+
+review_branch_protected() { # <브랜치>
+  [ "$FAKE_BREAK" = protected ] && { echo yes; return 0; }
+  for _b in $FAKE_PROTECTED; do
+    [ "$_b" = "$1" ] && { echo true; return 0; }
+  done
+  echo false
 }

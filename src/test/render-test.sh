@@ -2166,6 +2166,59 @@ authdecl not-strings '["codex", 1]'
 authdecl not-a-list '"codex login status"'
 unset -f authdecl
 
+echo "UT-81 the forge read functions for the remote checks, and the self-test that holds adapters to them"
+t="$work/selftest59"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install the self-test repo"
+cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+fst59="$work/fake-state59"; mkdir -p "$fst59"
+base59=$(sed -n 's/^BASE_BRANCH=//p' "$t/script/harness.env" | tr -d "\"'")
+st59() { # st59 <변수=값...> -- <인수...> — 페이크를 끼운 자체 검사의 종료 코드
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  rm -f "$fst59/labels" "$fst59/notes.json"
+  ( cd "$t" && env FAKE_STATE="$fst59" FAKE_BREAK= "${envs[@]}" ./script/forge-selftest.sh "$@" > "$work/st59.log" 2>&1 )
+  echo $?
+}
+fake59() { # fake59 <변수=값...> -- <함수와 인수> — 페이크 함수 하나를 부른다
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  env FAKE_STATE="$fst59" "${envs[@]}" sh -c '. "$0"; "$@"' "$root/test/fake-forge.sh" "$@" > "$work/f59.out" 2> "$work/f59.err"
+  echo $?
+}
+check "the self-test passes the four reads on the fake" "$(st59 -- 1 100)" "0"
+for f in "ok    tracker_auth" "ok    review_auth" "ok    tracker_labels" "ok    review_branch_protected $base59 → false"; do
+  has "$work/st59.log" "$f" "the self-test does not report: $f"
+done
+check "a tracker without labels passes" "$(st59 FAKE_LABELS=none -- 1 100)" "0"
+has "$work/st59.log" "ok    tracker_labels — this tracker keeps no labels" "the self-test does not accept exit code 3 for labels"
+check "tracker_labels exits 3 when the tracker keeps no labels" "$(fake59 FAKE_LABELS=none -- tracker_labels)" "3"
+check "and prints nothing" "$(cat "$work/f59.out")" ""
+check "catches a contract violation: labels" "$(st59 FAKE_BREAK=labels -- 1 100)" "1"
+has "$work/st59.log" "FAIL  tracker_labels" "the self-test does not name tracker_labels"
+check "catches a contract violation: protected" "$(st59 FAKE_BREAK=protected -- 1 100)" "1"
+has "$work/st59.log" "FAIL  review_branch_protected" "the self-test does not name review_branch_protected"
+check "a failed sign-in fails the self-test" "$(st59 FAKE_AUTH=fail -- 1 100)" "1"
+for fn in tracker_auth review_auth; do
+  check "$fn exits 1 when not signed in" "$(fake59 FAKE_AUTH=fail -- $fn)" "1"
+  check "$fn says how to sign in, in one line" "$(wc -l < "$work/f59.err" | tr -d ' '):$(cat "$work/f59.err")" "1:run \`fake auth login\`"
+  check "$fn exits 0 when signed in" "$(fake59 -- $fn)" "0"
+done
+check "a protected branch" "$(fake59 FAKE_PROTECTED="main $base59" -- review_branch_protected "$base59"):$(cat "$work/f59.out")" "0:true"
+check "a branch that is not protected" "$(fake59 FAKE_PROTECTED="$base59" -- review_branch_protected other):$(cat "$work/f59.out")" "0:false"
+check "the labels come back as a JSON array" "$(fake59 FAKE_LABELS="Task Bug" -- tracker_labels):$(cat "$work/f59.out")" '0:["Task", "Bug"]'
+for a in gitlab jira; do
+  head -5 "$root/templates/managed/script/forge/$a.sh" | grep -q '검증 상태: 미검증' && ok || bad "$a.sh lost its unverified header"
+done
+for fn in tracker_auth tracker_labels review_auth review_branch_protected; do
+  grep -q "^#   $fn" "$root/templates/managed/script/forge/_common.sh" && ok || bad "the adapter contract does not list $fn"
+  grep -q "^$fn()" "$root/templates/managed/script/forge/github.sh" && ok || bad "github.sh has no $fn"
+  grep -q "^$fn()" "$root/templates/managed/script/forge/gitlab.sh" && ok || bad "gitlab.sh has no $fn"
+done
+for fn in tracker_auth tracker_labels; do
+  grep -q "^$fn()" "$root/templates/managed/script/forge/jira.sh" && ok || bad "jira.sh has no $fn"
+done
+unset -f st59 fake59
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

@@ -2,6 +2,7 @@
 # forge 어댑터 — GitHub / gh. 계약은 `script/forge/_common.sh` 상단이 정본이다.
 #
 # 검증 상태: `script/forge-selftest.sh --create-issue` 전 단계 통과 (gh 2.93.0).
+#            읽기 단계의 tracker_auth · review_auth · tracker_labels · review_branch_protected 통과 (gh 2.93.0).
 # 어댑터를 고치면 다시 돌린다 — 회귀 테스트는 페이크를 쓰므로 이 파일을 타지 않는다.
 #
 # GitHub 에서 다른 점 셋. 어댑터가 흡수하므로 호출부는 알지 않는다.
@@ -110,6 +111,23 @@ tracker_current_user() {
   "$GITHUB_CLI" api user -q .login
 }
 
+# 로그인 여부만 본다. gh 의 출력에는 계정 정보가 있어 옮기지 않는다.
+tracker_auth() {
+  "$GITHUB_CLI" auth status </dev/null >/dev/null 2>&1 && return 0
+  echo 'run `gh auth login`' >&2
+  return 1
+}
+
+tracker_labels() {
+  "$GITHUB_CLI" label list --json name --limit 1000 </dev/null | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+if not isinstance(v, list):
+    raise SystemExit("label list is not an array")
+json.dump([x["name"] for x in v], sys.stdout, ensure_ascii=False)
+'
+}
+
 fi
 
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────
@@ -214,6 +232,20 @@ review_mr_list_open() {
 
 review_mr_close() {
   "$GITHUB_CLI" pr close "$1" >/dev/null
+}
+
+review_auth() {
+  "$GITHUB_CLI" auth status </dev/null >/dev/null 2>&1 && return 0
+  echo 'run `gh auth login`' >&2
+  return 1
+}
+
+review_branch_protected() {
+  _p=$("$GITHUB_CLI" api "repos/{owner}/{repo}/branches/$1" -q .protected </dev/null) || return 1
+  case "$_p" in
+    true|false) echo "$_p" ;;
+    *) return 1 ;;
+  esac
 }
 
 fi
