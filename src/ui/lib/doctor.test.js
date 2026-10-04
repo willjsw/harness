@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { explain, SECTIONS, STATUS_TIMEOUT_MS, REMOTE_CALL_TIMEOUT_MS, remoteCallLimit, remoteStatusTimeoutMs } from "./doctor.js";
+import { explain, SECTIONS, STATUS_TIMEOUT_MS, REMOTE_TIMEOUT_DEFAULT, REMOTE_TIMEOUT_LIMIT, remoteCallLimit, remoteCallTimeoutMs, remoteStatusTimeoutMs } from "./doctor.js";
 
 test("explain", () => {
   const b = "/demo";
@@ -69,17 +69,34 @@ test("explain remote lines", () => {
   }
 });
 
-test("remote status waits longer than every remote call timing out in turn", () => {
+test("the remote call timeout defaults and limits match the CLI's", () => {
   const cli = fs.readFileSync(new URL("../../bin/harness", import.meta.url), "utf8");
-  const perCall = Number(cli.match(/^REMOTE_TIMEOUT = (\d+)$/m)?.[1]) * 1000;
-  assert.equal(REMOTE_CALL_TIMEOUT_MS, perCall);
+  assert.equal(REMOTE_TIMEOUT_DEFAULT, Number(cli.match(/^DOCTOR_DEFAULTS = \{"remote_timeout": (\d+)\}$/m)?.[1]));
+  assert.equal(REMOTE_TIMEOUT_LIMIT, Number(cli.match(/^REMOTE_TIMEOUT_LIMIT = (\d+)$/m)?.[1]));
+});
 
+test("the remote call timeout comes from doctor.remote_timeout, else the default", () => {
+  assert.equal(remoteCallTimeoutMs({ doctor: { remote_timeout: 45 } }), 45_000);
+  assert.equal(remoteCallTimeoutMs({ doctor: { remote_timeout: 1 } }), 1_000);
+  assert.equal(remoteCallTimeoutMs({ doctor: { remote_timeout: 600 } }), 600_000);
+  for (const cfg of [null, {}, { doctor: {} }, { doctor: { remote_timeout: 0 } }, { doctor: { remote_timeout: -5 } },
+                     { doctor: { remote_timeout: 601 } }, { doctor: { remote_timeout: "45" } }, { doctor: { remote_timeout: 2.5 } },
+                     { doctor: { remote_timeout: true } }]) {
+    assert.equal(remoteCallTimeoutMs(cfg), REMOTE_TIMEOUT_DEFAULT * 1000, JSON.stringify(cfg));
+  }
+  const cfg = { doctor: { remote_timeout: 45 }, branches: { protected: ["main", "develop"] } };
+  assert.equal(remoteStatusTimeoutMs(cfg), 60_000 + 7 * 45_000);
+});
+
+test("remote status waits longer than every remote call timing out in turn", () => {
   assert.equal(remoteCallLimit(null), 5);
   assert.equal(remoteCallLimit({ branches: { protected: "main" } }), 5);
   assert.equal(remoteCallLimit({ forge: { tracker: "github", review_host: "github" }, branches: { protected: ["main", "develop", "main"] } }), 7);
 
-  for (const cfg of [null, { branches: { protected: ["main", "develop"] } }, { branches: { protected: ["a", "b", "c", "d", "e", "f"] } }]) {
+  for (const cfg of [null, { branches: { protected: ["main", "develop"] } }, { branches: { protected: ["a", "b", "c", "d", "e", "f"] } },
+                     { doctor: { remote_timeout: 120 }, branches: { protected: ["main", "develop"] } }]) {
     const t = remoteStatusTimeoutMs(cfg);
+    const perCall = (cfg?.doctor?.remote_timeout ?? REMOTE_TIMEOUT_DEFAULT) * 1000;
     assert.ok(t > remoteCallLimit(cfg) * perCall, JSON.stringify(cfg));
     assert.ok(t - remoteCallLimit(cfg) * perCall >= STATUS_TIMEOUT_MS, JSON.stringify(cfg));
   }

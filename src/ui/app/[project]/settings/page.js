@@ -18,7 +18,7 @@ const GROUPS = [
   ["general", "General", ["harness", "project", "usage"]],
   ["scm", "Source Control", ["branches", "commit", "permissions"]],
   ["review", "Code Review", ["review", "mr", "invariants"]],
-  ["integrations", "Integrations", ["forge", "issues"]],
+  ["integrations", "Integrations", ["forge", "issues", "doctor"]],
   ["documents", "Documents", ["docs", "adr"]],
   ["metrics", "Metrics", ["metrics"]],
 ];
@@ -36,6 +36,8 @@ export default async function Settings({ params }) {
   if (hasModel && !("model" in cfg.harness)) {
     cfg.harness = Object.fromEntries(Object.entries(cfg.harness).flatMap(([k, v]) => k === "orchestrator" ? [[k, v], ["model", ""]] : [[k, v]]));
   }
+  // 준비 점검 설정은 옛 설정에 절이 없다 — schema 가 기본값을 채워 준 값으로 그린다(이 키를 아는 하네스 버전일 때만)
+  if (schema?.doctor && !cfg.doctor) cfg.doctor = schema.doctor;
   // 오케스트레이터를 바꾸면 모델은 새 벤더의 기본 모델로 — 전 벤더의 모델 이름은 새 벤더에 없다.
   // 서브에이전트 역할도 실행 주체가 따라 바뀌므로 함께 비운다
   const resetModel = [...(cfg.harness.model ? [["harness.model", ""]] : []),

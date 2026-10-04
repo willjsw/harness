@@ -111,6 +111,11 @@ INCLUDE_PATH = re.compile(r"(?!/)(?!(.*/)?\.\.(/|$))[^\s*?\[]+")
 # Claude Code 권한. 허용 목록 자체는 settings_json() 이 만든다 — 여기는 프로젝트가 고르는 값뿐이다.
 PERMISSIONS_DEFAULTS = {"allow_push": False}
 
+# 준비 점검. remote_timeout 은 원격 점검의 호출 하나에 주는 시간(초)이다 — 넘으면 그 항목은 확인하지 못한 것이다.
+DOCTOR_DEFAULTS = {"remote_timeout": 30}
+# remote_timeout 의 상한(초). 원격 점검은 호출을 순차로 하므로 이보다 길면 한 번의 점검이 끝나지 않는 것처럼 보인다.
+REMOTE_TIMEOUT_LIMIT = 600
+
 
 def worktree_dir(cfg: dict) -> str:
     """[worktree].dir 에 프로젝트 이름을 채우고 `~` 와 환경 변수를 확장한 것."""
@@ -205,6 +210,8 @@ def normalize(cfg: dict):
         cfg.setdefault("worktree", {}).setdefault(k, list(x) if isinstance(x, list) else x)
     for k, x in PERMISSIONS_DEFAULTS.items():   # 권한 — 옛 설정에는 없다
         cfg.setdefault("permissions", {}).setdefault(k, x)
+    for k, x in DOCTOR_DEFAULTS.items():   # 준비 점검 — 옛 설정에는 없다
+        cfg.setdefault("doctor", {}).setdefault(k, x)
     b = cfg["branches"]
     if b["base"] not in b["protected"]:
         b["protected"] = b["protected"] + [b["base"]]
@@ -445,6 +452,14 @@ def validate(cfg: dict):
         die("error: unknown key(s) in [permissions]: %s\n\nhelp: the keys are %s" % (", ".join(unknown), ", ".join(PERMISSIONS_DEFAULTS)))
     if not isinstance(pm["allow_push"], bool):
         die("error: permissions.allow_push must be true or false (got %r)" % (pm["allow_push"],))
+
+    dc = cfg["doctor"]
+    unknown = sorted(set(dc) - set(DOCTOR_DEFAULTS))
+    if unknown:
+        die("error: unknown key(s) in [doctor]: %s\n\nhelp: the keys are %s" % (", ".join(unknown), ", ".join(DOCTOR_DEFAULTS)))
+    n = dc["remote_timeout"]
+    if not isinstance(n, int) or isinstance(n, bool) or not 1 <= n <= REMOTE_TIMEOUT_LIMIT:
+        die("error: doctor.remote_timeout must be a whole number of seconds from 1 to %d (got %r)" % (REMOTE_TIMEOUT_LIMIT, n))
 
     validate_workflows(cfg)
 
@@ -1876,15 +1891,14 @@ def doctor_items(cfg, target, remote=False):
     return items
 
 
-# 원격 점검의 호출 하나에 주는 시간(초). 넘으면 그 항목은 확인하지 못한 것이다.
-REMOTE_TIMEOUT = 30
 REMOTE_UNCHECKED = "could not check"
 
 
-def remote_call(argv, cwd):
+def remote_call(cfg, argv, cwd):
     """원격에 닿는 호출 하나 — 표준 입력을 닫고 제어 터미널 없이 띄운다. 자격증명 입력을 기다리며 멈추지 않는다.
 
-    띄우지 못했거나 제한 시간을 넘기면 None. 출력은 판정에만 쓰고 결과 문구로 옮기지 않는다.
+    제한 시간은 doctor.remote_timeout(초)이다. 띄우지 못했거나 그 시간을 넘기면 None.
+    출력은 판정에만 쓰고 결과 문구로 옮기지 않는다.
     """
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0", HARNESS_METRICS="off")
     try:
@@ -1893,7 +1907,7 @@ def remote_call(argv, cwd):
     except OSError:
         return None
     try:
-        out, err = p.communicate(timeout=REMOTE_TIMEOUT)
+        out, err = p.communicate(timeout=cfg["doctor"]["remote_timeout"])
     except subprocess.TimeoutExpired:
         with contextlib.suppress(OSError):
             os.killpg(p.pid, signal.SIGKILL)
@@ -1902,9 +1916,9 @@ def remote_call(argv, cwd):
     return subprocess.CompletedProcess(argv, p.returncode, out, err)
 
 
-def ls_remote(target, branches):
+def ls_remote(cfg, target, branches):
     """origin 의 HEAD 심볼릭 참조와 있는 브랜치 — (HEAD 가 가리키는 참조 또는 "", 있는 refs/heads/* 집합). 실패하면 None."""
-    r = remote_call(["git", "ls-remote", "--symref", "origin", "HEAD"] + ["refs/heads/%s" % b for b in branches], target)
+    r = remote_call(cfg, ["git", "ls-remote", "--symref", "origin", "HEAD"] + ["refs/heads/%s" % b for b in branches], target)
     if r is None or r.returncode != 0:
         return None
     head, refs = "", set()
@@ -1930,7 +1944,7 @@ def remote_git_items(cfg, target, line):
         return set()
     line("ok", "remote `origin`")
     branches = list(dict.fromkeys([base] + list(cfg["branches"]["protected"])))
-    ls = ls_remote(target, branches)
+    ls = ls_remote(cfg, target, branches)
     failed = "%s — git ls-remote failed" % REMOTE_UNCHECKED
     if ls is None:
         line("warn", "branch `%s` on origin" % base, failed)
@@ -1951,9 +1965,9 @@ def remote_git_items(cfg, target, line):
     return refs
 
 
-def forge_call(target, fn, *a):
+def forge_call(cfg, target, fn, *a):
     """forge 어댑터 함수 하나를 원격 호출 규칙으로 부른다. forge CLI 를 직접 부르지 않는다."""
-    return remote_call(["sh", "-c", '. ./script/forge.sh && "$@"', "sh", fn, *a], target)
+    return remote_call(cfg, ["sh", "-c", '. ./script/forge.sh && "$@"', "sh", fn, *a], target)
 
 
 def remote_forge_items(cfg, target, line, refs):
@@ -1963,7 +1977,7 @@ def remote_forge_items(cfg, target, line, refs):
     for kind in dict.fromkeys([tracker, host]):
         if not shutil.which(FORGE_CLI.get(kind, kind)):
             continue
-        r = forge_call(target, "tracker_auth" if kind == tracker else "review_auth")
+        r = forge_call(cfg, target, "tracker_auth" if kind == tracker else "review_auth")
         what = "sign-in to `%s`" % kind
         if r is not None and r.returncode == 0:
             line("ok", what)
@@ -1975,7 +1989,7 @@ def remote_forge_items(cfg, target, line, refs):
             line("warn", what, REMOTE_UNCHECKED)
     if tracker in signed:
         wanted = list(dict.fromkeys(l for l in cfg["issues"]["labels"].values() if l))
-        r = forge_call(target, "tracker_labels") if wanted else None
+        r = forge_call(cfg, target, "tracker_labels") if wanted else None
         if wanted and not (r is not None and r.returncode == 3):
             have = None
             if r is not None and r.returncode == 0:
@@ -1995,7 +2009,7 @@ def remote_forge_items(cfg, target, line, refs):
         for b in dict.fromkeys(cfg["branches"]["protected"]):
             if "refs/heads/%s" % b not in refs:
                 continue
-            r = forge_call(target, "review_branch_protected", b)
+            r = forge_call(cfg, target, "review_branch_protected", b)
             out = r.stdout.strip() if r is not None and r.returncode == 0 else None
             what = "branch protection `%s`" % b
             if out == "true":
@@ -2026,7 +2040,7 @@ def remote_reviewer_items(cfg, target, line):
     if not runner.is_file():
         line("bad", what, "`%s` is missing — run `harness render`" % RUN_AGENT)
         return
-    r = remote_call([sys.executable, str(runner), REVIEWER, "--check"], target)
+    r = remote_call(cfg, [sys.executable, str(runner), REVIEWER, "--check"], target)
     out = r.stdout.strip() if r is not None else ""
     if r is not None and r.returncode == 0 and out == "signed-in":
         line("ok", what, "signed in")
@@ -2112,11 +2126,13 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
             hit = i
             break
     command = section == "commands" and key in {k for k, _ in COMMAND_KEYS}
-    permission = section == "permissions" and key in PERMISSIONS_DEFAULTS
-    if hit is None and (command or permission) and not any(ln.strip() == want for ln in lines):
+    # 기본값이 있는 절(권한 · 준비 점검)은 옛 설정에 없을 수 있다
+    defaulted = (section == "permissions" and key in PERMISSIONS_DEFAULTS
+                 or section == "doctor" and key in DOCTOR_DEFAULTS)
+    if hit is None and (command or defaulted) and not any(ln.strip() == want for ln in lines):
         lines += ["\n" if lines and lines[-1].strip() else "", "%s\n" % want]   # 옛 설정에는 절이 없다
     if hit is None and (re.fullmatch(r"roles\.[\w-]+", section) and key in OPTIONAL_ROLE_KEYS
-                        or dotted == "harness.model" or command or permission):
+                        or dotted == "harness.model" or command or defaulted):
         # 선택 키는 적지 않아도 되는 값이라(옛 설정에 없다), 처음 정할 때는 그 절 끝에 한 줄을 더한다
         head = next((i for i, ln in enumerate(lines) if ln.strip() == want), None)
         if head is not None:
@@ -2710,6 +2726,8 @@ def cmd_schema(cfg, _target, _args):
         # 명령 탭의 값. 이 키가 없는 옛 하네스 사본은 명령을 문서(.ai/project/commands.md)로만 받는다
         "commands": cfg["commands"], "checks": cfg["verify"]["checks"],
         "legacy_verify": legacy_verify(_target),
+        # 기본값을 채운 준비 점검 설정. 설정 파일에 [doctor] 가 없어도 설정 화면이 그 값을 그린다
+        "doctor": cfg["doctor"],
         "workflow_notes": {wf: "%s/%s.md" % (WORKFLOW_NOTES, wf) for wf in cfg["workflows"]},
         # 절차 목록: 제목과, 이 프로젝트가 만든 것인지(하네스 기본 조각이 없는 것)
         "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None}

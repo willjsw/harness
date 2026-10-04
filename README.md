@@ -245,6 +245,7 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `permissions.allow_push` | `.claude/settings.json` 의 허용 목록에 `git push` 를 넣는지 |
 | `usage.log_path` · `env_var` | 기록·집계 스크립트, 회고 절차 |
 | `worktree.dir` · `include` | 생성 파일은 없다. `harness run --worktree` · `doctor` · 세션 가져오기가 읽는다 |
+| `doctor.remote_timeout` | 생성 파일은 없다. `doctor --remote` 의 원격 호출 하나에 주는 시간(초, 1~600, 기본 30)이고, UI 의 원격 점검은 이 값으로 기다릴 시간을 정한다 |
 | `workflows.<절차>.steps` | `.ai/workflows/<절차>.md` — 단계 순서·종류(`type`)·제목. 없으면 하네스 기본값. 절차 끝에 붙일 지시는 `.ai/project/workflows/<절차>.md` |
 
 `invariants.distinct_reviewer` 는 파일을 만들지 않고 **render 를 막는다.** 구현자와 리뷰어의

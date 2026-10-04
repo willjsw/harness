@@ -14,12 +14,21 @@ export const SECTIONS = {
   remote: "원격",
 };
 
-// `status --remote` 에 줄 실행 제한(ms). 원격 점검은 호출을 순차로 하고 호출 하나를 CLI 의
-// REMOTE_TIMEOUT 에 끊는다 — 원격이 모두 응답하지 않으면 호출 수 × 그 제한이 걸린 뒤에야 확인하지
-// 못한 줄을 낸다. 호출 수의 상한은 ls-remote 1 · forge 로그인 최대 2(트래커 · 리뷰 호스트) ·
+// `status --remote` 에 줄 실행 제한(ms). 원격 점검은 호출을 순차로 하고 호출 하나를 설정의
+// doctor.remote_timeout(초)에 끊는다 — 원격이 모두 응답하지 않으면 호출 수 × 그 제한이 걸린 뒤에야
+// 확인하지 못한 줄을 낸다. 호출 수의 상한은 ls-remote 1 · forge 로그인 최대 2(트래커 · 리뷰 호스트) ·
 // 라벨 1 · 보호 브랜치마다 1 · 리뷰어 러너 1 이다. 로컬 점검 몫으로 기본 제한을 더한다.
 export const STATUS_TIMEOUT_MS = 60_000;
-export const REMOTE_CALL_TIMEOUT_MS = 30_000;
+// doctor.remote_timeout 의 기본값과 상한(초). CLI 의 DOCTOR_DEFAULTS · REMOTE_TIMEOUT_LIMIT 과 같다
+export const REMOTE_TIMEOUT_DEFAULT = 30;
+export const REMOTE_TIMEOUT_LIMIT = 600;
+
+// 설정의 호출 하나 제한(ms). 없거나 CLI 가 받지 않을 값이면 기본값 — 그때 CLI 는 설정 검증에서 멈춘다
+export function remoteCallTimeoutMs(cfg) {
+  const n = cfg?.doctor?.remote_timeout;
+  const ok = Number.isInteger(n) && n >= 1 && n <= REMOTE_TIMEOUT_LIMIT;
+  return (ok ? n : REMOTE_TIMEOUT_DEFAULT) * 1000;
+}
 
 // 설정을 읽지 못했으면 보호 브랜치 없이 센다 — 그때는 CLI 도 설정에서 멈춰 원격에 닿지 않는다
 export function remoteCallLimit(cfg) {
@@ -29,7 +38,7 @@ export function remoteCallLimit(cfg) {
 }
 
 export function remoteStatusTimeoutMs(cfg) {
-  return STATUS_TIMEOUT_MS + remoteCallLimit(cfg) * REMOTE_CALL_TIMEOUT_MS;
+  return STATUS_TIMEOUT_MS + remoteCallLimit(cfg) * remoteCallTimeoutMs(cfg);
 }
 
 // 원격 절의 줄. 확인하지 못한 줄은 항목마다 다르지 않다 — 다시 점검하는 것 말고는 할 일이 없다

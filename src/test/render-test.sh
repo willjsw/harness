@@ -85,6 +85,7 @@ s = in_section(s, "adr", r'^dir = .*$', 'dir = "docs/adr"')
 s = in_section(s, "metrics", r'^dir = .*$', 'dir = "%s/metrics"' % rec)
 s = in_section(s, "usage", r'^log_path = .*$', 'log_path = "%s/usage.log"' % rec)
 s = in_section(s, "permissions", r'^allow_push = .*$', 'allow_push = false')
+s = in_section(s, "doctor", r'^remote_timeout = .*$', 'remote_timeout = 30')
 p.write_text(s, encoding="utf-8")
 PY
   "$root/bin/harness" render --target "$1" >/dev/null
@@ -2415,6 +2416,78 @@ check "a subagent reviewer has no runner line" "$(cat "$work/rv-inproc.line")" "
 has "$work/rv-inproc.txt" 'remote `origin`' "the remote section did not run for a subagent reviewer"
 cat "$work"/rv-*.txt > "$work/rv-all.log"; no_hangul "$work/rv-all.log" "doctor --remote reviewer output"
 unset -f rvdoc
+
+echo "UT-85 doctor.remote_timeout: default, refused values, an old config without the section, and the value reaching every remote call"
+grep -A1 '^\[doctor\]$' "$root/templates/harness.toml" | tail -1 > "$work/rt-default"
+check "the shipped default remote_timeout" "$(cat "$work/rt-default")" "remote_timeout = 30"
+t="$work/rtcfg"; setup "$t"; cp "$t/harness.toml" "$work/rtcfg.orig"
+rt_with() { # rt_with <remote_timeout 줄 대체> — 원본 설정의 [doctor] 값만 바꾸고 render 한다
+  cp "$work/rtcfg.orig" "$t/harness.toml"
+  python3 - "$t/harness.toml" "$1" <<'PY2'
+import sys; p = sys.argv[1]; s = open(p).read()
+assert "[doctor]\nremote_timeout = 30\n" in s
+open(p, "w").write(s.replace("[doctor]\nremote_timeout = 30\n", "[doctor]\n%s\n" % sys.argv[2]))
+PY2
+  "$root/bin/harness" render --target "$t" > "$work/rtcfg.log" 2>&1
+}
+for v in 0 -1 601 '"30"' 1.5 true; do
+  rt_with "remote_timeout = $v"; check "render with doctor.remote_timeout = $v" "$?" "2"
+  has "$work/rtcfg.log" "error: doctor.remote_timeout must be a whole number of seconds from 1 to 600 (got " "doctor.remote_timeout = $v is not refused by name"
+done
+for v in 1 600; do
+  rt_with "remote_timeout = $v"; check "render with doctor.remote_timeout = $v" "$?" "0"
+done
+rt_with $'remote_timeout = 30\nretries = 2'; check "render with an unknown doctor key" "$?" "2"
+has "$work/rtcfg.log" "unknown key(s) in [doctor]: retries" "the unknown doctor key is not named"
+has "$work/rtcfg.log" "the keys are remote_timeout" "the doctor keys are not listed"
+# 절이 없는 옛 설정은 기본값으로 돌고, set 이 절을 만들어 값을 넣는다
+cp "$work/rtcfg.orig" "$t/harness.toml"
+python3 - "$t/harness.toml" <<'PY2'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[doctor\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[doctor]" not in s
+open(p, "w").write(s)
+PY2
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render without a doctor section" "$?" "0"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check without a doctor section" "$?" "0"
+rt_schema() { "$root/bin/harness" schema --target "$t" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["doctor"]["remote_timeout"])'; }
+check "schema fills the default without a doctor section" "$(rt_schema)" "30"
+cp "$t/harness.toml" "$work/rtcfg.nosec"
+"$root/bin/harness" set --target "$t" doctor.remote_timeout 0 > "$work/rtcfg.set0" 2>&1; check "set doctor.remote_timeout 0" "$?" "2"
+has "$work/rtcfg.set0" "doctor.remote_timeout must be a whole number of seconds from 1 to 600 (got 0)" "set 0 is not refused by name"
+cmp -s "$t/harness.toml" "$work/rtcfg.nosec" && ok || bad "a refused set left the config changed"
+"$root/bin/harness" set --target "$t" doctor.remote_timeout 45 >/dev/null 2>&1; check "set doctor.remote_timeout on a config without the section" "$?" "0"
+python3 -c 'import sys,tomllib; print(repr(tomllib.load(open(sys.argv[1],"rb"))["doctor"]["remote_timeout"]))' "$t/harness.toml" > "$work/rtcfg.val" 2>&1
+check "the set value is an integer in the config" "$(cat "$work/rtcfg.val")" "45"
+check "schema reports the set value" "$(rt_schema)" "45"
+# 원격 호출마다 설정 값을 제한 시간으로 받는다. 호출은 띄우지 않고 받은 제한만 적는다
+t="$work/remote59"
+"$root/bin/harness" set --target "$t" doctor.remote_timeout 7 >/dev/null 2>&1 || bad "could not set doctor.remote_timeout on the remote repo"
+PATH="$stub59:$PATH" python3 - "$root/bin/harness" "$t" > "$work/rt-calls" 2>&1 <<'PY2'
+import importlib.machinery, importlib.util, subprocess, sys, types
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+cfg["roles"]["code-reviewer"]["runner"] = "codex"
+seen = []
+class FakePopen:
+    def __init__(self, argv, **kw):
+        self.argv, self.pid, self.returncode = argv, 0, 1
+    def communicate(self, timeout=None):
+        seen.append((self.argv[0], timeout))
+        return "", ""
+# 원격 호출이 쓰는 Popen 만 바꾼다. git() 같은 로컬 호출은 진짜 subprocess 로 돈다
+h.subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith("__")})
+h.subprocess.Popen = FakePopen
+h.remote_items(cfg, target, lambda *a: None)
+kinds = sorted({a for a, _ in seen})
+print(sorted({t for _, t in seen}), "git" in kinds, "sh" in kinds, sys.executable in kinds)
+PY2
+check "every remote call gets doctor.remote_timeout" "$(cat "$work/rt-calls")" "[7] True True True"
+unset -f rt_with rt_schema
 
 echo
 if [ "$fail" -eq 0 ]; then
