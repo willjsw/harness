@@ -14,10 +14,21 @@ export default function DoctorView({ project, global }) {
   const base = `/${encodeURIComponent(project)}`;
   const [st, setSt] = useState(undefined);
   const [loading, setLoading] = useState(false);
+  // 원격 점검을 한 번 돌린 뒤의 Run again 은 원격까지 다시 돈다. 화면을 새로 열면 원격 없이 시작한다
+  const [remote, setRemote] = useState(false);
+  const [remoteFailed, setRemoteFailed] = useState(false);
   // 처음에는 사이드바가 이미 돌린 결과를 쓰고, Run again·조치 뒤에는 새로 돌린다
-  const load = async (fresh = true) => {
+  const load = async (fresh = true, withRemote = remote) => {
     setLoading(true);
-    try { setSt(await loadStatus(project, fresh)); } finally { setLoading(false); }
+    try {
+      if (withRemote) {
+        const r = await loadStatus(project, true, true);
+        setRemoteFailed(r === null);   // 원격 점검을 모르는 옛 하네스 — 이전 결과를 그대로 둔다
+        if (r !== null) { setSt(r); setRemote(true); }
+      } else {
+        setSt(await loadStatus(project, fresh));
+      }
+    } finally { setLoading(false); }
   };
   useEffect(() => { load(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -48,7 +59,14 @@ export default function DoctorView({ project, global }) {
             <span className="lvl ok">OK {count("OK")}</span>
           </div>
         </div>
-        <button className="btn sync" aria-busy={loading} disabled={loading} onClick={() => load()}><LuRefreshCw size={14} aria-hidden="true" />{loading ? "Running…" : "Run again"}</button>
+        <div className="row">
+          <button className="btn sync" aria-busy={loading} disabled={loading} onClick={() => load()}><LuRefreshCw size={14} aria-hidden="true" />{loading ? "Running…" : "Run again"}</button>
+          <button className="btn ghost" aria-busy={loading} disabled={loading} onClick={() => load(true, true)}>원격까지 점검</button>
+        </div>
+        {remoteFailed
+          ? <p className="error small">원격 점검을 돌리지 못했습니다. 이 프로젝트의 하네스가 원격 점검을 모르는 옛 버전일 수 있습니다.</p>
+          : !st.doctor.items.some((i) => i.section === "remote")
+            && <p className="muted small">원격 점검은 돌리지 않았습니다. 원격까지 점검 을 누르면 origin·forge 로그인·라벨·브랜치 보호·리뷰어 러너를 확인합니다.</p>}
       </section>
       {order.map((s) => {
         const list = groups[s];

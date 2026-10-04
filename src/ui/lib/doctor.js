@@ -11,13 +11,48 @@ export const SECTIONS = {
   "tools and connections": "도구와 연결",
   registry: "등록",
   git: "git",
+  remote: "원격",
 };
+
+// 원격 절의 줄. 확인하지 못한 줄은 항목마다 다르지 않다 — 다시 점검하는 것 말고는 할 일이 없다
+function explainRemote(i, base) {
+  const w = i.what, d = i.detail || "";
+  let m;
+  if (d.startsWith("could not check"))
+    return { title: `확인하지 못했습니다: ${w}`, body: "네트워크·forge 응답·제한 시간 때문에 이 항목을 확인하지 못했습니다. 원격까지 점검 으로 다시 돌립니다." };
+  if (w === "remote `origin`" && d === "not a git repository")
+    return { title: "git 리포가 아니어서 원격을 점검할 수 없습니다", body: "이 디렉터리는 git 리포가 아닙니다. origin 과 브랜치는 git 리포에서만 점검합니다." };
+  if (w === "remote `origin`" && d.startsWith("not set"))
+    return { title: "origin 이 설정되어 있지 않습니다", body: "origin 이 없으면 /work 가 원격을 가져오지 못하고 멈춥니다.", cmd: "git remote add origin <url>" };
+  if ((m = w.match(/^branch `(.+)` on origin$/)) && d.startsWith("missing"))
+    return { title: `통합 브랜치 ${m[1]} 가 원격에 없습니다`, body: "착수 판정과 리뷰 요청이 원격의 통합 브랜치를 기준으로 하므로 실패합니다.", cmd: `git push origin ${m[1]}` };
+  if (w === "origin default branch" && (m = d.match(/^is `([^`]+)`/)))
+    return { title: `원격 기본 브랜치(${m[1]})가 통합 브랜치와 다릅니다`,
+      body: "새 클론과 리뷰 요청이 그 브랜치에서 시작합니다. forge 에서 기본 브랜치를 바꾸거나 Harness 탭에서 branches.base 를 고칩니다.",
+      href: `${base}/settings` };
+  if ((m = w.match(/^sign-in to `(.+)`$/)) && d.startsWith("not signed in")) {
+    const hint = d.replace(/^not signed in(?: — )?/, "");
+    const cmd = d.match(/`([^`]+)`/)?.[1];
+    return { title: `${m[1]} CLI 에 로그인되어 있지 않습니다`, body: `이슈·리뷰 요청 명령이 실패합니다.${hint ? ` 안내: ${hint}` : ""}`, ...(cmd ? { cmd } : {}) };
+  }
+  if ((m = w.match(/^label `(.+)`$/)) && d.startsWith("missing"))
+    return { title: `라벨 ${m[1]} 이 트래커에 없습니다`, body: "그 라벨을 붙이는 이슈 생성이 실패할 수 있습니다. forge 에서 라벨을 만듭니다." };
+  if ((m = w.match(/^branch protection `(.+)`$/)) && d.startsWith("not protected"))
+    return { title: `${m[1]} 브랜치가 원격에서 보호되지 않습니다`, body: "원격에서 그 브랜치로의 직접 push 를 로컬 훅만 막고 있습니다. forge 의 브랜치 보호를 켭니다." };
+  if ((m = w.match(/^reviewer runner `(.+)`$/)) && i.state === "bad")
+    return { title: `리뷰어 러너(${m[1]})를 띄울 수 없습니다`, body: `리뷰 루프가 리뷰어를 띄우지 못합니다. ${d}`, href: `${base}/agents` };
+  return null;
+}
 
 // label 을 주면 상태 대신 그 글자를 보인다 — 아직 설정하지 않은 것(SETUP)은 고장(FAIL)과 다르게 읽혀야 한다.
 // 조치: run = ▷ 로 바로 실행(doctorFix 의 종류와 보일 명령), href = 고칠 화면, cmd = 직접 돌릴 명령(실행 버튼 없음)
 export function explain(i, base) {
   const w = i.what, d = i.detail || "";
   let m;
+  if (i.section === "remote" && i.state !== "ok") {
+    const r = explainRemote(i, base);
+    if (r) return r;
+  }
   if ((m = w.match(/^\.ai\/project\/([\w-]+)\.md$/)) && DOCS[m[1]]) {
     const tab = DOCS[m[1]].title;
     if (d === "missing") return { title: `${tab} 문서가 없습니다`, body: `Project Settings 의 ${tab} 탭에서 새로 작성합니다.`, href: `${base}/project/${m[1]}` };

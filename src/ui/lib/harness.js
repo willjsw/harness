@@ -157,8 +157,9 @@ export async function readText(dir, rel) {
 }
 
 // 홈 화면용 프로젝트 상태. 프로젝트에 고정된 하네스가 답하므로 옛 버전이면 null 이다.
-export async function readStatus(dir) {
-  const r = await harness(dir, ["status"]);
+// remote 면 원격 준비 점검까지 한다 — `--remote` 를 모르는 옛 버전도 null 이다.
+export async function readStatus(dir, remote = false) {
+  const r = await harness(dir, remote ? ["status", "--remote"] : ["status"]);
   if (!r.ok) return null;
   try { return JSON.parse(r.out); } catch { return null; }
 }

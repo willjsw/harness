@@ -30,3 +30,40 @@ test("explain registry lines", () => {
   assert.notEqual(none.title, "this repository is not registered");
   assert.equal(SECTIONS.registry, "등록");
 });
+
+test("explain remote lines", () => {
+  const b = "/demo";
+  const r = (what, detail, state = "bad") => ({ section: "remote", state, what, detail });
+  const differs = (line) => { const x = explain(line, b); assert.notEqual(x.title, line.what); return x; };
+  assert.equal(SECTIONS.remote, "원격");
+
+  const nogit = differs(r("remote `origin`", "not a git repository"));
+  assert.equal(nogit.cmd, undefined); assert.equal(nogit.href, undefined); assert.equal(nogit.run, undefined);
+  assert.match(nogit.title, /git 리포가 아니/);
+
+  assert.equal(differs(r("remote `origin`", "not set — run `git remote add origin <url>`")).cmd, "git remote add origin <url>");
+  assert.equal(differs(r("branch `develop` on origin", "missing — run `git push origin develop`")).cmd, "git push origin develop");
+
+  const head = differs(r("origin default branch", "is `trunk`, not branches.base `develop` — new clones and review requests start from it", "warn"));
+  assert.match(head.title, /trunk/);
+  assert.equal(head.href, "/demo/settings");
+
+  assert.equal(differs(r("sign-in to `github`", "not signed in — run `gh auth login`")).cmd, "gh auth login");
+
+  const label = differs(r("label `Task`", "missing on github — create it on the forge", "warn"));
+  assert.equal(label.cmd, undefined); assert.equal(label.href, undefined); assert.equal(label.run, undefined);
+  const prot = differs(r("branch protection `main`", "not protected on github — only local hooks block direct pushes; protect it on the forge", "warn"));
+  assert.equal(prot.cmd, undefined); assert.equal(prot.href, undefined); assert.equal(prot.run, undefined);
+  assert.notEqual(prot.title, label.title);
+
+  const runner = differs(r("reviewer runner `codex`", "codex is not installed (roles.code-reviewer.runner = codex)"));
+  assert.match(runner.body, /codex is not installed/);
+  assert.equal(runner.href, "/demo/agents");
+
+  for (const line of [r("branch `develop` on origin", "could not check — git ls-remote failed", "warn"),
+                      r("labels", "could not check", "warn"),
+                      r("sign-in to `github`", "could not check", "warn")]) {
+    const x = differs(line);
+    assert.match(x.title, /확인하지 못했습니다/);
+  }
+});
