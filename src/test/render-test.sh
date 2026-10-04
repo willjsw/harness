@@ -2046,7 +2046,7 @@ check "text and JSON exit codes match where nothing fails" "$rc_json:$rc_text" "
 python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["bad"])' "$work/dj.ready" > "$work/dj.bad" 2>&1
 check "the ready repo has no failing item" "$(cat "$work/dj.bad")" "0"
 "$root/bin/harness" help > "$work/dj.help" 2>&1
-grep -E '^  harness doctor +\[--json\]' "$work/dj.help" >/dev/null && ok || bad "help does not list --json for doctor"
+grep -E '^  harness doctor .*\[--json\]' "$work/dj.help" >/dev/null && ok || bad "help does not list --json for doctor"
 # 고정 사본이 있는 대상에서는 전역 CLI 가 인자를 그대로 넘긴다
 t="$work/pinjson"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q )
 "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install the pinned repo"
@@ -2218,6 +2218,112 @@ for fn in tracker_auth tracker_labels; do
   grep -q "^$fn()" "$root/templates/managed/script/forge/jira.sh" && ok || bad "jira.sh has no $fn"
 done
 unset -f st59 fake59
+
+echo "UT-82 doctor --remote checks origin, the base branch and origin's default branch, read-only"
+# 원격은 테스트 작업 디렉터리 아래의 bare 리포다. 실제 네트워크에 닿지 않는다.
+rdoc() { # rdoc <이름> <대상> [인자...] — PATH 에 forge CLI 스텁을 두고 doctor 를 돌려 텍스트와 종료 코드를 남긴다
+  local n="$1" t="$2"; shift 2
+  PATH="$stub59:$PATH" "$root/bin/harness" doctor --target "$t" "$@" > "$work/rd-$n.txt" 2>&1
+  echo $? > "$work/rd-$n.rc"
+}
+rsec() { # rsec <이름> — remote 절의 항목 줄만
+  sed -n '/^remote$/,/^$/p' "$work/rd-$1.txt" | grep '^  '
+}
+t="$work/remote59"; ready "$t"
+rdoc plain "$t"
+grep -q '^remote$' "$work/rd-plain.txt" && bad "doctor without --remote has a remote section" || ok
+has "$work/rd-plain.txt" 'remote checks not run — use `harness doctor --remote`' "doctor without --remote does not say the remote was not checked"
+check "the not-run line sits right before the summary" "$(tail -2 "$work/rd-plain.txt" | head -1)" 'remote checks not run — use `harness doctor --remote`'
+git -C "$t" remote add origin "$work/nowhere59/never.git"
+rdoc plain2 "$t"
+cmp -s "$work/rd-plain.txt" "$work/rd-plain2.txt" && ok || bad "doctor without --remote changed with an unreachable origin"
+check "doctor without --remote keeps its exit code" "$(cat "$work/rd-plain2.rc")" "$(cat "$work/rd-plain.rc")"
+PATH="$stub59:$PATH" "$root/bin/harness" status --target "$t" > "$work/rd-status.json" 2>/dev/null
+python3 -c 'import json,sys; print(sum(i["section"] == "remote" for i in json.load(open(sys.argv[1]))["doctor"]["items"]))' "$work/rd-status.json" > "$work/rd-status.n"
+check "status without --remote has no remote items" "$(cat "$work/rd-status.n")" "0"
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --json --target "$t" > "$work/rd-plain.json" 2>/dev/null
+cat "$work/rd-status.json" "$work/rd-plain.json" > "$work/rd-plain.alljson"
+hasnt "$work/rd-plain.alljson" "remote checks not run" "the not-run line reached JSON"
+
+t2="$work/remote59-nogit"; setup "$t2"
+rdoc nogit "$t2" --remote
+check "not a git repository" "$(rsec nogit)" '  FAIL remote `origin`  — not a git repository'
+hasnt "$work/rd-nogit.txt" "remote checks not run" "doctor --remote still says the remote was not checked"
+
+git -C "$t" remote remove origin
+rdoc noorigin "$t" --remote
+rsec noorigin > "$work/rd-noorigin.sec"
+has "$work/rd-noorigin.sec" '  FAIL remote `origin`  — not set — run `git remote add origin <url>`' "a missing origin is not a failure"
+hasnt "$work/rd-noorigin.sec" "on origin" "a missing origin still checks the base branch"
+hasnt "$work/rd-noorigin.sec" "origin default branch" "a missing origin still checks the default branch"
+check "a missing origin exits 1" "$(cat "$work/rd-noorigin.rc")" "1"
+
+bare="$work/remote59.git"; rm -rf "$bare"; git init -q --bare "$bare"
+git -C "$t" remote add origin "$bare"
+rdoc nobase "$t" --remote
+rsec nobase > "$work/rd-nobase.sec"
+has "$work/rd-nobase.sec" '  ok   remote `origin`' "a set origin is not ok"
+has "$work/rd-nobase.sec" '  FAIL branch `development` on origin  — missing — run `git push origin development`' "a base missing on origin is not a failure"
+
+git -C "$t" -c core.hooksPath=/dev/null push -q origin development 2>/dev/null || bad "could not push the base"
+git -C "$bare" symbolic-ref HEAD refs/heads/development
+rdoc ready "$t" --remote
+rsec ready > "$work/rd-ready.sec"
+has "$work/rd-ready.sec" '  ok   branch `development` on origin' "the pushed base is not ok"
+has "$work/rd-ready.sec" '  ok   origin default branch  — `development`' "origin's default branch is not ok"
+
+git -C "$t" -c core.hooksPath=/dev/null push -q origin development:trunk 2>/dev/null || bad "could not push another branch"
+git -C "$bare" symbolic-ref HEAD refs/heads/trunk
+rdoc otherhead "$t" --remote
+has "$work/rd-otherhead.txt" '  warn origin default branch  — is `trunk`, not branches.base `development` — new clones and review requests start from it' "another default branch is not a warning that names it"
+
+git -C "$t" remote set-url origin "$work/nowhere-MARK59-SECRET/never.git"
+rdoc unreach "$t" --remote
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --remote --json --target "$t" > "$work/rd-unreach.json" 2>/dev/null
+has "$work/rd-unreach.txt" '  warn branch `development` on origin  — could not check — git ls-remote failed' "an unreachable origin is not a could-not-check warning"
+has "$work/rd-unreach.txt" '  warn origin default branch  — could not check — git ls-remote failed' "an unreachable origin still judges the default branch"
+cat "$work/rd-unreach.txt" "$work/rd-unreach.json" > "$work/rd-unreach.all"
+hasnt "$work/rd-unreach.all" "MARK59" "the origin URL reached the output"
+
+# 자격증명을 묻는 원격 — git 이 입력을 기다리지 않도록 GIT_TERMINAL_PROMPT=0 을 받는다
+mkdir -p "$work/askbin59"
+cat > "$work/askbin59/git-remote-ask59" <<'SH'
+#!/bin/sh
+echo "${GIT_TERMINAL_PROMPT:-unset}" > "$ASK59_SEEN"
+exit 128
+SH
+chmod +x "$work/askbin59/git-remote-ask59"
+git -C "$t" remote set-url origin "ask59://forge.invalid/repo.git"
+export ASK59_SEEN="$work/ask59.seen"; rm -f "$ASK59_SEEN"
+python3 - "$root/bin/harness" "$t" "$work/askbin59:$stub59" > "$work/rd-ask.out" 2>&1 <<'PY'
+import os, subprocess, sys
+env = dict(os.environ, PATH=sys.argv[3] + ":" + os.environ["PATH"])
+try:
+    r = subprocess.run([sys.argv[1], "doctor", "--remote", "--target", sys.argv[2]], env=env, capture_output=True,
+                       text=True, timeout=120, stdin=subprocess.PIPE)
+    print("finished", "could not check — git ls-remote failed" in r.stdout)
+except subprocess.TimeoutExpired:
+    print("hung")
+PY
+check "doctor --remote does not wait for credentials" "$(cat "$work/rd-ask.out")" "finished True"
+check "the remote helper got no terminal prompt" "$(cat "$ASK59_SEEN" 2>/dev/null)" "0"
+unset ASK59_SEEN
+
+git -C "$t" remote set-url origin "$bare"
+PATH="$stub59:$PATH" "$root/bin/harness" status --remote --target "$t" > "$work/rd-st.json" 2>/dev/null
+PATH="$stub59:$PATH" "$root/bin/harness" doctor --remote --json --target "$t" > "$work/rd-dj.json" 2>/dev/null
+python3 -c 'import json,sys; a=json.load(open(sys.argv[1]))["doctor"]; b=json.load(open(sys.argv[2])); print(a == b, any(i["section"] == "remote" for i in b["items"]))' "$work/rd-st.json" "$work/rd-dj.json" > "$work/rd-same"
+check "status --remote carries what doctor --remote --json prints" "$(cat "$work/rd-same")" "True True"
+
+md59="$t.records/metrics"
+before=$(cat "$md59"/spans-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+rdoc metrics "$t" --remote
+after=$(cat "$md59"/spans-*.jsonl 2>/dev/null | wc -l | tr -d ' ')
+check "doctor --remote leaves no metrics" "$after" "$before"
+cat "$work"/rd-*.txt > "$work/rd-all.log"; no_hangul "$work/rd-all.log" "doctor --remote output"
+"$root/bin/harness" help > "$work/rd-help" 2>&1
+grep -E '^  harness doctor +\[--remote\] \[--json\]' "$work/rd-help" >/dev/null && ok || bad "help does not list --remote and --json for doctor"
+grep -E '^  harness status +\[--remote\]' "$work/rd-help" >/dev/null && ok || bad "help does not list --remote for status"
 
 echo
 if [ "$fail" -eq 0 ]; then

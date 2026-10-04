@@ -1869,7 +1869,85 @@ def doctor_items(cfg, target, remote=False):
                 "missing": "missing — run `git worktree prune`"}[state])
         if not left:
             line("ok", "no worktrees left")
+
+    if remote:
+        section("remote")
+        remote_items(cfg, target, line)
     return items
+
+
+# 원격 점검의 호출 하나에 주는 시간(초). 넘으면 그 항목은 확인하지 못한 것이다.
+REMOTE_TIMEOUT = 30
+REMOTE_UNCHECKED = "could not check"
+
+
+def remote_call(argv, cwd):
+    """원격에 닿는 호출 하나 — 표준 입력을 닫고 제어 터미널 없이 띄운다. 자격증명 입력을 기다리며 멈추지 않는다.
+
+    띄우지 못했거나 제한 시간을 넘기면 None. 출력은 판정에만 쓰고 결과 문구로 옮기지 않는다.
+    """
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", HARNESS_METRICS="off")
+    try:
+        p = subprocess.Popen(argv, cwd=str(cwd), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
+    except OSError:
+        return None
+    try:
+        out, err = p.communicate(timeout=REMOTE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
+        return None
+    return subprocess.CompletedProcess(argv, p.returncode, out, err)
+
+
+def ls_remote(target, branches):
+    """origin 의 HEAD 심볼릭 참조와 있는 브랜치 — (HEAD 가 가리키는 참조 또는 "", 있는 refs/heads/* 집합). 실패하면 None."""
+    r = remote_call(["git", "ls-remote", "--symref", "origin", "HEAD"] + ["refs/heads/%s" % b for b in branches], target)
+    if r is None or r.returncode != 0:
+        return None
+    head, refs = "", set()
+    for ln in r.stdout.splitlines():
+        parts = ln.split("\t")
+        if len(parts) != 2:
+            return None
+        if parts[0].startswith("ref: ") and parts[1] == "HEAD":
+            head = parts[0][len("ref: "):]
+        elif parts[1].startswith("refs/heads/"):
+            refs.add(parts[1])
+    return head, refs
+
+
+def remote_items(cfg, target, line):
+    """원격 준비 상태를 읽기만 한다. 원격 URL 과 명령 출력은 결과에 옮기지 않는다."""
+    base = cfg["branches"]["base"]
+    if git(target, "rev-parse", "--is-inside-work-tree").stdout.strip() != "true":
+        line("bad", "remote `origin`", "not a git repository")
+        return
+    if git(target, "remote", "get-url", "origin").returncode != 0:
+        line("bad", "remote `origin`", "not set — run `git remote add origin <url>`")
+        return
+    line("ok", "remote `origin`")
+    branches = list(dict.fromkeys([base] + list(cfg["branches"]["protected"])))
+    ls = ls_remote(target, branches)
+    failed = "%s — git ls-remote failed" % REMOTE_UNCHECKED
+    if ls is None:
+        line("warn", "branch `%s` on origin" % base, failed)
+        line("warn", "origin default branch", failed)
+        return
+    head, refs = ls
+    if "refs/heads/%s" % base in refs:
+        line("ok", "branch `%s` on origin" % base)
+    else:
+        line("bad", "branch `%s` on origin" % base, "missing — run `git push origin %s`" % base)
+    if head == "refs/heads/%s" % base:
+        line("ok", "origin default branch", "`%s`" % base)
+    elif head.startswith("refs/heads/"):
+        line("warn", "origin default branch", "is `%s`, not branches.base `%s` — new clones and review requests start from it"
+             % (head[len("refs/heads/"):], base))
+    else:
+        line("warn", "origin default branch", "%s — origin does not report it" % REMOTE_UNCHECKED)
 
 
 def doctor_counts(items):
@@ -1894,13 +1972,16 @@ def doctor_text(items):
 
 def cmd_doctor(cfg, target, args):
     """쓸 준비가 됐는지 보고한다. 종료 코드는 실패 항목이 있으면 1 — 텍스트든 JSON 이든 같다."""
-    items = doctor_items(cfg, target)
+    remote = getattr(args, "remote", False)
+    items = doctor_items(cfg, target, remote)
     bad, warn = doctor_counts(items)
     if getattr(args, "json", False):
         print(json.dumps(doctor_json(items), ensure_ascii=False, indent=2))
         return 1 if bad else 0
     doctor_text(items)
     print()
+    if not remote:
+        print("remote checks not run — use `harness doctor --remote`")
     sys.stdout.flush()
     if bad:
         print("%d failing · %d warning — not ready to use" % (bad, warn))
@@ -2584,7 +2665,7 @@ def cmd_metrics(cfg, target, args):
 def cmd_status(cfg, target, args):
     """`harness status` — 홈 화면용 프로젝트 상태(JSON). 검사를 새로 만들지 않고 doctor 의 항목 목록과 check 를 쓴다."""
     import contextlib, io
-    items = doctor_items(cfg, target)
+    items = doctor_items(cfg, target, getattr(args, "remote", False))
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         check_ok = cmd_check(cfg, target, argparse.Namespace(staged=False)) == 0
     # 설정 진행도: 소유 문서 중 자리표시자가 남지 않은 것
@@ -2988,7 +3069,8 @@ COMMANDS = {
     "install":   (None, True,  "[--target DIR]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
     "render":    (None, True,  "[--target DIR]", "harness.toml + .ai/project/ -> generated files"),
     "check":     (None, True,  "[--staged]", "verify generated files match the config"),
-    "doctor":    (None, True,  "[--json]", "report readiness: config, files, tools, hooks (--json: the same items as JSON)"),
+    "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, tools, hooks (--remote: also the remote, read-only; "
+                  "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
@@ -3001,7 +3083,7 @@ COMMANDS = {
     "stop-server": (None, False, "", "stop the web UI started by start-server"),
     "server-status": (None, False, "", "whether the web UI is running and responding"),
     "schema":    (None, True,  "", "agent registry and resolved roles as JSON (for the UI)"),
-    "status":    (None, True,  "", "project health for the home screen as JSON: check, doctor, facts, git"),
+    "status":    (None, True,  "[--remote]", "project health for the home screen as JSON: check, doctor, facts, git (--remote: passed to doctor)"),
     "tools":     (None, False, "[--sync]", "list agent CLIs and decision-record tools on this machine"),
     "version":   (None, False, "", "version of this harness"),
     "help":      (None, False, "", "this help"),
@@ -3090,6 +3172,7 @@ def main():
     ap.add_argument("--trace", help="metrics: include the span tree of this trace")
     ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
     ap.add_argument("--json", action="store_true", help="doctor: print the items as one JSON object")
+    ap.add_argument("--remote", action="store_true", help="doctor, status: also check the remote, read-only")
     ap.add_argument("-h", "--help", action="store_true")
     # 옵션 뒤에 오는 위치 인자도 args 에 모은다. 3.11 의 parse_args 는 `set --target X a.b v` 의
     # `a.b v` 를 받지 못하고 unrecognized arguments 로 멈춘다.
