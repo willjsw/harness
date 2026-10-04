@@ -229,6 +229,13 @@ def normalize(cfg: dict):
 # 여기는 그 선언을 읽는 일반 엔진뿐이다 — 벤더 이름으로 분기하지 않는다.
 with (TEMPLATES / "vendors.toml").open("rb") as _f:
     VENDORS = {v["id"]: v for v in tomllib.load(_f)["vendor"]}
+for _i, _v in VENDORS.items():
+    # 로그인 확인 명령은 그대로 실행된다 — 자기 CLI 를 부르는 문자열 argv 만 받는다
+    if "auth_check" in _v:
+        _a = _v["auth_check"]
+        if not (isinstance(_a, list) and _a and all(isinstance(x, str) for x in _a) and _a[0] == _v["exe"]):
+            die("error: templates/vendors.toml: vendor `%s` auth_check must be a non-empty list of strings "
+                "starting with its exe `%s`" % (_i, _v["exe"]))
 ORCHESTRATORS = [i for i, v in VENDORS.items() if v.get("launch")]
 RUNNERS = [i for i, v in VENDORS.items() if v.get("headless")]
 # UI·schema 가 보던 모양. 고를 수 있는지는 선언에 명령이 있는지로 정한다
@@ -317,6 +324,7 @@ def run_plan(cfg: dict) -> dict:
                         "model": role_model(cfg, n),
                         "usage_format": VENDORS[r["runner"]].get("usage_format", []),
                         "usage_parser": VENDORS[r["runner"]].get("usage_parser", ""),
+                        "auth_check": VENDORS[r["runner"]].get("auth_check", []),
                         "entry": role_meta(n).get("entry") or "%s %s" % (RUN_AGENT, n)}
     return {"_generated": "harness.toml 에서 생성된다. 직접 고치지 않는다 — harness render 가 다시 만든다.",
             "roles": roles, "metrics": metrics_cfg(cfg)}

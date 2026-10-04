@@ -2083,6 +2083,89 @@ check "the marker string appears once in the CLI" "$(grep -c '검증 상태: 미
 has "$root/templates/managed/script/forge/_common.sh" '머리글의 `검증 상태:` 줄이 검증 상태의 표지다' "the adapter contract does not name the header marker"
 unset -f item
 
+echo "UT-80 run-agent.py --check reports whether a CLI runner is installed and signed in, without running it"
+d="$work/racheck"; rm -rf "$d"; mkdir -p "$d/script" "$d/bin"
+cp "$root/templates/managed/script/run-agent.py" "$root/templates/managed/script/metric.py" "$d/script/"
+cat > "$d/bin/codex" <<'SH'
+#!/bin/sh
+echo "$*" >> "$CODEX_CALLS"
+echo "ACCOUNT-MARK-59"; echo "ACCOUNT-MARK-59" >&2
+exit "${CODEX_LOGIN_EXIT:-0}"
+SH
+printf '#!/nonexistent/interpreter-59\n' > "$d/bin/brokencodex"; chmod +x "$d/bin/codex" "$d/bin/brokencodex"
+python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]
+def cli(exe, auth):
+    return {"via": "headless", "vendor": "codex", "exe": exe, "argv": [exe, "exec"], "output": "stdout", "model": "",
+            "usage_format": [], "usage_parser": "", "auth_check": auth, "entry": "script/run-agent.py"}
+plan = {"roles": {"rev": cli("codex", ["codex", "login", "status"]), "noauth": cli("codex", []),
+                  "sub": {"via": "subagent", "vendor": "claude"},
+                  "ghost": cli("nosuch-cli-59", ["nosuch-cli-59", "login"]),
+                  "broken": cli("brokencodex", ["brokencodex", "login", "status"])},
+        "metrics": {"dir": d + "/metrics", "retention_days": 30, "max_file_mb": 10, "max_total_mb": 100,
+                    "stale_after_hours": 6, "capture_logs": "errors"}}
+json.dump(plan, open(d + "/script/harness.plan.json", "w"))
+PY
+export CODEX_CALLS="$d/calls"
+rac() { # rac <이름> <역할> [인자...] — 표준 출력·표준 오류를 따로 받는다
+  local n="$1"; shift
+  PATH="$d/bin:$PATH" python3 "$d/script/run-agent.py" "$@" > "$d/$n.out" 2> "$d/$n.err"
+}
+: > "$CODEX_CALLS"
+rac in rev --check; check "signed in exits 0" "$?" "0"
+check "signed in prints signed-in" "$(cat "$d/in.out")" "signed-in"
+check "the sign-in command is the plan's" "$(cat "$CODEX_CALLS")" "login status"
+CODEX_LOGIN_EXIT=1 rac out rev --check; check "not signed in exits 3" "$?" "3"
+has "$d/out.err" "error: codex is not signed in (\`codex login status\` failed)" "not signed in does not say so"
+cat "$d/out.out" "$d/out.err" > "$d/out.all"; hasnt "$d/out.all" "ACCOUNT-MARK-59" "the sign-in command's output was passed on"
+: > "$CODEX_CALLS"
+rac un noauth --check; check "no sign-in command exits 0" "$?" "0"
+check "no sign-in command prints unchecked" "$(cat "$d/un.out")" "unchecked"
+check "no sign-in command runs nothing" "$(cat "$CODEX_CALLS")" ""
+rac sub sub --check; check "a subagent role cannot be checked" "$?" "2"
+has "$d/sub.err" "error: " "a subagent role does not say error"
+rac ghost ghost --check; check "a CLI not on PATH exits 2" "$?" "2"
+has "$d/ghost.err" "error: nosuch-cli-59 is not installed" "a missing CLI does not say so"
+rac broken broken --check; check "a sign-in command that cannot start exits 4" "$?" "4"
+has "$d/broken.err" "error: could not check sign-in for codex" "a command that cannot start does not say so"
+[ -e "$d/metrics" ] && bad "--check left metrics behind" || ok
+rac out2 rev --check --out "$d/never.txt" --prompt x extra; check "--check with other arguments only checks" "$?" "0"
+check "--check with other arguments prints only the check" "$(cat "$d/out2.out")" "signed-in"
+[ -e "$d/never.txt" ] && bad "--check wrote the --out file" || ok
+[ -e "$d/metrics" ] && bad "--check with other arguments left metrics behind" || ok
+rac run rev x; check "a run without --check still runs the CLI" "$?" "0"
+ls "$d/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "a run without --check left no span"
+mv "$d/script/harness.plan.json" "$d/plan.bak"
+rac noplan rev --check; check "no plan exits 2" "$?" "2"
+mv "$d/plan.bak" "$d/script/harness.plan.json"
+cat "$d"/*.out "$d"/*.err > "$d/all.log"; no_hangul "$d/all.log" "run-agent.py --check output"
+unset CODEX_CALLS; unset -f rac
+t="$work/authplan"; setup "$t"
+"$root/bin/harness" set --target "$t" roles.planner.runner codex >/dev/null 2>&1
+python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["roles"]; print(r["planner"]["auth_check"], r["developer"].get("auth_check", "none"))' "$t/script/harness.plan.json" > "$work/authplan.sum" 2>&1
+check "a codex runner carries its sign-in command in the plan" "$(cat "$work/authplan.sum")" "['codex', 'login', 'status'] none"
+authdecl() { # authdecl <이름> <codex 의 auth_check 값> — 그 선언으로 렌더가 멈추는지
+  local h="$work/auth-$1"
+  rm -rf "$h"; mkdir -p "$h"; cp -R "$root/bin" "$root/templates" "$h/"
+  python3 - "$h/templates/vendors.toml" "$2" <<'PY'
+import re, sys
+p, val = sys.argv[1:3]
+s = open(p, encoding="utf-8").read()
+s, n = re.subn(r'(?m)^auth_check = \["codex".*$', "auth_check = " + val, s)
+assert n == 1
+open(p, "w", encoding="utf-8").write(s)
+PY
+  "$h/bin/harness" render --target "$t" > "$h.out" 2>&1
+  check "render stops on auth_check $1" "$?" "2"
+  has "$h.out" "vendor \`codex\` auth_check must be a non-empty list of strings starting with its exe" "auth_check $1 is not named"
+}
+authdecl other-exe '["claude", "login", "status"]'
+authdecl empty '[]'
+authdecl not-strings '["codex", 1]'
+authdecl not-a-list '"codex login status"'
+unset -f authdecl
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

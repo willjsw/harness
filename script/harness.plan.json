@@ -21,6 +21,11 @@
         "--json"
       ],
       "usage_parser": "codex-jsonl",
+      "auth_check": [
+        "codex",
+        "login",
+        "status"
+      ],
       "entry": "script/review-mr.sh"
     },
     "developer": {
