@@ -13,9 +13,10 @@
 | 고정(pin) | 대상 리포가 `.harness/` 에 설치 시점의 하네스 사본을 두고 그 버전으로만 도는 것 |
 | 생성 파일 | `harness.toml` 에서 나오는 파일. 고치지 않고 `render` 로 다시 만든다 |
 | 관리 파일 | 하네스가 그대로 복사해 두는 파일. 갱신이 덮는다 |
-| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · CI 설정) |
+| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · `script/project/README.md` · CI 설정) |
 | 보호 문서 | 에이전트가 근거로 읽는 소유 파일(scope · architecture · glossary · testing · `roles/` · `workflows/`). 권한과 가드가 쓰기를 막고, 사람이 지시한 턴에만 고친다 |
-| 매니페스트 | 지난 렌더가 무엇을 깔았는지 적은 목록(`.harness/generated` · `.harness/managed`). 정리와 제거의 근거 |
+| 매니페스트 | 지난 설치·렌더가 무엇을 깔았는지 적은 목록. `.harness/generated` 는 생성 파일 경로, `.harness/managed` 는 관리 파일과 고정 사본의 sha256 과 경로. 정리·제거·변조 감지의 근거 |
+| 사용자 파일 | 하네스가 쓸 경로에 있으나 매니페스트에 없는 파일. render · install 이 덮지 않고 멈추며, `--adopt` 면 `<경로>.orig` 로 옮기고 넘겨받는다 |
 | 정본 | 어떤 값·규칙을 고칠 때 손대는 유일한 자리. 규칙 값은 `harness.toml`, 프로젝트 사실은 `.ai/project/` |
 | 렌더 | 설정과 프로젝트 사실에서 생성 파일을 만드는 일 (`harness render`) |
 | 역할 | 절차의 한 단계를 맡는 에이전트 (requirement-analyzer · spec-writer · planner · developer · code-reviewer · docs-writer · security-guard) |
