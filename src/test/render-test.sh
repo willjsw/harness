@@ -536,6 +536,13 @@ check "check through the link" "$?" "0"
 echo "UT-26 a version pinned in the project wins over the global one"
 # 전역을 올릴 때마다 모든 프로젝트의 생성물이 바뀌면 그 리포의 검사가 한꺼번에 깨진다.
 echo "0.0.9" > "$t/.harness/VERSION"
+# 그 버전의 install 이 기록했을 해시로 맞춘다 — 사본을 손으로 고친 것이 아니라 옛 버전을 고정한 리포다
+python3 - "$t" <<'PY'
+import hashlib, pathlib, re, sys
+t = pathlib.Path(sys.argv[1]); m = t / ".harness/managed"
+h = hashlib.sha256((t / ".harness/VERSION").read_bytes()).hexdigest()
+m.write_text(re.sub(r"^[0-9a-f]{64}(  \.harness/VERSION)$", h + r"\1", m.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+PY
 out=$("$keg/bin/harness" check --target "$t" 2>&1)
 case "$out" in *0.0.9*) ok ;; *) bad "did not report that it defers to the pinned version" ;; esac
 # 넘긴 뒤에도 실제로 돌아야 한다
@@ -2896,6 +2903,52 @@ cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$r
 "$src/src/bin/harness" install --target "$src" >/dev/null 2>&1; check "install on the source tree" "$?" "0"
 grep -q '  \.harness/' "$src/.harness/managed" && bad "the source tree's manifest lists a pinned copy" || ok
 grep -q '  script/review-mr.sh$' "$src/.harness/managed" && ok || bad "the source tree's manifest lacks the managed files"
+
+# check 가 관리 파일과 고정 사본을 매니페스트와 대조한다
+c="$work/chk88"; rm -rf "$c"; mkdir -p "$c"; ( cd "$c" && git init -q . )
+"$root/bin/harness" install --target "$c" >/dev/null 2>&1 || bad "could not install the check repo"
+"$root/bin/harness" check --target "$c" > "$work/c88-0.out" 2> "$work/c88-0.err"; check "check right after install" "$?" "0"
+has "$work/c88-0.out" "managed files match the manifest" "a passing check does not report the managed files"
+printf '\n# edited by hand\n' >> "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-1.out" 2> "$work/c88-1.err"; check "check with an edited managed file" "$?" "1"
+grep -qE '^  script/review-mr.sh +modified managed file$' "$work/c88-1.err" && ok || bad "check does not name the edited managed file"
+has "$work/c88-1.err" "project scripts belong in script/project/" "the help does not point at script/project/"
+hasnt "$work/c88-1.err" "comes back with \`harness install\`" "only managed files changed, yet the help names harness install"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+"$root/bin/harness" check --target "$c" > "$work/c88-2.out" 2> "$work/c88-2.err"; check "check after render puts it back" "$?" "0"
+rm "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-3.out" 2> "$work/c88-3.err"; check "check with a missing managed file" "$?" "1"
+grep -qE '^  script/review-mr.sh +missing managed file$' "$work/c88-3.err" && ok || bad "check does not name the missing managed file"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+# 생성 파일과 관리 파일이 함께 어긋나면 둘 다 보고한다
+printf '\nedited\n' >> "$c/AGENTS.md"; printf '\n# edited\n' >> "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-4.out" 2> "$work/c88-4.err"; check "check with both kinds of drift" "$?" "1"
+has "$work/c88-4.err" "generated files do not match the config" "the generated drift is not reported beside the managed one"
+has "$work/c88-4.err" "managed files differ from what the harness installed" "the managed drift is not reported beside the generated one"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+# staged — 인덱스의 내용과 비교한다
+( cd "$c" && git add -A ) || bad "could not stage the check repo"
+"$root/bin/harness" check --target "$c" --staged > "$work/c88-5.out" 2> "$work/c88-5.err"; check "check --staged on a clean index" "$?" "0"
+printf '\n# edited\n' >> "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" --staged > "$work/c88-6.out" 2> "$work/c88-6.err"; check "check --staged with an unstaged edit" "$?" "0"
+( cd "$c" && git add script/review-mr.sh )
+"$root/bin/harness" check --target "$c" --staged > "$work/c88-7.out" 2> "$work/c88-7.err"; check "check --staged with a staged edit" "$?" "1"
+has "$work/c88-7.err" "script/review-mr.sh" "check --staged does not name the staged managed file"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1; ( cd "$c" && git add -A )
+# 고정 사본 — render 는 되돌리지 않는다. install 이 되돌린다
+printf '\n# edited by hand\n' >> "$c/.harness/templates/managed/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-8.out" 2> "$work/c88-8.err"; check "check with an edited pinned copy" "$?" "1"
+has "$work/c88-8.err" ".harness/templates/managed/script/review-mr.sh" "check does not name the edited pinned file"
+has "$work/c88-8.err" "comes back with \`harness install\`" "the help does not name harness install for the pinned copy"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+"$root/bin/harness" check --target "$c" > "$work/c88-9.out" 2> "$work/c88-9.err"; check "check after render, pinned copy still edited" "$?" "1"
+"$root/bin/harness" install --target "$c" >/dev/null 2>&1
+"$root/bin/harness" check --target "$c" > "$work/c88-10.out" 2> "$work/c88-10.err"; check "check after install restores the copy" "$?" "0"
+# 옛 형식 매니페스트는 비교할 해시가 없다
+old_form "$c"
+"$root/bin/harness" check --target "$c" > "$work/c88-11.out" 2> "$work/c88-11.err"; check "check over an old manifest" "$?" "0"
+has "$work/c88-11.out" "check: 0 managed files match the manifest" "an old manifest was compared"
+cat "$work"/c88-*.out "$work"/c88-*.err > "$work/c88-all.log"; no_hangul "$work/c88-all.log" "managed file check output"
 
 echo
 if [ "$fail" -eq 0 ]; then

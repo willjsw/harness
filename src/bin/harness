@@ -1418,8 +1418,37 @@ def drift(cfg, target, staged=False):
     return bad
 
 
+def staged_bytes(target: Path, rel: str):
+    r = subprocess.run(["git", "-C", str(target), "show", ":%s" % rel], capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def managed_drift(target: Path, staged=False):
+    """관리 파일·고정 사본과 `.harness/managed` 의 대조 — ((경로, 사유) 목록, 비교한 줄 수).
+
+    staged 면 작업 트리 대신 인덱스의 내용과 비교한다. 매니페스트 자신은 작업 트리에서 읽는다.
+    해시가 없는 옛 형식 줄은 비교하지 않는다.
+    """
+    bad, n = [], 0
+    for rel, h in manifest_entries(target):
+        if h is None:
+            continue
+        n += 1
+        if staged:
+            data = staged_bytes(target, rel)
+        else:
+            p = target / rel
+            data = p.read_bytes() if p.is_file() else None
+        if data is None:
+            bad.append((rel, "missing managed file"))
+        elif hashlib.sha256(data).hexdigest() != h:
+            bad.append((rel, "modified managed file"))
+    return bad, n
+
+
 def cmd_check(cfg, target, args):
     bad = drift(cfg, target, staged=args.staged)
+    mbad, compared = managed_drift(target, staged=args.staged)
     if bad:
         print("error: generated files do not match the config%s"
               % (" (staged contents)" if args.staged else ""), file=sys.stderr)
@@ -1427,8 +1456,20 @@ def cmd_check(cfg, target, args):
             print("  %-52s %s" % (rel, why), file=sys.stderr)
         print("\nhelp: regenerate them — never edit generated files by hand\n"
               "        harness render", file=sys.stderr)
+    if mbad:
+        print("%serror: managed files differ from what the harness installed%s"
+              % ("\n" if bad else "", " (staged contents)" if args.staged else ""), file=sys.stderr)
+        for rel, why in mbad:
+            print("  %-52s %s" % (rel, why), file=sys.stderr)
+        print("\nhelp: managed files are the harness's — render puts them back\n"
+              "        harness render\n"
+              "      project scripts belong in script/project/", file=sys.stderr)
+        if any(rel.startswith(PINNED) for rel, _w in mbad):
+            print("      the pinned copy under .harness/ comes back with `harness install`", file=sys.stderr)
+    if bad or mbad:
         return 1
     print("check: %d generated files match the config" % len(plan(cfg, target)))
+    print("check: %d managed files match the manifest" % compared)
     return 0
 
 
@@ -3397,7 +3438,7 @@ COMMANDS = {
     # 이름          (함수, 설정이 필요한가, 인수, 설명)
     "install":   (None, True,  "[--target DIR] [--adopt]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
     "render":    (None, True,  "[--target DIR] [--adopt]", "harness.toml + .ai/project/ -> generated files"),
-    "check":     (None, True,  "[--staged]", "verify generated files match the config"),
+    "check":     (None, True,  "[--staged]", "verify generated files match the config and managed files match the manifest"),
     "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, tools, hooks (--remote: also the remote, read-only; "
                   "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
