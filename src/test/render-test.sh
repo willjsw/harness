@@ -527,6 +527,12 @@ has "$work/selftest.log" "skip" "read-only, but it did not report skipping the w
 check "writes pass when the contract holds" "$(run_selftest '' --write 1 100)" "0"
 check "issue creation passes when the contract holds" "$(run_selftest '' --create-issue 1 100)" "0"
 hasnt "$work/selftest.log" "skip  " "ran every item, yet something was skipped"
+has "$work/selftest.log" "tracker_labels_ensure" "the self-test does not prepare the issue labels"
+# 페이크는 받은 라벨을 기록한다 — 자체 검사가 설정의 이슈 라벨 셋을 넘긴다
+check "the self-test passes the configured issue labels" "$(LC_ALL=C sort -u "$fstate/ensured_labels" | tr '\n' ' ')" "Requirement Task invalid "
+rm -f "$fstate/ensured_labels"
+( cd "$t" && FAKE_STATE="$fstate" sh -c '. ./script/forge.sh && tracker_labels_ensure A "" B C' ); check "the fake's tracker_labels_ensure exits 0" "$?" "0"
+check "the fake records each non-empty label" "$(tr '\n' ' ' < "$fstate/ensured_labels")" "A B C "
 
 # 계약을 어기는 아홉 가지를 각각 잡아야 한다. 하나라도 통과로 지나가면 "검증됨" 이 거짓이 된다.
 for brk in mr_view threads thread_id issue_list open_mrs; do
@@ -567,7 +573,7 @@ done
 echo "UT-19 uninstall removes only what the harness installed"
 # 프로젝트가 쓴 산문과 작업 산출물을 지우면 되돌릴 수 없다.
 t="$work/rm"; rm -rf "$t"; mkdir -p "$t"
-( cd "$t" && git init -q . && git config core.hooksPath script/githooks )
+( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
 printf '내가 쓴 담당 범위\n' >> "$t/.ai/project/scope.md"
 mkdir -p "$t/docs/spec" && echo "명세" > "$t/docs/spec/12-foo.md"
@@ -1884,12 +1890,12 @@ n=0
 for f in "$t"/script/*.sh "$t"/script/*.py; do
   [ -f "$f" ] || continue
   b=$(basename "$f")
-  case "$b" in _*|rollback-work.sh|create-carryover-issue.sh|forge-selftest.sh|harness-verify.sh|forge.sh) continue ;; esac
+  case "$b" in _*|rollback-work.sh|create-carryover-issue.sh|forge-selftest.sh|forge-setup.sh|harness-verify.sh|forge.sh) continue ;; esac
   n=$((n + 1))
   grep -qxF "Bash(script/$b:*)" "$work/allow.txt" && ok || bad "the managed script $b is not allowed"
 done
 [ "$n" -gt 0 ] && ok || bad "no installed managed script was counted"
-for b in rollback-work.sh create-carryover-issue.sh forge-selftest.sh; do
+for b in rollback-work.sh create-carryover-issue.sh forge-selftest.sh forge-setup.sh; do
   [ -f "$t/script/$b" ] || bad "the excluded script $b is not installed, so its absence proves nothing"
   hasnt "$work/allow.txt" "script/$b" "the irreversible script $b is allowed"
 done
@@ -3396,6 +3402,238 @@ env -u RENDER_TEST_WATCHED RENDER_TEST_BLOCK_LIMIT=nan "$root/test/render-test.s
 check "render-test refuses a limit that is not a positive number" "$?" "2"
 has "$wd/top.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "render-test does not say why it refused the limit"
 unset -f drive gone
+
+echo "UT-96 install turns git hooks on only when core.hooksPath is empty, and install, doctor and uninstall judge the value by the harness root it points at"
+# 훅이 꺼진 채면 커밋 형식·시크릿 스캔·생성물 검사가 하나도 돌지 않는다. 남이 둔 설정을 덮으면 그 도구의 훅이 사라진다.
+h96() { HARNESS_HOME="$work/home96" "$root/bin/harness" "$@"; }
+hp96() { git -C "$1" config core.hooksPath || echo "(none)"; }
+hk_item() { # hk_item <대상> — doctor --json 의 `git hooks enabled` 항목의 state 와 detail
+  "$root/bin/harness" doctor --json --target "$1" 2>/dev/null | python3 -c '
+import json, sys
+hit = [i for i in json.load(sys.stdin)["items"] if i["what"] == "git hooks enabled"]
+print("%s|%s" % (hit[0]["state"], hit[0]["detail"]) if hit else "none")'
+}
+hk="$work/hk"; rm -rf "$hk"; mkdir -p "$hk"
+# 빈 값 — 켠다. `.sample` 훅만 있으면 비어 있는 것으로 본다
+t="$hk/empty"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+mkdir -p "$t/.git/hooks"; : > "$t/.git/hooks/pre-commit.sample"
+h96 install --target "$t" > "$work/hk-empty.out" 2>&1; check "install into an empty setting exits 0" "$?" "0"
+check "an empty setting is set to the hooks directory" "$(hp96 "$t")" "script/githooks"
+has "$work/hk-empty.out" "install: set core.hooksPath to script/githooks" "install does not say it set core.hooksPath"
+# 재설치 — 켜진 값은 그대로이고 다시 알리지 않는다
+h96 install --target "$t" > "$work/hk-again.out" 2>&1; check "reinstall exits 0" "$?" "0"
+check "reinstall keeps the value" "$(hp96 "$t")" "script/githooks"
+hasnt "$work/hk-again.out" "set core.hooksPath" "reinstall announced the hooks again"
+# 다른 값 — 두고 켜는 명령을 알린다
+t="$hk/other"; mkdir -p "$t"; ( cd "$t" && git init -q . && git config core.hooksPath .husky )
+h96 install --target "$t" > "$work/hk-other.out" 2>&1; check "install over another value exits 0" "$?" "0"
+check "another value is left as is" "$(hp96 "$t")" ".husky"
+has "$work/hk-other.out" "core.hooksPath is already .husky — left as is" "install does not say it left the other value"
+has "$work/hk-other.out" "git config core.hooksPath script/githooks" "install does not give the command that turns the hooks on"
+hasnt "$work/hk-other.out" "set core.hooksPath to" "install claims it set a value it left"
+# 자기 훅 — 값이 비어 있어도 `.git/hooks/` 의 훅을 가리지 않는다
+t="$hk/own"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+mkdir -p "$t/.git/hooks"; printf '#!/bin/sh\nexit 0\n' > "$t/.git/hooks/pre-commit"; chmod +x "$t/.git/hooks/pre-commit"
+h96 install --target "$t" > "$work/hk-own.out" 2>&1; check "install over own hooks exits 0" "$?" "0"
+check "own hooks keep the setting empty" "$(hp96 "$t")" "(none)"
+has "$work/hk-own.out" "pre-commit" "install does not name the hook it found"
+has "$work/hk-own.out" "left as is" "install does not say it left the own hooks"
+has "$work/hk-own.out" "git config core.hooksPath script/githooks" "install does not give the command for own hooks"
+# git 밖 — 실패가 아니다
+t="$hk/nogit"; mkdir -p "$t"
+h96 install --target "$t" > "$work/hk-nogit.out" 2>&1; check "install outside git exits 0" "$?" "0"
+has "$work/hk-nogit.out" "install: not a git repository — git hooks were not enabled" "install outside git does not say the hooks are off"
+has "$work/hk-nogit.out" "git config core.hooksPath script/githooks" "install outside git does not give the command"
+# 모노레포 — 서브프로젝트의 기대 값으로 켜고, 둘째 서브프로젝트는 첫째의 값을 둔다
+m="$hk/mono"; mkdir -p "$m/packages/api" "$m/packages/web"; ( cd "$m" && git init -q . )
+h96 install --target "$m/packages/api" > "$work/hk-mono.out" 2>&1; check "install into a subproject exits 0" "$?" "0"
+check "a subproject sets its own hooks path" "$(hp96 "$m")" "packages/api/script/githooks"
+has "$work/hk-mono.out" "set core.hooksPath to packages/api/script/githooks" "install does not name the subproject's value"
+h96 install --target "$m/packages/web" > "$work/hk-mono2.out" 2>&1; check "install into a second subproject exits 0" "$?" "0"
+check "a second subproject keeps the first one's value" "$(hp96 "$m")" "packages/api/script/githooks"
+has "$work/hk-mono2.out" "git config core.hooksPath packages/web/script/githooks" "the second subproject does not give its own command"
+# doctor · uninstall 도 서브프로젝트의 기대 값으로 가른다 — 리포 루트의 값은 서브프로젝트의 훅이 아니다
+check "a subproject's doctor sees its own hooks on" "$(hk_item "$m/packages/api")" "ok|"
+check "a sibling subproject's doctor sees its hooks off, with its own command" "$(hk_item "$m/packages/web")" \
+  "bad|run \`git config core.hooksPath packages/web/script/githooks\`"
+m2="$hk/mono-root"; mkdir -p "$m2/packages/svc"; ( cd "$m2" && git init -q . && git config core.hooksPath script/githooks )
+h96 install --target "$m2/packages/svc" > "$work/hk-mono3.out" 2>&1; check "install under a root value exits 0" "$?" "0"
+check "the repository root's value is left as is" "$(hp96 "$m2")" "script/githooks"
+check "a subproject's doctor does not take the root value as its hooks" "$(hk_item "$m2/packages/svc")" \
+  "bad|run \`git config core.hooksPath packages/svc/script/githooks\`"
+h96 uninstall --target "$m/packages/web" > "$work/hk-rm-web.out" 2>&1; check "uninstall of the second subproject exits 0" "$?" "0"
+check "uninstall keeps a value that points at another subproject" "$(hp96 "$m")" "packages/api/script/githooks"
+hasnt "$work/hk-rm-web.out" "unset core.hooksPath" "uninstall announced unsetting a value it kept"
+h96 uninstall --target "$m/packages/api" > "$work/hk-rm-api.out" 2>&1; check "uninstall of the first subproject exits 0" "$?" "0"
+check "uninstall clears the subproject's own value" "$(hp96 "$m")" "(none)"
+has "$work/hk-rm-api.out" "unset core.hooksPath" "uninstall does not say it cleared the value"
+h96 uninstall --target "$hk/other" > "$work/hk-rm-other.out" 2>&1; check "uninstall over another tool's value exits 0" "$?" "0"
+check "uninstall keeps another tool's value" "$(hp96 "$hk/other")" ".husky"
+cat "$work"/hk-*.out > "$work/hk-all.log"; no_hangul "$work/hk-all.log" "install hooks output"
+unset -f h96 hp96 hk_item
+
+echo "UT-97 render makes the forge's issue and review request templates from the .ai/templates forms and the issue labels"
+# 양식을 손으로 옮겨 두면 양식이 바뀔 때 템플릿만 옛 내용으로 남는다. 라벨이 설정과 다르면 사람이 만든 이슈가 라벨 없이 생긴다.
+labels97() { # labels97 <대상> <requirement> <task> <invalid> — 이슈 라벨 줄을 그 값으로 바꾼다
+  sedi "s|^labels = {.*}\$|labels = { requirement = \"$2\", task = \"$3\", invalid = \"$4\" }|" "$1/harness.toml"
+}
+t="$work/ftpl"; setup "$t"
+labels97 "$t" Req-pinned Task-pinned invalid-pinned
+"$root/bin/harness" set --target "$t" forge.tracker github forge.review_host github >/dev/null 2>&1; check "render with GitHub exits 0" "$?" "0"
+for f in .github/ISSUE_TEMPLATE/requirement.md .github/ISSUE_TEMPLATE/task.md .github/pull_request_template.md; do
+  [ -f "$t/$f" ] && ok || bad "GitHub template missing: $f"
+  grep -qxF "$f" "$t/.harness/generated" && ok || bad "GitHub template not in the manifest: $f"
+done
+check "the requirement template head" "$(sed -n 1,6p "$t/.github/ISSUE_TEMPLATE/requirement.md")" '---
+name: Requirement
+about: 요구사항 이슈 — 브랜치 하나·리뷰 요청 하나의 단위
+title: ""
+labels: ["Req-pinned"]
+---'
+check "the task template labels" "$(sed -n 5p "$t/.github/ISSUE_TEMPLATE/task.md")" 'labels: ["Task-pinned"]'
+check "a blank line follows the head" "$(sed -n 7p "$t/.github/ISSUE_TEMPLATE/task.md")" ""
+tail -n +8 "$t/.github/ISSUE_TEMPLATE/requirement.md" | cmp -s - "$t/.ai/templates/issue-requirement.md" && ok || bad "the requirement template body is not the form"
+tail -n +8 "$t/.github/ISSUE_TEMPLATE/task.md" | cmp -s - "$t/.ai/templates/issue-task.md" && ok || bad "the task template body is not the form"
+cmp -s "$t/.github/pull_request_template.md" "$t/.ai/templates/mr.md" && ok || bad "the pull request template is not mr.md"
+# 라벨을 바꾸면 따라 바뀐다. 빈 라벨은 빈 배열이다
+labels97 "$t" Req-pinned Work-changed invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render after a label change exits 0" "$?" "0"
+check "the task template follows the label" "$(sed -n 5p "$t/.github/ISSUE_TEMPLATE/task.md")" 'labels: ["Work-changed"]'
+labels97 "$t" "" Work-changed invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+check "an empty label is an empty list" "$(sed -n 5p "$t/.github/ISSUE_TEMPLATE/requirement.md")" 'labels: []'
+labels97 "$t" Req-pinned Work-changed invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+# 손대면 check 가 잡는다
+echo "hand edit" >> "$t/.github/pull_request_template.md"
+"$root/bin/harness" check --target "$t" > "$work/ftpl-check.log" 2>&1; check "check over an edited template exits 1" "$?" "1"
+has "$work/ftpl-check.log" ".github/pull_request_template.md" "check does not name the edited template"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+# 트래커와 리뷰 호스트는 따로 적용된다 — Jira 트래커는 이슈 템플릿이 없다
+"$root/bin/harness" set --target "$t" forge.tracker jira > "$work/ftpl-jira.log" 2>&1; check "render with a Jira tracker exits 0" "$?" "0"
+[ -f "$t/.github/pull_request_template.md" ] && ok || bad "the pull request template is gone with a Jira tracker"
+[ -e "$t/.github/ISSUE_TEMPLATE" ] && bad "issue templates are left with a Jira tracker" || ok
+# GitLab — 템플릿이 옮겨 가고 GitHub 의 것은 지워진다
+"$root/bin/harness" set --target "$t" forge.tracker gitlab forge.review_host gitlab >/dev/null 2>&1; check "render with GitLab exits 0" "$?" "0"
+for f in .gitlab/issue_templates/Requirement.md .gitlab/issue_templates/Task.md .gitlab/merge_request_templates/Default.md; do
+  [ -f "$t/$f" ] && ok || bad "GitLab template missing: $f"
+done
+[ -e "$t/.github/pull_request_template.md" ] && bad "the GitHub pull request template is left after moving to GitLab" || ok
+check "the GitLab requirement template ends with the label action" "$(tail -1 "$t/.gitlab/issue_templates/Requirement.md")" '/label ~"Req-pinned"'
+check "the GitLab task template ends with the label action" "$(tail -1 "$t/.gitlab/issue_templates/Task.md")" '/label ~"Work-changed"'
+python3 - "$t/.gitlab/issue_templates/Task.md" "$t/.ai/templates/issue-task.md" <<'PY' && ok || bad "the GitLab task template is not the form with one blank line and the label action"
+import sys
+a, b = (open(p, encoding="utf-8").read() for p in sys.argv[1:])
+sys.exit(0 if a == b + "\n" + '/label ~"Work-changed"\n' else 1)
+PY
+cmp -s "$t/.gitlab/merge_request_templates/Default.md" "$t/.ai/templates/mr.md" && ok || bad "the merge request template is not mr.md"
+labels97 "$t" Req-pinned "" invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+cmp -s "$t/.gitlab/issue_templates/Task.md" "$t/.ai/templates/issue-task.md" && ok || bad "an empty label still added the label action"
+# 서브프로젝트는 만들지 않는다 — forge 는 리포 루트의 템플릿만 읽는다
+m="$work/ftpl-mono"; rm -rf "$m"; mkdir -p "$m/packages/tpl"; ( cd "$m" && git init -q . )
+HARNESS_HOME="$work/home97" "$root/bin/harness" install --target "$m/packages/tpl" >/dev/null 2>&1; check "install into a subproject exits 0" "$?" "0"
+[ -e "$m/packages/tpl/.github/ISSUE_TEMPLATE" ] || [ -e "$m/packages/tpl/.github/pull_request_template.md" ] \
+  && bad "a subproject made forge templates" || ok
+[ -e "$m/.github/ISSUE_TEMPLATE" ] && bad "a subproject wrote templates at the repository root" || ok
+"$root/bin/harness" check --target "$m/packages/tpl" >/dev/null 2>&1; check "a subproject's check passes without templates" "$?" "0"
+# 손으로 둔 템플릿은 덮지 않고 멈춘다. --adopt 면 옆으로 옮기고 넘겨받는다
+a="$work/ftpl-adopt"; rm -rf "$a"; mkdir -p "$a/.github"; cp "$root/templates/harness.toml" "$a/harness.toml"
+printf 'my own template\n' > "$a/.github/pull_request_template.md"
+"$root/bin/harness" render --target "$a" > "$work/ftpl-adopt.log" 2>&1; check "render over a hand-made template exits 2" "$?" "2"
+check "the hand-made template is untouched" "$(cat "$a/.github/pull_request_template.md")" "my own template"
+has "$work/ftpl-adopt.log" ".github/pull_request_template.md" "the refusal does not name the template"
+has "$work/ftpl-adopt.log" "--adopt" "the refusal does not mention --adopt"
+"$root/bin/harness" render --target "$a" --adopt > "$work/ftpl-adopt2.log" 2>&1; check "render --adopt exits 0" "$?" "0"
+check "the hand-made template moved aside" "$(cat "$a/.github/pull_request_template.md.orig")" "my own template"
+cmp -s "$a/.github/pull_request_template.md" "$a/.ai/templates/mr.md" && ok || bad "the adopted path is not the generated template"
+grep -qxF ".github/pull_request_template.md" "$a/.harness/generated" && ok || bad "the adopted template is not in the manifest"
+grep -qF ".orig" "$a/.harness/generated" "$a/.harness/managed" && bad "the .orig file is in a manifest" || ok
+has "$work/ftpl-adopt2.log" "render: adopted .github/pull_request_template.md — yours is at .github/pull_request_template.md.orig" "render --adopt does not say what it took over"
+# 제거 — 템플릿은 지우고 CI 골격은 남긴다
+[ -d "$a/.github/workflows" ] && ok || bad "the GitHub CI skeleton was not seeded"
+"$root/bin/harness" uninstall --target "$a" >/dev/null 2>&1; check "uninstall exits 0" "$?" "0"
+[ -e "$a/.github/pull_request_template.md" ] || [ -e "$a/.github/ISSUE_TEMPLATE" ] && bad "uninstall left a template" || ok
+[ -d "$a/.github/workflows" ] && ok || bad "uninstall removed the CI skeleton"
+[ -f "$a/.github/pull_request_template.md.orig" ] && ok || bad "uninstall removed the .orig file"
+cat "$work"/ftpl-*.log > "$work/ftpl-all.log"; no_hangul "$work/ftpl-all.log" "forge template output"
+unset -f labels97
+
+echo "UT-98 harness forge-setup runs script/forge-setup.sh in the harness root and returns its exit code"
+# 라벨이 처음 쓰일 때에야 만들어지면 권한 문제가 리뷰 루프 한가운데서 드러난다. 사람이 미리 한 번 부르는 명령이다.
+t="$work/fsetup"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+HARNESS_HOME="$work/home98" "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for forge-setup"
+cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+mkdir -p "$work/fsetup-state"
+FAKE_STATE="$work/fsetup-state" "$root/bin/harness" forge-setup --target "$t" > "$work/fsetup.out" 2> "$work/fsetup.err"
+check "forge-setup with a working tracker exits 0" "$?" "0"
+check "forge-setup passes the configured issue labels" "$(tr '\n' ' ' < "$work/fsetup-state/ensured_labels")" "Requirement Task invalid "
+check "forge-setup says the labels are ready" "$(cat "$work/fsetup.out")" "forge-setup: labels ready on github: Requirement, Task, invalid"
+printf '#!/usr/bin/env bash\necho "stub ran in $(pwd)"\nexit 7\n' > "$t/script/forge-setup.sh"
+( cd "$work" && "$root/bin/harness" forge-setup --target "$t" > "$work/fsetup2.out" 2>&1 ); check "forge-setup returns the script's exit code" "$?" "7"
+has "$work/fsetup2.out" "stub ran in $(cd "$t" && pwd -P)" "forge-setup did not run the script in the harness root"
+rm -f "$t/script/forge-setup.sh"
+"$root/bin/harness" forge-setup --target "$t" > "$work/fsetup3.out" 2>&1; check "forge-setup without the script exits 2" "$?" "2"
+has "$work/fsetup3.out" "script/forge-setup.sh is missing" "forge-setup does not say the script is missing"
+"$root/bin/harness" help > "$work/fsetup-help.out" 2>&1
+has "$work/fsetup-help.out" "forge-setup" "help does not list forge-setup"
+has "$work/fsetup-help.out" "writes to the remote" "help does not say forge-setup writes to the remote"
+cat "$work"/fsetup*.out "$work/fsetup.err" > "$work/fsetup-all.log"; no_hangul "$work/fsetup-all.log" "forge-setup output"
+
+echo "UT-99 an installed work-preflight reads the issue through the adapter and does not start on a closed or unreadable issue"
+# 없는 번호나 닫힌 이슈에도 standalone 이 나오면 끝난 작업에 브랜치와 리뷰 요청이 새로 생긴다.
+t="$work/preflight99"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+HARNESS_HOME="$work/home99" "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for work-preflight"
+isolate_records "$t"
+cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+pstate="$work/preflight99-state"; mkdir -p "$pstate"
+pf99() { ( cd "$t" && FAKE_STATE="$pstate" ./script/work-preflight.sh 100 ) > "$work/pf99.out" 2> "$work/pf99.err"; }
+echo closed > "$pstate/issue_state"; pf99; check "a closed issue is not started" "$?" "1"
+has "$work/pf99.err" "stop: issue 100 is closed" "work-preflight does not say the issue is closed"
+echo fail > "$pstate/issue_state"; pf99; check "an unreadable issue stops the run" "$?" "2"
+has "$work/pf99.err" "stop: could not read issue 100 from the tracker" "work-preflight does not say the issue could not be read"
+echo empty > "$pstate/issue_state"; pf99; check "an issue without a state stops the run" "$?" "2"
+has "$work/pf99.err" "stop: could not read the state of issue 100" "work-preflight does not say the state could not be read"
+grep -q "issue-closed" "$t.records/usage.log" && grep -q "issue-query-failed" "$t.records/usage.log" && ok \
+  || bad "the usage log lacks the issue labels"
+no_hangul "$work/pf99.err" "work-preflight issue check output"
+unset -f pf99
+
+echo "UT-100 doctor --remote finds a configured label past the first 1,000 through the GitHub adapter"
+# 목록을 개수 상한까지만 읽으면 forge-setup 이 만든 라벨을 doctor 가 없다고 보고한다.
+t="$work/labels100"; setup "$t"
+"$root/bin/harness" set --target "$t" forge.tracker github forge.review_host github >/dev/null 2>&1 || bad "could not switch to GitHub"
+git init -q --bare "$work/labels100-origin.git"
+( cd "$t" && git init -q -b development . && git remote add origin "$work/labels100-origin.git" && git add -A \
+  && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -qm init \
+  && git -c core.hooksPath=/dev/null push -q origin development ) || bad "could not prepare the repo with an origin"
+gh100="$work/gh100"; rm -rf "$gh100"; mkdir -p "$gh100"
+cat > "$gh100/gh" <<'SH'
+#!/bin/sh
+# 로그인은 되어 있고, 라벨은 1,000개 뒤에 설정의 라벨이 있다. 페이지마다 배열을 이어 붙여 낸다
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "api --paginate")
+    case "$3" in
+      "repos/{owner}/{repo}/labels?"*)
+        python3 -c '
+import json
+names = ["filler-%04d" % i for i in range(1, 1001)] + ["Requirement", "Task", "invalid"]
+for k in range(0, len(names), 100):
+    print(json.dumps([{"name": n} for n in names[k:k + 100]]))'
+        exit 0 ;;
+    esac ;;
+esac
+exit 1
+SH
+chmod +x "$gh100/gh"
+PATH="$gh100:$PATH" "$root/bin/harness" doctor --remote --target "$t" > "$work/labels100.txt" 2>&1
+sed -n '/^remote$/,/^$/p' "$work/labels100.txt" | grep '^  ' > "$work/labels100.sec"
+for l in Requirement Task invalid; do
+  has "$work/labels100.sec" "  ok   label \`$l\`  — on github" "doctor does not see label $l past the first 1,000"
+done
+hasnt "$work/labels100.sec" "missing on github" "doctor reports a label missing that is on the forge"
+no_hangul "$work/labels100.txt" "doctor --remote label output"
 
 echo
 if [ "$fail" -eq 0 ]; then

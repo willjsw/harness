@@ -53,12 +53,39 @@ v = json.load(sys.stdin)
 json.dump([one(x) for x in v] if isinstance(v, list) else one(v), sys.stdout, ensure_ascii=False)
 '
 
-# 라벨이 없으면 붙이기가 실패한다. 이미 있으면 실패해도 무시한다 — 멱등하게 쓴다.
+# 라벨이 없으면 붙이기가 실패하므로 먼저 만든다. 멱등하게 쓴다 — 라벨마다 만들고, 만들지 못하면 그 라벨 하나를
+# 이름으로 직접 조회해 원격에 이미 있는지 본다. 목록을 훑지 않으므로 라벨 수에 상한이 없다. "이미 있음" 만이 정상인 실패다.
+# 없으면(조회 실패 포함) 그 라벨과 `label create` 의 오류 끝 줄을 표준 오류로 내고 1 — 뒤 라벨로 가지 않는다.
 _gh_ensure_label() {
   for _l in "$@"; do
     [ -n "$_l" ] || continue
-    "$GITHUB_CLI" label create "$_l" --color ededed >/dev/null 2>&1 || true
+    _gh_err=$("$GITHUB_CLI" label create "$_l" --color ededed 2>&1 >/dev/null) && continue
+    _gh_enc=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$_l") \
+      && "$GITHUB_CLI" api "repos/{owner}/{repo}/labels/$_gh_enc" --jq .name </dev/null >/dev/null 2>&1 && continue
+    echo "error: could not create label \`$_l\`" >&2
+    _gh_tail=$(printf '%s\n' "$_gh_err" | sed '/^[[:space:]]*$/d' | tail -1)
+    [ -z "$_gh_tail" ] || printf '  %s\n' "$_gh_tail" >&2
+    return 1
   done
+}
+
+# 목록 조회는 REST 를 끝까지 페이지 단위로 읽어 배열 하나로 낸다. `gh <대상> list --limit` 는 개수 상한이라
+# 그 밖의 항목이 조용히 빠진다. `--paginate` 는 페이지마다 배열을 이어 붙여 내므로 하나씩 읽어 합친다.
+# gh 가 실패하면 출력이 일부라도 0 이 아닌 코드로 돌아간다 — 빈 배열로 바꾸지 않는다.
+_gh_paged() {
+  _gh_pages=$("$GITHUB_CLI" api --paginate "$1" </dev/null) || return 1
+  printf '%s' "$_gh_pages" | python3 -c '
+import json, sys
+text, out, dec, i = sys.stdin.read().strip(), [], json.JSONDecoder(), 0
+while i < len(text):
+    v, i = dec.raw_decode(text, i)
+    if not isinstance(v, list):
+        raise SystemExit("list response is not an array")
+    out += v
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+json.dump(out, sys.stdout, ensure_ascii=False)
+'
 }
 
 _GH_PR_FIELDS=number,headRefName,headRefOid,body,labels,state
@@ -76,14 +103,16 @@ tracker_issue_view() {
   "$GITHUB_CLI" issue view "$1" --json "$_GH_ISSUE_FIELDS" | python3 -c "$_gh_norm_issue"
 }
 
+# REST 의 이슈 목록은 리뷰 요청도 함께 준다. pull_request 키가 있는 항목을 뺀다.
 tracker_issue_list() {
-  "$GITHUB_CLI" issue list --state all --limit 1000 --json "$_GH_ISSUE_FIELDS" \
+  _gh_paged "repos/{owner}/{repo}/issues?state=all&per_page=100" \
+    | python3 -c 'import json, sys; json.dump([x for x in json.load(sys.stdin) if "pull_request" not in x], sys.stdout)' \
     | python3 -c "$_gh_norm_issue"
 }
 
 tracker_issue_create() {
   _cmd_title="$1"; _cmd_body="$2"; _cmd_label="$3"; _cmd_assignee="$4"; _cmd_ms="$5"
-  _gh_ensure_label "$_cmd_label"
+  _gh_ensure_label "$_cmd_label" || return 1
   _out=$(
     set -- issue create --title "$_cmd_title" --body-file "$_cmd_body"
     [ -n "$_cmd_label" ]    && set -- "$@" --label "$_cmd_label"
@@ -101,7 +130,7 @@ tracker_issue_note() {
 # 라벨을 먼저 붙이고 닫는다. 순서를 뒤집으면 닫힌 이슈에 라벨을 붙이지 못하는 설정에서 실패한다.
 tracker_issue_close() {
   if [ -n "$2" ]; then
-    _gh_ensure_label "$2"
+    _gh_ensure_label "$2" || return 1
     "$GITHUB_CLI" issue edit "$1" --add-label "$2" >/dev/null || return 1
   fi
   "$GITHUB_CLI" issue close "$1" --reason "not planned" >/dev/null
@@ -119,13 +148,17 @@ tracker_auth() {
 }
 
 tracker_labels() {
-  "$GITHUB_CLI" label list --json name --limit 1000 </dev/null | python3 -c '
+  _gh_paged "repos/{owner}/{repo}/labels?per_page=100" | python3 -c '
 import json, sys
 v = json.load(sys.stdin)
 if not isinstance(v, list):
     raise SystemExit("label list is not an array")
 json.dump([x["name"] for x in v], sys.stdout, ensure_ascii=False)
 '
+}
+
+tracker_labels_ensure() {
+  _gh_ensure_label "$@"
 }
 
 fi
@@ -150,7 +183,7 @@ review_mr_diff() {
 review_mr_labels_set() {
   _mr="$1"; _add="$2"; _rm="$3"
   # shellcheck disable=SC2086
-  _gh_ensure_label $_add
+  _gh_ensure_label $_add || return 1
   set -- pr edit "$_mr"
   for _l in $_add; do set -- "$@" --add-label "$_l"; done
   for _l in $_rm; do set -- "$@" --remove-label "$_l"; done
@@ -226,8 +259,13 @@ review_mr_thread_reply() {
   "$GITHUB_CLI" api "repos/{owner}/{repo}/pulls/$1/comments/$2/replies" -f "body=$3" >/dev/null
 }
 
+# REST 의 리뷰 요청은 브랜치와 head 를 head.ref · head.sha 로 준다. 정규화 전에 gh 의 필드 이름으로 옮긴다.
 review_mr_list_open() {
-  "$GITHUB_CLI" pr list --state open --limit 200 --json "$_GH_PR_FIELDS" | python3 -c "$_gh_norm_mr"
+  _gh_paged "repos/{owner}/{repo}/pulls?state=open&per_page=100" | python3 -c '
+import json, sys
+json.dump([dict(x, headRefName=(x.get("head") or {}).get("ref") or "", headRefOid=(x.get("head") or {}).get("sha") or "")
+           for x in json.load(sys.stdin)], sys.stdout)
+' | python3 -c "$_gh_norm_mr"
 }
 
 review_mr_close() {

@@ -19,6 +19,9 @@
 .codex/agents/requirement-analyzer.toml
 .codex/agents/security-guard.toml
 .codex/agents/spec-writer.toml
+.github/ISSUE_TEMPLATE/requirement.md
+.github/ISSUE_TEMPLATE/task.md
+.github/pull_request_template.md
 AGENTS.md
 CLAUDE.md
 docs/adr/README.md

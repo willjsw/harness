@@ -21,6 +21,9 @@
 #   FAKE_AUTH       fail 이면 인증 함수가 종료 코드 1 과 안내 한 줄
 #   FAKE_LABELS     tracker_labels 가 낼 라벨(공백 구분). none 이면 종료 코드 3. 비우면 빈 배열
 #   FAKE_PROTECTED  review_branch_protected 가 true 를 낼 브랜치(공백 구분)
+#
+# 이슈의 상태는 FAKE_STATE/issue_state 파일로 정한다 — 없으면 opened.
+#   closed  닫힌 이슈 · fail  조회 명령이 실패한다 · empty  state 가 빈 JSON
 set -u
 : "${FAKE_BREAK:=}"
 : "${FAKE_AUTH:=}"
@@ -82,9 +85,14 @@ tracker_issue_view() {
   case "$1" in
     *[!0-9A-Za-z-]*) echo "이슈를 찾지 못했다: $1" >&2; return 1 ;;
   esac
-  python3 - "$1" <<'PY'
+  _st=$(cat "$FAKE_STATE/issue_state" 2>/dev/null || echo opened)
+  case "$_st" in
+    fail)  echo "이슈를 읽지 못했다: $1" >&2; return 1 ;;
+    empty) _st="" ;;
+  esac
+  python3 - "$1" "$_st" <<'PY'
 import json, sys
-json.dump({"iid": sys.argv[1], "title": "자체 검사 대상", "state": "opened",
+json.dump({"iid": sys.argv[1], "title": "자체 검사 대상", "state": sys.argv[2],
            "description": "본문", "labels": [], "assignee": "user-a",
            "milestone": "M1"}, sys.stdout, ensure_ascii=False)
 PY
@@ -175,6 +183,14 @@ tracker_labels() {
   [ "$FAKE_LABELS" = none ] && return 3
   [ "$FAKE_BREAK" = labels ] && { printf '{"labels":[]}'; return 0; }
   python3 -c 'import json, sys; json.dump(sys.argv[1].split(), sys.stdout)' "$FAKE_LABELS"
+}
+
+# 받은 라벨을 FAKE_STATE/ensured_labels 에 한 줄씩 남긴다. 빈 인수는 건너뛴다.
+tracker_labels_ensure() {
+  for _l in "$@"; do
+    [ -n "$_l" ] || continue
+    printf '%s\n' "$_l" >> "$FAKE_STATE/ensured_labels"
+  done
 }
 
 review_branch_protected() { # <브랜치>

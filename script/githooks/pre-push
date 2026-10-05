@@ -7,7 +7,8 @@
 # 보호 브랜치로의 force push 도 이 검사에 포함된다. 다른 브랜치의 force push 까지 막으면
 # rebase 워크플로가 막혀 --no-verify 가 습관이 된다.
 #
-# 활성화: git config core.hooksPath script/githooks
+# 활성화: harness install 이 core.hooksPath 가 비어 있으면 켠다. 손으로는 git config core.hooksPath script/githooks
+#         (모노레포면 서브프로젝트 경로를 앞에 붙인다 — packages/api/script/githooks)
 set -u
 # 훅은 하네스 루트가 아니라 리포 루트에서 돌 수 있다. 자기 위치로 먼저 잡고,
 # 그게 하네스 루트가 아니면 리포 루트로 물러선다 — 모노레포에서 갈린다.

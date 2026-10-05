@@ -706,9 +706,9 @@ def deny_rules(cfg: dict) -> list:
     return out
 
 
-# 허용 목록에서 빼는 관리 스크립트 — 이슈·리뷰 요청을 닫거나 만드는, 되돌릴 수 없는 forge 쓰기다.
-# 사람이 직접 부르고 확인을 주는 턴에서만 돈다.
-ALLOW_EXCLUDED = ("rollback-work.sh", "create-carryover-issue.sh", "forge-selftest.sh")
+# 허용 목록에서 빼는 관리 스크립트 — 이슈·리뷰 요청을 닫거나 만드는, 되돌릴 수 없는 forge 쓰기와
+# 원격에 라벨을 만드는 준비 쓰기다. 사람이 직접 부르고 확인을 주는 턴에서만 돈다.
+ALLOW_EXCLUDED = ("rollback-work.sh", "create-carryover-issue.sh", "forge-selftest.sh", "forge-setup.sh")
 ALLOW_KEYS = ("tracker", "review")
 
 
@@ -1139,8 +1139,45 @@ def workflow_doc(cfg: dict, wf: str, target: Path = None) -> str:
     return substitute(STEP_REF.sub(ref, text), derive(cfg), "workflows.%s" % wf)
 
 
-def plan(cfg: dict, target: Path = None) -> list:
-    """생성되는 파일 전부. (경로, 내용, 권한)"""
+# forge 별 이슈 템플릿 — (설정의 라벨 키, 양식, GitHub 머리의 name, about)
+ISSUE_FORMS = (("requirement", "issue-requirement.md", "Requirement", "요구사항 이슈 — 브랜치 하나·리뷰 요청 하나의 단위"),
+               ("task", "issue-task.md", "Task", "단독 task 이슈. 분해의 task 는 sync-task-issues.sh 가 만든다"))
+
+
+def forge_templates(cfg: dict, at: Path = None) -> list:
+    """forge 가 읽는 이슈·리뷰 요청 템플릿. 본문은 `.ai/templates/` 양식 그대로이고 forge 가 읽는 머리·꼬리만 더한다.
+
+    forge 는 리포 루트의 템플릿만 읽으므로, 하네스 루트가 작업 트리 최상위가 아닌 서브프로젝트면 만들지 않는다.
+    """
+    if at is not None and repo_prefix(at):
+        return []
+    forms = TEMPLATES / "managed" / ".ai" / "templates"
+    labels = cfg["issues"]["labels"]
+    tracker, host = cfg["forge"]["tracker"], cfg["forge"]["review_host"]
+    out = []
+    for key, src, name, about in ISSUE_FORMS:
+        body = (forms / src).read_text(encoding="utf-8")
+        label = labels.get(key, "")
+        if tracker == "github":
+            head = "---\nname: %s\nabout: %s\ntitle: \"\"\nlabels: [%s]\n---\n\n" % (
+                name, about, json.dumps(label, ensure_ascii=False) if label else "")
+            out.append((".github/ISSUE_TEMPLATE/%s.md" % key, head + body, 0o644))
+        elif tracker == "gitlab":
+            tail = ("" if body.endswith("\n") else "\n") + "\n/label ~\"%s\"\n" % label if label else ""
+            out.append((".gitlab/issue_templates/%s.md" % name, body + tail, 0o644))
+    mr = (forms / "mr.md").read_text(encoding="utf-8")
+    if host == "github":
+        out.append((".github/pull_request_template.md", mr, 0o644))
+    elif host == "gitlab":
+        out.append((".gitlab/merge_request_templates/Default.md", mr, 0o644))
+    return out
+
+
+def plan(cfg: dict, target: Path = None, at: Path = None) -> list:
+    """생성되는 파일 전부. (경로, 내용, 권한)
+
+    at 은 본문 없이 경로만 셀 때의 하네스 루트다 — 리포 안의 위치에 따라 생기는 파일이 있다.
+    """
     v = derive(cfg)
     out = []
 
@@ -1163,6 +1200,7 @@ def plan(cfg: dict, target: Path = None) -> list:
     out += [(".claude/commands/%s.md" % wf, custom_command(wf, body.get("title") or wf), 0o644)
             for wf, body in sorted(cfg["workflows"].items()) if fragment(wf, "_head") is None]
     out += [(".ai/workflows/%s.md" % wf, workflow_doc(cfg, wf, target), 0o644) for wf in sorted(cfg["workflows"])]
+    out += forge_templates(cfg, target if target is not None else at)
     return sorted(out)
 
 
@@ -1312,13 +1350,13 @@ def role_file_skip(cfg: dict):
     return role_file_unused
 
 
-def harness_paths(cfg: dict) -> set:
+def harness_paths(cfg: dict, at: Path = None) -> set:
     """이번 render 가 쓸 관리 파일과 생성 파일의 경로. 소유 파일과 CI 골격은 없을 때만 까므로 들지 않는다."""
     skip = role_file_skip(cfg)
     src = TEMPLATES / "managed"
     out = {f.relative_to(src).as_posix() for f in src.rglob("*") if f.is_file()}
     out = {rel for rel in out if not skip(rel)}
-    return out | {rel for rel, _c, _m in plan(cfg)}
+    return out | {rel for rel, _c, _m in plan(cfg, at=at)}
 
 
 def seeded_paths(cfg: dict) -> set:
@@ -1343,8 +1381,8 @@ def user_files(cfg: dict, target: Path) -> list:
     """
     prev_gen, prev_man = set(previous(target, MANIFEST)), set(previous(target, MANIFEST_MANAGED))
     ours = prev_gen | prev_man
-    writes = harness_paths(cfg)
-    made = {rel for rel, _c, _m in plan(cfg)}
+    writes = harness_paths(cfg, target)
+    made = {rel for rel, _c, _m in plan(cfg, at=target)}
     found = {}
     seeded = seeded_paths(cfg)
     # 정리가 지울 옛 경로 — 지우기 전에 같은 방식으로 링크를 본다. 고정 사본은 정리하지 않는다
@@ -1548,6 +1586,17 @@ def cmd_check(cfg, target, args):
     return 0
 
 
+def cmd_forge_setup(_cfg, target, _args):
+    """설정의 이슈 라벨을 트래커에 만든다. 원격 쓰기라 사람이 부른다 — 절차·훅·다른 명령은 부르지 않는다."""
+    script = target / "script" / "forge-setup.sh"
+    if not script.is_file():
+        print("error: script/forge-setup.sh is missing\n\nhelp: put the managed scripts back\n        harness render",
+              file=sys.stderr)
+        return 2
+    sys.stdout.flush()
+    return subprocess.run(["bash", str(script)], cwd=str(target)).returncode
+
+
 def cmd_vars(cfg, _target, _args):
     for k, val in sorted(derive(cfg).items()):
         print("%-24s %s" % (k, val))
@@ -1680,7 +1729,11 @@ def cmd_install(cfg, target, args):
     with registry_lock():
         if not install_registered(cfg, target, args):
             return 2
-    return cmd_render(cfg, target, args)
+    rc = cmd_render(cfg, target, args)
+    # 렌더가 끝나야 `script/githooks/` 가 있다.
+    if rc == 0:
+        report_hooks(target)
+    return rc
 
 
 def install_registered(cfg, target: Path, args=None) -> bool:
@@ -1739,9 +1792,83 @@ ADR_EXE = {"adr-tools": "adr"}
 
 
 def hooks_path(target: Path):
-    r = subprocess.run(["git", "-C", str(target), "config", "core.hooksPath"],
-                       capture_output=True, text=True)
+    r = git(target, "config", "core.hooksPath")
     return r.stdout.strip() if r.returncode == 0 else ""
+
+
+HOOKS_DIR = "script/githooks"
+
+
+def repo_prefix(target: Path):
+    """하네스 루트의 리포 안 위치 — 리포 루트면 빈 문자열, 아니면 `/` 로 끝난다. git 작업 트리 밖이면 None."""
+    r = git(target, "rev-parse", "--show-prefix")
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def hooks_expected(target: Path) -> str:
+    """이 하네스의 훅을 켜는 `core.hooksPath` 값. 작업 트리 최상위 기준의 상대 경로다."""
+    return (repo_prefix(target) or "") + HOOKS_DIR
+
+
+def hooks_on(target: Path, value: str = None) -> bool:
+    """`core.hooksPath` 가 하네스 루트의 `script/githooks` 를 가리키는가. 상대 값은 작업 트리 최상위 기준으로 푼다."""
+    value = hooks_path(target) if value is None else value
+    if not value:
+        return False
+    top = git(target, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return False
+    p = Path(os.path.expanduser(value))
+    if not p.is_absolute():
+        p = Path(top.stdout.strip()) / p
+    return os.path.realpath(p) == os.path.realpath(target / HOOKS_DIR)
+
+
+def enable_hooks(target: Path):
+    """비어 있을 때만 `core.hooksPath` 를 기대 값으로 켠다. 출력하지 않고 (결과, 부가 값) 을 돌려준다.
+
+    결과는 `no-git` · `already` · `other`(그 값) · `own-hooks`(훅 파일 이름 목록) · `set`(기대 값) · `failed`(git 의 오류 끝 줄).
+    """
+    if repo_prefix(target) is None:
+        return "no-git", None
+    value = hooks_path(target)
+    if hooks_on(target, value):
+        return "already", value
+    if value:
+        return "other", value
+    r = git(target, "rev-parse", "--git-path", "hooks")
+    if r.returncode == 0 and r.stdout.strip():
+        d = Path(r.stdout.strip())
+        d = d if d.is_absolute() else target / d
+        own = sorted(f.name for f in d.iterdir() if f.is_file() and not f.name.endswith(".sample")) if d.is_dir() else []
+        if own:
+            return "own-hooks", (r.stdout.strip(), own)
+    want = hooks_expected(target)
+    r = git(target, "config", "core.hooksPath", want)
+    if r.returncode != 0:
+        tail = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+        return "failed", tail[-1].strip() if tail else "git config exited with %d" % r.returncode
+    return "set", want
+
+
+def report_hooks(target: Path):
+    """install 이 훅 설정 결과를 표준 출력에 알린다. 종료 코드는 바꾸지 않는다."""
+    result, extra = enable_hooks(target)
+    want = hooks_expected(target) if result != "no-git" else HOOKS_DIR
+    help_line = "help: to use this harness's hooks, run `git config core.hooksPath %s`" % want
+    if result == "set":
+        print("install: set core.hooksPath to %s — git hooks now run on commit and push" % extra)
+    elif result == "other":
+        print("install: core.hooksPath is already %s — left as is\n%s" % (extra, help_line))
+    elif result == "own-hooks":
+        d, names = extra
+        print("install: core.hooksPath is not set but %s has hooks of its own (%s) — left as is\n%s"
+              % (d, ", ".join(names), help_line))
+    elif result == "no-git":
+        print("install: not a git repository — git hooks were not enabled\n"
+              "help: after `git init`, run `git config core.hooksPath %s`" % want)
+    elif result == "failed":
+        print("install: could not set core.hooksPath: %s\n%s" % (extra, help_line))
 
 
 def owned_files(target: Path):
@@ -1831,6 +1958,8 @@ def cmd_uninstall(_cfg, target, args):
         if rc:
             return rc
 
+    # 훅 디렉터리를 지우기 전에 가른다. 다른 서브프로젝트나 다른 도구를 가리키는 값은 이 하네스의 것이 아니다
+    ours_hooks = hooks_on(target)
     removed, kept = [], []
     for rel in sorted(set(gen) | set(man)):
         if rel.startswith(PINNED):
@@ -1853,9 +1982,7 @@ def cmd_uninstall(_cfg, target, args):
     unregister(target)
 
     # 훅 설정이 사라진 디렉터리를 가리키면 커밋할 때마다 git 이 실패한다.
-    if hooks_path(target) == "script/githooks":
-        subprocess.run(["git", "-C", str(target), "config", "--unset", "core.hooksPath"],
-                       capture_output=True)
+    if ours_hooks and git(target, "config", "--unset", "core.hooksPath").returncode == 0:
         print("  unset core.hooksPath (it pointed at a directory that is now gone)")
 
     # 하네스가 만든 빈 디렉터리를 정리한다. 작업 산출물이 남아 있으면 그대로 둔다.
@@ -2142,9 +2269,9 @@ def doctor_items(cfg, target, remote=False):
         line("warn", "`%s` is registered to another path" % name, at)
 
     section("git")
-    hp = hooks_path(target)
-    line("ok" if hp == "script/githooks" else "bad", "git hooks enabled",
-         "" if hp == "script/githooks" else "run `git config core.hooksPath script/githooks`")
+    on = hooks_on(target)
+    line("ok" if on else "bad", "git hooks enabled",
+         "" if on else "run `git config core.hooksPath %s`" % hooks_expected(target))
     if git(target, "rev-parse", "--show-toplevel").returncode == 0:
         left = left_worktrees(cfg, target)
         for name, path in left:
@@ -3566,6 +3693,7 @@ COMMANDS = {
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
     "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
     "metrics":   (None, True,  "[import|prune] [--since 7d] [--trace ID]", "run metrics as JSON for the Metrics tab; import reads new session logs first; prune applies retention"),
+    "forge-setup": (None, True, "", "create the configured issue labels on the tracker (writes to the remote)"),
     "vars":      (None, True,  "", "print template variables (debugging)"),
     "uninstall": (None, False, "[--purge] [--yes]", "remove what the harness installed; --purge also removes yours"),
     "start-server": (None, False, "[--dev]", "build if needed and start the web UI in the background on "
@@ -3605,7 +3733,8 @@ def cmd_help(_cfg, _target, _args):
 
 # 전역 CLI 를 깔아도 각 프로젝트는 자기가 고정한 버전으로 돌아야 한다. 그러지 않으면
 # 전역을 올리는 순간 모든 프로젝트의 생성물이 조용히 바뀌고, 그 리포의 검사가 한꺼번에 깨진다.
-DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall"}
+DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall",
+             "forge-setup"}
 
 
 PINNED_SHOWN = 10
@@ -3696,7 +3825,7 @@ def main():
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
                 "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
-                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
+                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,

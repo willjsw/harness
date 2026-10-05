@@ -73,14 +73,18 @@ on_exit() {
 trap on_exit EXIT
 
 command -v python3 >/dev/null || { echo "error: python3 is not installed" >&2; exit 2; }
-# 리뷰를 띄우는 명령은 실행 계획(script/harness.plan.json)이 정한다. 여기서는 CLI 러너인지와 설치 여부만 본다
+# 리뷰를 띄우는 명령은 실행 계획(script/harness.plan.json)이 정한다. 여기서는 CLI 러너인지만 본다
 reviewer_exe=$(python3 "$REVIEW_PY" plan-exe script/harness.plan.json) \
   || { echo "error: script/harness.plan.json is missing or broken" >&2; echo "help: harness render" >&2; exit 2; }
 [ -n "$reviewer_exe" ] || {
   echo "error: no review runner is configured" >&2
   echo "help: when roles.code-reviewer.runner is inproc, the orchestrator reviews as a subagent instead of this script" >&2
   exit 2; }
-command -v "$reviewer_exe" >/dev/null || { echo "error: $reviewer_exe is not installed" >&2; exit 2; }
+# 회차를 올리기 전에 리뷰 러너의 설치와 로그인을 공용 진입점으로 본다. forge 조회·회차 라벨보다 앞이다 —
+# 로그인되지 않은 러너로 회차를 올리면 리뷰 없이 상한 한 칸을 쓴다. 판정의 표준 출력은 버리고 오류는 그대로 둔다
+script/run-agent.py code-reviewer --check >/dev/null || {
+  echo "help: the round was not used — fix the review runner, then rerun" >&2
+  exit 2; }
 [ -f "$CONTRACT" ] || { echo "error: review contract not found: $CONTRACT" >&2; exit 2; }
 
 . script/forge.sh

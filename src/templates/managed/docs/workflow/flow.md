@@ -149,10 +149,11 @@ task 이슈가 함께 닫힌다. 앞 단계의 spec+plan 리뷰 요청은 `Relat
 | 시크릿 스캔 (pre-commit) | 커밋에 **새로 들어오는** 자격증명 | 이미 커밋된 것은 못 본다. 형태가 분명하지 않은 값도 놓친다 |
 | CI | 머지 전 검증 실행 | 성공 필수·승인 필수는 **서버 설정**이며 리포가 강제하지 못한다 |
 
-**훅은 클론 후 1회 활성화가 필요하고, 안 하면 조용히 건너뛴다.**
+**훅이 꺼져 있으면 조용히 건너뛴다.** `harness install` 이 `core.hooksPath` 가 비어 있을 때 켜고, 다른 값이나
+자기 훅이 있으면 두고 켜는 명령만 알린다. 이미 설치된 리포를 새로 클론했으면 `harness doctor` 가 알려 주는 명령으로 켠다.
 
 ```bash
-git config core.hooksPath script/githooks
+git config core.hooksPath script/githooks   # 모노레포면 서브프로젝트 경로를 앞에 붙인다
 ```
 
 ---
