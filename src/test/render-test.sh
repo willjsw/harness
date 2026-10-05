@@ -31,6 +31,63 @@ has()  { if grep -qF -- "$2" "$1"; then ok; else bad "$3"; fi; }
 sedi() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
 hasnt(){ if grep -qF -- "$2" "$1"; then bad "$3"; else ok; fi; }
 
+# 하위 테스트 스크립트 하나에 주는 제한 시간(초). 평소 가장 느린 것이 수십 초다.
+subtest_limit=${RENDER_TEST_SUBTEST_LIMIT:-900}
+
+# limited <초> <명령...> — 명령을 새 세션(프로세스 그룹)으로 띄우고 제한 시간 안에 끝나지 않으면
+# 그룹째 끝낸 뒤 124 로 돌아온다. 끝나면 명령의 종료 코드 그대로다. 표준 입력은 닫는다 — 입력을 기다리며
+# 멈추지 않는다. 시간은 기기가 깨어 있는 동안만 센다(macOS CLOCK_UPTIME_RAW, 그 밖은 monotonic) —
+# 잠자기로 얼어 있던 시간 때문에 깨어난 직후 잘못 끝내지 않는다. 이 테스트가 중단되면 그룹도 함께 끝낸다.
+limited() {
+  python3 -c '
+import os, signal, subprocess, sys, time
+clock = getattr(time, "CLOCK_UPTIME_RAW", None)
+now = (lambda: time.clock_gettime(clock)) if clock is not None else time.monotonic
+limit = float(sys.argv[1])
+p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
+def stop(sig):
+    try:
+        os.killpg(p.pid, sig)
+    except OSError:
+        pass
+def interrupted(signum, _frame):
+    stop(signal.SIGTERM); stop(signal.SIGKILL); p.wait(); sys.exit(128 + signum)
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(s, interrupted)
+end = now() + limit
+while p.poll() is None:
+    if now() >= end:
+        stop(signal.SIGTERM)
+        grace = now() + 5
+        while p.poll() is None and now() < grace:
+            time.sleep(0.1)
+        stop(signal.SIGKILL)
+        p.wait()
+        sys.exit(124)
+    time.sleep(0.1)
+# 직계 자식이 끝나도 그룹에 남은 손자가 있으면 정리한다 — 출력 통로를 쥔 채 남아 다음 단계를 붙잡지 않게
+stop(signal.SIGKILL)
+sys.exit(p.returncode if p.returncode >= 0 else 128 - p.returncode)
+' "$@"
+}
+
+# run_subtest <리포> <스크립트이름> <로그> [환경변수=값...] — 리포의 script/<이름>.sh 를 제한 시간 안에 돌린다.
+# 통과하면 ok, 실패하면 이름과 로그 끝부분을, 제한 시간을 넘기면 멈췄다는 사실과 이름을 남긴다.
+run_subtest() {
+  local repo=$1 name=$2 log=$3 rc
+  shift 3
+  ( cd "$repo" && limited "$subtest_limit" env "$@" "./script/$name.sh" ) >"$log" 2>&1
+  rc=$?
+  case "$rc" in
+    0) ok ;;
+    124) bad "$name did not finish within ${subtest_limit}s and was stopped — $log"
+         tail -5 "$log" >&2 ;;
+    *) bad "$name failed (exit $rc) — $log"
+       tail -5 "$log" >&2 ;;
+  esac
+  return "$rc"
+}
+
 
 records_under_work() { # records_under_work <리포> — 두 기록 경로가 $work 아래를 가리키는지 본다
   local md ul
@@ -341,16 +398,15 @@ isolate_records "$t"
 # 목록을 적지 않고 설치된 것을 센다 — 적어 두면 새 테스트가 여기서 빠진 채 지나간다.
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
-  if ( cd "$t" && "./script/$s.sh" >"$work/$s.log" 2>&1 ); then
-    ok
-  else
-    bad "$s failed — $work/$s.log"
-    tail -5 "$work/$s.log" >&2
-  fi
+  run_subtest "$t" "$s" "$work/$s.log"
 done
 # 프로젝트 명령을 정하기 전이므로 검증 일괄은 실패한다. 그 사실 자체가 신호다.
-( cd "$t" && ./script/run-lint-test.sh >"$work/lint.log" 2>&1 )
-check "verification bundle right after install" "$?" "1"
+# 검증 일괄은 하위 테스트 전부를 다시 돌리므로 그 수만큼의 제한 시간을 준다.
+n_sub=$(ls "$t"/script/test-*.sh | wc -l | tr -d ' ')
+( cd "$t" && limited "$((subtest_limit * (n_sub + 1)))" ./script/run-lint-test.sh ) >"$work/lint.log" 2>&1
+rc=$?
+[ "$rc" = 124 ] && bad "run-lint-test.sh in the installed repo did not finish in time and was stopped — $work/lint.log"
+check "verification bundle right after install" "$rc" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
 ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
 
@@ -364,8 +420,8 @@ wt_gitdir=$(git -C "$victim-wt" rev-parse --absolute-git-dir)
 branches_before=$(git -C "$victim" branch --format='%(refname:short)' | sort)
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
-  ( cd "$t" && GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index" "./script/$s.sh" >"$work/$s.hookenv.log" 2>&1 ) \
-    || bad "$s failed under a linked worktree's hook environment — $work/$s.hookenv.log"
+  # 실패하면 run_subtest 가 이름과 로그(.hookenv.log — 이 환경에서의 실행)를 남긴다
+  run_subtest "$t" "$s" "$work/$s.hookenv.log" GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index"
   check "$s: core.bare of the worktree's repo" "$(git -C "$victim" config core.bare)" "false"
   check "$s: branches of the worktree's repo" "$(git -C "$victim" branch --format='%(refname:short)' | sort)" "$branches_before"
 done
@@ -2704,6 +2760,42 @@ read-EIO fds closed once
 doctor-emfile remote warn reviewer runner \`codex\` could not check"
 cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
 unset -f at_plan at_run
+
+echo "UT-95 a sub-test script that never finishes is stopped and named instead of hanging the run"
+# 하위 테스트가 멈추면 이 테스트 전체가 진행 없이 멈춘다. 제한 시간이 그것을 실패와 이름으로 바꾼다.
+hang="$work/hang"; rm -rf "$hang"; mkdir -p "$hang/script"
+cat > "$hang/script/test-hang.sh" <<'SH'
+#!/usr/bin/env bash
+# 끝나지 않는 하위 테스트. 손자 프로세스도 하나 남긴다
+sleep 300 &
+echo "child $!" > "${HANG_PID_FILE:?}"
+sleep 300
+SH
+cat > "$hang/script/test-stdin.sh" <<'SH'
+#!/usr/bin/env bash
+# 표준 입력에서 무언가 읽히면 실패한다 — 바깥의 입력을 물려받았다는 뜻이다
+if read -r _; then echo "read from the caller's stdin"; exit 1; fi
+exit 0
+SH
+chmod +x "$hang"/script/*.sh
+saved_pass=$pass saved_fail=$fail saved_limit=$subtest_limit
+subtest_limit=2
+t0=$(date +%s)
+run_subtest "$hang" test-hang "$work/hang.log" HANG_PID_FILE="$work/hang.pid" 2>"$work/hang.err"; rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+got="$((fail - saved_fail)) $((pass - saved_pass))"
+# 바깥 입력이 끝없이 들어와도 하위 테스트는 그것을 받지 않는다
+stdin_rc=$(yes | { run_subtest "$hang" test-stdin "$work/stdin.log" >/dev/null 2>&1; echo $?; })
+pass=$saved_pass fail=$saved_fail subtest_limit=$saved_limit
+check "exit code of a stopped sub-test" "$rc" "124"
+check "a stopped sub-test counts as one failure and no pass" "$got" "1 0"
+has "$work/hang.err" "test-hang did not finish within 2s" "the failure does not name the stopped script and its limit"
+[ "$elapsed" -lt 30 ] && ok || bad "stopping the sub-test took ${elapsed}s"
+pid=$(sed -n 's/^child //p' "$work/hang.pid" 2>/dev/null)
+[ -n "$pid" ] || bad "the hanging sub-test did not record its child"
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && bad "stopping the sub-test left its child running" || ok
+check "a sub-test does not read the caller's stdin" "$stdin_rc" "0"
+no_hangul "$work/hang.err" "the stopped sub-test report"
 
 echo
 if [ "$fail" -eq 0 ]; then
