@@ -87,8 +87,17 @@ doctor 의 점검은 출력하지 않는 수집 함수 하나가 한다. 수집 
 
 ### 4-1. 원격 호출 공통
 
-- 원격에 닿는 호출(git · forge 어댑터 함수 · 러너 인증 확인)은 호출마다 30초 제한 시간을 둔다. 표준 입력은 닫고,
+- 원격에 닿는 호출(git · forge 어댑터 함수 · 러너 인증 확인)은 호출마다 `harness.toml` 의 `[doctor] remote_timeout`(초, 기본 30)을
+  제한 시간으로 둔다. 표준 입력은 닫고,
   git 호출에는 `GIT_TERMINAL_PROMPT=0` 을 준다 — 자격증명 입력을 기다리며 멈추지 않는다
+- 리뷰어 러너 확인(4-7)은 그 안의 `auth_check` 가 같은 제한을 받으므로, 바깥 호출은 제한 시간을 `auth_check` 의 시작부터 센다.
+  `run-agent.py --check` 를 띄울 때 파이프의 쓰는 쪽을 넘기고(5-3) 두 단계로 기다린다
+  - 시작 알림까지: 제한 시간 하나. 그 전의 일(실행기 기동 · 계획 읽기)은 원격에 닿지 않는다. 알림 없이 실행기가 끝나면
+    (`unchecked` · 종료 코드 2) 그 결과를 읽는다
+  - 알림 뒤: 제한 시간의 `RUNNER_CHECK_AFTER_START`(2)배. 하나는 실행기가 `auth_check` 에 주는 제한 몫이고, 하나는 실행기가
+    그 결과를 내고 끝나는 몫이다 — 실행기는 그 제한에 `auth_check` 를 끊고 반드시 0 · 3 · 4 로 끝나므로, 바깥이 실행기의 판정보다
+    먼저 끊지 않는다
+  - 어느 단계든 넘기면 실행기의 프로세스 그룹을 끊고 `warn` `could not check` 다 — 실행기가 제한 시간 초과로 낸 결과(4)와 같다
 - 제한 시간 초과 · 실행 실패 · 해석할 수 없는 응답은 그 항목의 `warn` `could not check` 다
 - 원격 URL, git·forge CLI·러너 CLI 의 출력을 `what` · `detail` 에 옮기지 않는다. URL 에 사용자 정보가 들어 있을 수 있고,
   CLI 출력에는 계정 식별 정보가 들어 있다. 옮기는 것은 이 절이 정한 고정 문구와 설정 값(브랜치·라벨·forge 종류·벤더 이름),
@@ -176,6 +185,7 @@ API 키 환경 변수로만 인증한 상태에서 두 명령의 종료 코드 <
 ### 5-2. 실행 계획
 
 `run_plan()` 은 CLI 러너 역할(`via = headless`)마다 `auth_check` 키를 싣는다. 값은 벤더 선언의 `auth_check`, 없으면 빈 목록이다.
+같은 역할에 `auth_timeout` 키도 싣는다. 값은 `[doctor] remote_timeout`(초)이고, 절이 없는 설정은 기본값 30 이다.
 `script/harness.plan.json` 이 바뀌므로 render 가 다시 만든다.
 
 ### 5-3. `script/run-agent.py <역할> --check`
@@ -185,12 +195,16 @@ API 키 환경 변수로만 인증한 상태에서 두 명령의 종료 코드 <
 | 상황 | 종료 코드 | 출력 |
 |---|---|---|
 | 실행 계획이 없다 · 역할이 없다 · 서브에이전트 역할이다 · 실행 파일이 설치되어 있지 않다 | 2 | 지금과 같은 `error:` 안내 (표준 오류) |
+| `auth_check` 가 있는데 `auth_timeout` 이 없거나 1 이상의 정수가 아니다 | 2 | 표준 오류 `error: script/harness.plan.json is missing or broken` 과 `help: harness render` |
 | `auth_check` 가 빈 목록 | 0 | 표준 출력 `unchecked` |
 | `auth_check` 가 종료 코드 0 | 0 | 표준 출력 `signed-in` |
 | `auth_check` 가 0 이 아닌 종료 코드 | 3 | 표준 오류 ``error: <벤더> is not signed in (`<argv>` failed)`` |
-| `auth_check` 제한 시간(30초) 초과 · 띄우지 못함 | 4 | 표준 오류 ``error: could not check sign-in for <벤더>`` |
+| `auth_check` 제한 시간(실행 계획의 `auth_timeout` 초) 초과 · 띄우지 못함 | 4 | 표준 오류 ``error: could not check sign-in for <벤더>`` |
 
 - `auth_check` 명령의 표준 입력은 닫고, 표준 출력·표준 오류는 버린다 — 옮기지 않는다
+- 환경 변수 `HARNESS_CHECK_START_FD` 가 있으면 `auth_check` 를 띄우기 직전에 그 파일 기술자에 한 바이트를 쓰고 닫는다.
+  부른 쪽(doctor)이 `auth_check` 의 제한 시간을 그 시점부터 센다(4-1). 변수가 없거나 쓸 수 없으면 아무것도 하지 않고,
+  표준 출력·표준 오류와 종료 코드는 위 표 그대로다. `auth_check` 에는 그 변수를 넘기지 않는다
 - `--check` 는 실행 지표 스팬과 사용 기록을 남기지 않는다
 - `--check` 와 `--out` · `--prompt` · 입력을 함께 주면 `--check` 만 본다
 - 스크립트 머리 docstring 의 사용법과 종료 코드 설명에 `--check` 를 더한다

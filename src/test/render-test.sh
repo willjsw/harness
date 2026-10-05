@@ -2100,7 +2100,7 @@ import json, sys
 d = sys.argv[1]
 def cli(exe, auth):
     return {"via": "headless", "vendor": "codex", "exe": exe, "argv": [exe, "exec"], "output": "stdout", "model": "",
-            "usage_format": [], "usage_parser": "", "auth_check": auth, "entry": "script/run-agent.py"}
+            "usage_format": [], "usage_parser": "", "auth_check": auth, "auth_timeout": 30, "entry": "script/run-agent.py"}
 plan = {"roles": {"rev": cli("codex", ["codex", "login", "status"]), "noauth": cli("codex", []),
                   "sub": {"via": "subagent", "vendor": "claude"},
                   "ghost": cli("nosuch-cli-59", ["nosuch-cli-59", "login"]),
@@ -2464,7 +2464,7 @@ check "schema reports the set value" "$(rt_schema)" "45"
 t="$work/remote59"
 "$root/bin/harness" set --target "$t" doctor.remote_timeout 7 >/dev/null 2>&1 || bad "could not set doctor.remote_timeout on the remote repo"
 PATH="$stub59:$PATH" python3 - "$root/bin/harness" "$t" > "$work/rt-calls" 2>&1 <<'PY2'
-import importlib.machinery, importlib.util, subprocess, sys, types
+import importlib.machinery, importlib.util, os, subprocess, sys, types
 from pathlib import Path
 loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
 spec = importlib.util.spec_from_loader("harness_cli", loader)
@@ -2476,6 +2476,9 @@ seen = []
 class FakePopen:
     def __init__(self, argv, **kw):
         self.argv, self.pid, self.returncode = argv, 0, 1
+        if argv[0] == sys.executable:
+            # 실행기가 로그인 확인을 바로 시작했다고 알린다
+            os.write(int(kw["env"]["HARNESS_CHECK_START_FD"]), b"1")
     def communicate(self, timeout=None):
         seen.append((self.argv[0], timeout))
         return "", ""
@@ -2484,10 +2487,223 @@ h.subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(s
 h.subprocess.Popen = FakePopen
 h.remote_items(cfg, target, lambda *a: None)
 kinds = sorted({a for a, _ in seen})
-print(sorted({t for _, t in seen}), "git" in kinds, "sh" in kinds, sys.executable in kinds)
+# 리뷰어 러너 확인만 시작 알림 뒤로 그 제한의 배수를 기다린다
+print(sorted({t for a, t in seen if a != sys.executable}), sorted({t / h.RUNNER_CHECK_AFTER_START for a, t in seen if a == sys.executable}),
+      h.RUNNER_CHECK_AFTER_START > 1, "git" in kinds, "sh" in kinds)
 PY2
-check "every remote call gets doctor.remote_timeout" "$(cat "$work/rt-calls")" "[7] True True True"
+check "every remote call gets doctor.remote_timeout" "$(cat "$work/rt-calls")" "[7] [7.0] True True True"
 unset -f rt_with rt_schema
+
+echo "UT-86 the reviewer runner check gives its sign-in command doctor.remote_timeout, and doctor waits for it from its start"
+t="$work/authto"; setup "$t"
+"$root/bin/harness" set --target "$t" roles.planner.runner codex doctor.remote_timeout 7 >/dev/null 2>&1 \
+  || bad "could not make the planner a codex runner with doctor.remote_timeout 7"
+at_plan() { python3 -c 'import json,sys; print(repr(json.load(open(sys.argv[1]))["roles"]["planner"].get("auth_timeout")))' "$t/script/harness.plan.json" 2>&1; }
+# run-agent.py --check 를 띄우되 로그인 확인 명령은 실행하지 않고, 받은 제한 시간과 그때까지 받은 시작 알림만 적는다
+at_run() { # at_run <이름> <ok|expire> [notify] — 결과는 "<종료 코드> <받은 제한 시간 목록> <확인 명령 직전까지 받은 알림 목록>"
+  PATH="$stub59:$PATH" python3 - "$t/script/run-agent.py" "$2" "$work/at-$1.res" "${3:-}" > "$work/at-$1.out" 2> "$work/at-$1.err" <<'PY2'
+import os, runpy, subprocess, sys
+script, mode, res, notify = sys.argv[1:5]
+seen, marks = [], []
+rfd = None
+if notify:
+    rfd, wfd = os.pipe()
+    os.set_blocking(rfd, False)
+    os.environ["HARNESS_CHECK_START_FD"] = str(wfd)
+def fake_run(argv, **kw):
+    seen.append(kw.get("timeout"))
+    if rfd is not None:
+        try:
+            marks.append(os.read(rfd, 8))
+        except BlockingIOError:
+            marks.append(b"")
+    if mode == "expire":
+        raise subprocess.TimeoutExpired(argv, kw.get("timeout"))
+    return subprocess.CompletedProcess(argv, 0)
+subprocess.run = fake_run
+sys.argv = [script, "planner", "--check"]
+code = None
+try:
+    runpy.run_path(script, run_name="__main__")
+except SystemExit as e:
+    code = e.code
+open(res, "w").write("%s %s %s" % (code, seen, marks))
+PY2
+}
+check "the plan carries doctor.remote_timeout as the sign-in time limit" "$(at_plan)" "7"
+at_run set ok; check "the sign-in check runs with the configured time limit" "$(cat "$work/at-set.res")" "0 [7] []"
+check "a sign-in check within the limit prints signed-in" "$(cat "$work/at-set.out")" "signed-in"
+at_run notify ok notify; check "the sign-in check announces its start on the given descriptor before running" "$(cat "$work/at-notify.res")" "0 [7] [b'1']"
+check "a sign-in check that announces its start still prints only signed-in" "$(cat "$work/at-notify.out")" "signed-in"
+at_run expire expire notify; check "a sign-in check past the limit exits 4" "$(cat "$work/at-expire.res")" "4 [7] [b'1']"
+has "$work/at-expire.err" "error: could not check sign-in for codex" "a sign-in check past the limit does not say so"
+# [doctor] 절이 없는 옛 설정은 기본값으로 끊는다
+python3 - "$t/harness.toml" <<'PY2'
+import re, sys; p = sys.argv[1]; s = open(p).read()
+s, n = re.subn(r'^\[doctor\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1 and "[doctor]" not in s
+open(p, "w").write(s)
+PY2
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render without a doctor section" "$?" "0"
+check "the plan's sign-in time limit without a doctor section" "$(at_plan)" "30"
+at_run default ok; check "the sign-in check without a doctor section runs with 30 seconds" "$(cat "$work/at-default.res")" "0 [30] []"
+# 계획에 제한 시간이 없거나 쓸 수 없는 값이면 확인 명령을 띄우지 않고 계획을 다시 만들라고 한다. 시작도 알리지 않는다
+cp "$t/script/harness.plan.json" "$work/at-plan.bak"
+for v in none 0 '"30"' true; do
+  python3 - "$t/script/harness.plan.json" "$v" <<'PY2'
+import json, sys
+p, v = sys.argv[1:3]; d = json.load(open(p)); r = d["roles"]["planner"]
+if v == "none":
+    del r["auth_timeout"]
+else:
+    r["auth_timeout"] = json.loads(v)
+json.dump(d, open(p, "w"))
+PY2
+  at_run bad ok notify; check "a plan with auth_timeout $v" "$(cat "$work/at-bad.res")" "2 [] []"
+  has "$work/at-bad.err" "error: script/harness.plan.json is missing or broken" "a plan with auth_timeout $v is not called broken"
+  cp "$work/at-plan.bak" "$t/script/harness.plan.json"
+done
+# doctor 의 리뷰어 러너 확인을 가상 시계로 돌린다. 실행기는 기동에 prep 초를 쓰고 시작을 알린 뒤 auth 초 뒤에 끝난다.
+# 시작 알림이 없으면 prep 초 뒤에 그냥 끝난다. 실제로 기다리지 않는다
+python3 - "$root/bin/harness" "$work/remote59" > "$work/at-doctor" 2>&1 <<'PY2'
+import contextlib, errno, importlib.machinery, importlib.util, os, subprocess, sys, types
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+cfg["roles"]["code-reviewer"]["runner"] = "codex"
+cfg["doctor"]["remote_timeout"] = 7
+assert h.run_plan(cfg)["roles"]["code-reviewer"]["auth_timeout"] == 7
+case = {}
+class FakePopen:
+    def __init__(self, argv, **kw):
+        self.argv, self.pid, self.returncode = argv, 0, None
+        fd = kw["env"]["HARNESS_CHECK_START_FD"]
+        assert kw["pass_fds"] == (int(fd),)
+        self.w = os.dup(int(fd))
+        case["clock"], case["killed"] = 0.0, False
+    def communicate(self, timeout=None):
+        end = case["prep"] + (case["auth"] if case["notify"] else 0)
+        if timeout is not None and end - case["clock"] > timeout:
+            case["clock"] += timeout
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        case["clock"] = end
+        self.returncode = case["code"]
+        return case["out"], case["err"]
+def fake_select(r, w, x, timeout):
+    p = case["proc"]
+    if case["prep"] > timeout:
+        case["clock"] += timeout
+        return [], [], []
+    case["clock"] = case["prep"]
+    if case["notify"]:
+        os.write(p.w, b"1")
+    os.close(p.w)
+    return r, [], []
+def fake_popen(argv, **kw):
+    case["proc"] = FakePopen(argv, **kw)
+    return case["proc"]
+def fake_killpg(pid, sig):
+    case["killed"] = True
+h.subprocess = types.SimpleNamespace(**{k: getattr(subprocess, k) for k in dir(subprocess) if not k.startswith("__")})
+h.subprocess.Popen = fake_popen
+h.select = types.SimpleNamespace(select=fake_select)
+h.os = types.SimpleNamespace(**{k: getattr(os, k) for k in dir(os) if not k.startswith("__")})
+h.os.killpg = fake_killpg
+def run(name, prep, notify, auth, code, out="", err=""):
+    case.update(prep=prep, notify=notify, auth=auth, code=code, out=out, err=err)
+    lines = []
+    h.remote_reviewer_items(cfg, target, lambda *a: lines.append(a))
+    print(name, lines[0][0], lines[0][2], "killed" if case["killed"] else "exited")
+# 기동 6초, 로그인 확인 6.5초 — 안쪽은 7초 제한 안에 성공했다
+run("slow-start", 6, True, 6.5, 0, "signed-in\n")
+# 안쪽이 자기 제한 7초를 다 쓰고 4 로 끝난다 — 바깥은 그 결과를 읽는다
+run("inner-timeout", 6, True, 7.01, 4, "", "error: could not check sign-in for codex\n")
+# 시작을 알리지 않고 끝난 실행기는 그 종료 코드로 가른다
+run("no-start", 0.5, False, 0, 2, "", "error: codex is not installed (roles.code-reviewer.runner = codex)\n")
+# 시작을 알리지 못한 채 제한을 넘긴 실행기와, 시작 뒤 안쪽 제한을 지나서도 끝나지 않는 실행기는 끊는다
+run("stuck-start", 7.5, True, 1, 0, "signed-in\n")
+run("stuck-after", 1, True, 7 * h.RUNNER_CHECK_AFTER_START + 0.5, 0, "signed-in\n")
+# 시작 알림 통로의 OS 오류는 확인하지 못한 것으로 떨어진다. 그 통로의 파일 기술자는 정확히 한 번씩 닫힌다
+real_pipe, real_close, real_select = os.pipe, os.close, h.select
+def fault(name, where, err):
+    made, closed = [], []
+    def pipe():
+        if where == "pipe":
+            raise err
+        made.extend(real_pipe())
+        return tuple(made)
+    def close(fd):
+        closed.append(fd)
+        real_close(fd)
+        if where == "close" and fd == made[1]:
+            raise err
+    def select_(r, w, x, timeout):
+        raise err
+    def read(fd, n):
+        raise err
+    def popen(argv, **kw):
+        if where == "popen":
+            raise err
+        return fake_popen(argv, **kw)
+    h.os.pipe, h.os.close, h.subprocess.Popen = pipe, close, popen
+    # 실제로 기다리지 않는다 — 읽기 오류는 알림이 왔다고 답한 뒤에 낸다
+    h.select = types.SimpleNamespace(select=(lambda r, w, x, t: (r, [], [])) if where == "read" else select_)
+    h.os.read = read if where == "read" else os.read
+    case["proc"], case["killed"] = None, False
+    try:
+        run(name, 0, True, 0, 0, "signed-in\n")
+    finally:
+        h.os.pipe, h.os.close, h.os.read, h.select, h.subprocess.Popen = real_pipe, real_close, os.read, real_select, fake_popen
+        if case["proc"] is not None:
+            with contextlib.suppress(OSError):
+                real_close(case["proc"].w)
+    leaked = [fd for fd in made if closed.count(fd) != 1]
+    print(name, "fds", "none" if not made else "leaked %s" % leaked if leaked else "closed once")
+for name, where, err in (("pipe-EMFILE", "pipe", OSError(errno.EMFILE, "Too many open files")),
+                         ("popen-E2BIG", "popen", OSError(errno.E2BIG, "Argument list too long")),
+                         ("close-EIO", "close", OSError(errno.EIO, "close failed")),
+                         ("select-EBADF", "select", OSError(errno.EBADF, "bad fd")),
+                         ("select-out-of-range", "select", ValueError("filedescriptor out of range in select()")),
+                         ("read-EIO", "read", OSError(errno.EIO, "read failed"))):
+    fault(name, where, err)
+# 시작 알림 통로를 만들지 못해도 doctor 는 끝까지 돌고 리뷰어 러너 항목을 확인하지 못한 것으로 남긴다
+def emfile():
+    raise OSError(errno.EMFILE, "Too many open files")
+class Quiet:
+    def __init__(self, argv, **kw):
+        self.pid, self.returncode = 0, 1
+    def communicate(self, timeout=None):
+        return "", ""
+h.os.pipe, h.subprocess.Popen = emfile, Quiet
+items = h.doctor_items(cfg, target, remote=True)
+h.os.pipe, h.subprocess.Popen = real_pipe, fake_popen
+last = items[-1]
+print("doctor-emfile", last["section"], last["state"], last["what"], last["detail"])
+PY2
+check "the reviewer runner check waits for the sign-in check from its start, not from the runner's launch" "$(cat "$work/at-doctor")" \
+"slow-start ok signed in exited
+inner-timeout warn could not check exited
+no-start bad codex is not installed (roles.code-reviewer.runner = codex) exited
+stuck-start warn could not check killed
+stuck-after warn could not check killed
+pipe-EMFILE warn could not check exited
+pipe-EMFILE fds none
+popen-E2BIG warn could not check exited
+popen-E2BIG fds closed once
+close-EIO warn could not check killed
+close-EIO fds closed once
+select-EBADF warn could not check killed
+select-EBADF fds closed once
+select-out-of-range warn could not check killed
+select-out-of-range fds closed once
+read-EIO warn could not check killed
+read-EIO fds closed once
+doctor-emfile remote warn reviewer runner \`codex\` could not check"
+cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
+unset -f at_plan at_run
 
 echo
 if [ "$fail" -eq 0 ]; then

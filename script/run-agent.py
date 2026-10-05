@@ -10,13 +10,15 @@
   --out      결과를 이 파일에 받는다. 벤더가 결과 파일 인자를 받으면 그것을 쓰고, 아니면 표준 출력을 옮긴다
   --prompt   지시를 통째로 준다. 없으면 역할 계약을 읽고 따르라는 기본 지시에 <입력> 을 붙인다
   --check    역할을 실행하지 않고 그 러너가 설치·로그인되어 있는지만 본다. 다른 인자는 보지 않는다.
-             실행 계획의 auth_check 를 30초 제한으로 돌리고 그 출력은 버린다. 실행 지표를 남기지 않는다
+             실행 계획의 auth_check 를 auth_timeout(초) 제한으로 돌리고 그 출력은 버린다. 실행 지표를 남기지 않는다.
+             환경 변수 HARNESS_CHECK_START_FD 가 있으면 auth_check 를 띄우기 직전에 그 파일 기술자에 한 바이트를 쓴다
   표준 입력은 그대로 넘어간다.
 
 종료 코드: 그 CLI 의 종료 코드 · 2 = 실행하지 못함(서브에이전트 역할, 설치 안 됨, 계획 없음)
   --check: 0 = 준비됨(표준 출력 `signed-in`, 확인 명령이 없으면 `unchecked`) · 2 = 실행하지 못함
            · 3 = 로그인되어 있지 않음 · 4 = 로그인을 확인하지 못함(제한 시간 초과·띄우지 못함)
 """
+import contextlib
 import json
 import os
 import shutil
@@ -159,15 +161,35 @@ if not shutil.which(p["exe"]):
     fail("error: %s is not installed (roles.%s.runner = %s)" % (p["exe"], role, p["vendor"]))
 
 
+def announce_check_start():
+    """HARNESS_CHECK_START_FD 가 가리키는 파일 기술자에 한 바이트를 쓰고 닫는다 — 부른 쪽이 로그인 확인 명령의
+    제한 시간을 이 시점부터 센다. 변수가 없거나 쓸 수 없으면 아무것도 하지 않는다."""
+    fd = os.environ.pop("HARNESS_CHECK_START_FD", "")
+    try:
+        fd = int(fd)
+    except ValueError:
+        return
+    try:
+        os.write(fd, b"1")
+    except OSError:
+        pass
+    with contextlib.suppress(OSError):
+        os.close(fd)
+
+
 def check_sign_in():
     """러너가 로그인되어 있는지 확인 명령의 종료 코드로만 본다. 그 명령의 출력은 옮기지 않는다."""
     auth = p.get("auth_check") or []
     if not auth:
         print("unchecked")
         sys.exit(0)
+    limit = p.get("auth_timeout")
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        fail("error: script/harness.plan.json is missing or broken\nhelp: harness render")
+    announce_check_start()
     try:
         r = subprocess.run(auth, cwd=root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL, timeout=30)
+                           stderr=subprocess.DEVNULL, timeout=limit)
     except (OSError, subprocess.SubprocessError):
         print("error: could not check sign-in for %s" % p["vendor"], file=sys.stderr)
         sys.exit(4)
