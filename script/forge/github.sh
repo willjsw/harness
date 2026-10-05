@@ -53,11 +53,24 @@ v = json.load(sys.stdin)
 json.dump([one(x) for x in v] if isinstance(v, list) else one(v), sys.stdout, ensure_ascii=False)
 '
 
-# 라벨이 없으면 붙이기가 실패한다. 이미 있으면 실패해도 무시한다 — 멱등하게 쓴다.
+# 라벨이 없으면 붙이기가 실패하므로 먼저 만든다. 멱등하게 쓴다 — 라벨마다 만들고, 만들지 못하면 원격에 이미 있는지 본다. "이미 있음" 만이 정상인 실패다.
+# 없으면(조회 실패 포함) 그 라벨과 `label create` 의 오류 끝 줄을 표준 오류로 내고 1 — 뒤 라벨로 가지 않는다.
 _gh_ensure_label() {
   for _l in "$@"; do
     [ -n "$_l" ] || continue
-    "$GITHUB_CLI" label create "$_l" --color ededed >/dev/null 2>&1 || true
+    _gh_err=$("$GITHUB_CLI" label create "$_l" --color ededed 2>&1 >/dev/null) && continue
+    "$GITHUB_CLI" label list --json name --limit 1000 </dev/null 2>/dev/null | python3 -c '
+import json, sys
+try:
+    names = [x.get("name") for x in json.load(sys.stdin)]
+except (ValueError, AttributeError, TypeError):
+    sys.exit(1)
+sys.exit(0 if sys.argv[1] in names else 1)
+' "$_l" 2>/dev/null && continue
+    echo "error: could not create label \`$_l\`" >&2
+    _gh_tail=$(printf '%s\n' "$_gh_err" | sed '/^[[:space:]]*$/d' | tail -1)
+    [ -z "$_gh_tail" ] || printf '  %s\n' "$_gh_tail" >&2
+    return 1
   done
 }
 
@@ -83,7 +96,7 @@ tracker_issue_list() {
 
 tracker_issue_create() {
   _cmd_title="$1"; _cmd_body="$2"; _cmd_label="$3"; _cmd_assignee="$4"; _cmd_ms="$5"
-  _gh_ensure_label "$_cmd_label"
+  _gh_ensure_label "$_cmd_label" || return 1
   _out=$(
     set -- issue create --title "$_cmd_title" --body-file "$_cmd_body"
     [ -n "$_cmd_label" ]    && set -- "$@" --label "$_cmd_label"
@@ -101,7 +114,7 @@ tracker_issue_note() {
 # 라벨을 먼저 붙이고 닫는다. 순서를 뒤집으면 닫힌 이슈에 라벨을 붙이지 못하는 설정에서 실패한다.
 tracker_issue_close() {
   if [ -n "$2" ]; then
-    _gh_ensure_label "$2"
+    _gh_ensure_label "$2" || return 1
     "$GITHUB_CLI" issue edit "$1" --add-label "$2" >/dev/null || return 1
   fi
   "$GITHUB_CLI" issue close "$1" --reason "not planned" >/dev/null
@@ -150,7 +163,7 @@ review_mr_diff() {
 review_mr_labels_set() {
   _mr="$1"; _add="$2"; _rm="$3"
   # shellcheck disable=SC2086
-  _gh_ensure_label $_add
+  _gh_ensure_label $_add || return 1
   set -- pr edit "$_mr"
   for _l in $_add; do set -- "$@" --add-label "$_l"; done
   for _l in $_rm; do set -- "$@" --remove-label "$_l"; done

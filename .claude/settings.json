@@ -25,6 +25,7 @@
       "Bash(script/sync-task-issues.sh:*)",
       "Bash(script/test-bash-guard.sh:*)",
       "Bash(script/test-carryover-issue.sh:*)",
+      "Bash(script/test-forge-labels.sh:*)",
       "Bash(script/test-review-loop.sh:*)",
       "Bash(script/test-rollback-work.sh:*)",
       "Bash(script/test-secret-scan.sh:*)",
