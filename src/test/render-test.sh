@@ -1890,12 +1890,12 @@ n=0
 for f in "$t"/script/*.sh "$t"/script/*.py; do
   [ -f "$f" ] || continue
   b=$(basename "$f")
-  case "$b" in _*|rollback-work.sh|create-carryover-issue.sh|forge-selftest.sh|harness-verify.sh|forge.sh) continue ;; esac
+  case "$b" in _*|rollback-work.sh|create-carryover-issue.sh|forge-selftest.sh|forge-setup.sh|harness-verify.sh|forge.sh) continue ;; esac
   n=$((n + 1))
   grep -qxF "Bash(script/$b:*)" "$work/allow.txt" && ok || bad "the managed script $b is not allowed"
 done
 [ "$n" -gt 0 ] && ok || bad "no installed managed script was counted"
-for b in rollback-work.sh create-carryover-issue.sh forge-selftest.sh; do
+for b in rollback-work.sh create-carryover-issue.sh forge-selftest.sh forge-setup.sh; do
   [ -f "$t/script/$b" ] || bad "the excluded script $b is not installed, so its absence proves nothing"
   hasnt "$work/allow.txt" "script/$b" "the irreversible script $b is allowed"
 done
@@ -3558,6 +3558,27 @@ has "$work/ftpl-adopt2.log" "render: adopted .github/pull_request_template.md �
 [ -f "$a/.github/pull_request_template.md.orig" ] && ok || bad "uninstall removed the .orig file"
 cat "$work"/ftpl-*.log > "$work/ftpl-all.log"; no_hangul "$work/ftpl-all.log" "forge template output"
 unset -f labels97
+
+echo "UT-98 harness forge-setup runs script/forge-setup.sh in the harness root and returns its exit code"
+# 라벨이 처음 쓰일 때에야 만들어지면 권한 문제가 리뷰 루프 한가운데서 드러난다. 사람이 미리 한 번 부르는 명령이다.
+t="$work/fsetup"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+HARNESS_HOME="$work/home98" "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for forge-setup"
+cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+mkdir -p "$work/fsetup-state"
+FAKE_STATE="$work/fsetup-state" "$root/bin/harness" forge-setup --target "$t" > "$work/fsetup.out" 2> "$work/fsetup.err"
+check "forge-setup with a working tracker exits 0" "$?" "0"
+check "forge-setup passes the configured issue labels" "$(tr '\n' ' ' < "$work/fsetup-state/ensured_labels")" "Requirement Task invalid "
+check "forge-setup says the labels are ready" "$(cat "$work/fsetup.out")" "forge-setup: labels ready on github: Requirement, Task, invalid"
+printf '#!/usr/bin/env bash\necho "stub ran in $(pwd)"\nexit 7\n' > "$t/script/forge-setup.sh"
+( cd "$work" && "$root/bin/harness" forge-setup --target "$t" > "$work/fsetup2.out" 2>&1 ); check "forge-setup returns the script's exit code" "$?" "7"
+has "$work/fsetup2.out" "stub ran in $(cd "$t" && pwd -P)" "forge-setup did not run the script in the harness root"
+rm -f "$t/script/forge-setup.sh"
+"$root/bin/harness" forge-setup --target "$t" > "$work/fsetup3.out" 2>&1; check "forge-setup without the script exits 2" "$?" "2"
+has "$work/fsetup3.out" "script/forge-setup.sh is missing" "forge-setup does not say the script is missing"
+"$root/bin/harness" help > "$work/fsetup-help.out" 2>&1
+has "$work/fsetup-help.out" "forge-setup" "help does not list forge-setup"
+has "$work/fsetup-help.out" "writes to the remote" "help does not say forge-setup writes to the remote"
+cat "$work"/fsetup*.out "$work/fsetup.err" > "$work/fsetup-all.log"; no_hangul "$work/fsetup-all.log" "forge-setup output"
 
 echo
 if [ "$fail" -eq 0 ]; then

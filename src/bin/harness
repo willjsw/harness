@@ -706,9 +706,9 @@ def deny_rules(cfg: dict) -> list:
     return out
 
 
-# 허용 목록에서 빼는 관리 스크립트 — 이슈·리뷰 요청을 닫거나 만드는, 되돌릴 수 없는 forge 쓰기다.
-# 사람이 직접 부르고 확인을 주는 턴에서만 돈다.
-ALLOW_EXCLUDED = ("rollback-work.sh", "create-carryover-issue.sh", "forge-selftest.sh")
+# 허용 목록에서 빼는 관리 스크립트 — 이슈·리뷰 요청을 닫거나 만드는, 되돌릴 수 없는 forge 쓰기와
+# 원격에 라벨을 만드는 준비 쓰기다. 사람이 직접 부르고 확인을 주는 턴에서만 돈다.
+ALLOW_EXCLUDED = ("rollback-work.sh", "create-carryover-issue.sh", "forge-selftest.sh", "forge-setup.sh")
 ALLOW_KEYS = ("tracker", "review")
 
 
@@ -1584,6 +1584,17 @@ def cmd_check(cfg, target, args):
     print("check: %d generated files match the config" % len(plan(cfg, target)))
     print("check: %d managed files match the manifest" % compared)
     return 0
+
+
+def cmd_forge_setup(_cfg, target, _args):
+    """설정의 이슈 라벨을 트래커에 만든다. 원격 쓰기라 사람이 부른다 — 절차·훅·다른 명령은 부르지 않는다."""
+    script = target / "script" / "forge-setup.sh"
+    if not script.is_file():
+        print("error: script/forge-setup.sh is missing\n\nhelp: put the managed scripts back\n        harness render",
+              file=sys.stderr)
+        return 2
+    sys.stdout.flush()
+    return subprocess.run(["bash", str(script)], cwd=str(target)).returncode
 
 
 def cmd_vars(cfg, _target, _args):
@@ -3682,6 +3693,7 @@ COMMANDS = {
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
     "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
     "metrics":   (None, True,  "[import|prune] [--since 7d] [--trace ID]", "run metrics as JSON for the Metrics tab; import reads new session logs first; prune applies retention"),
+    "forge-setup": (None, True, "", "create the configured issue labels on the tracker (writes to the remote)"),
     "vars":      (None, True,  "", "print template variables (debugging)"),
     "uninstall": (None, False, "[--purge] [--yes]", "remove what the harness installed; --purge also removes yours"),
     "start-server": (None, False, "[--dev]", "build if needed and start the web UI in the background on "
@@ -3721,7 +3733,8 @@ def cmd_help(_cfg, _target, _args):
 
 # 전역 CLI 를 깔아도 각 프로젝트는 자기가 고정한 버전으로 돌아야 한다. 그러지 않으면
 # 전역을 올리는 순간 모든 프로젝트의 생성물이 조용히 바뀌고, 그 리포의 검사가 한꺼번에 깨진다.
-DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall"}
+DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall",
+             "forge-setup"}
 
 
 PINNED_SHOWN = 10
@@ -3812,7 +3825,7 @@ def main():
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
                 "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
-                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status}
+                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,
