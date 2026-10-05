@@ -3515,6 +3515,48 @@ def cmd_help(_cfg, _target, _args):
 DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall"}
 
 
+PINNED_SHOWN = 10
+
+
+def pinned_differences(target: Path) -> list:
+    """이 CLI 의 파일과 고정 사본을 바이트 단위로 비교해 다른 파일의 사본 쪽 경로를 낸다. 매니페스트는 읽지 않는다.
+
+    해시가 다른 파일, 한쪽에만 있는 파일, 사본의 `bin/` 에 실행 파일 둘 말고 있는 파일을 센다. `__pycache__/` 는 뺀다.
+    """
+    pin = target / ".harness"
+    pairs = {"bin/harness": HERE / "harness", "bin/harness_metrics.py": HERE / "harness_metrics.py"}
+    for f in TEMPLATES.rglob("*"):
+        if f.is_file() and "__pycache__" not in f.relative_to(TEMPLATES).parts:
+            pairs["templates/" + f.relative_to(TEMPLATES).as_posix()] = f
+    theirs = {rel for rel in pinned_files(pin) if rel != "VERSION"}
+    out = []
+    for rel in sorted(set(pairs) | theirs):
+        mine = pairs.get(rel)
+        if rel not in theirs or mine is None or not mine.is_file() or sha256_of(mine) != sha256_of(pin / rel):
+            out.append(PINNED + rel)
+    return out
+
+
+def verify_pinned(target: Path, mine: str, there: str):
+    """고정 버전이 이 CLI 와 같을 때만 사본을 대조해 다르면 표준 오류에 경고한다. 넘기기는 막지 않는다."""
+    if not mine or not there or mine != there:
+        print("note: cannot verify the pinned harness — this machine has harness %s, the project pins %s"
+              % (mine or "no version", there or "no version"), file=sys.stderr)
+        return
+    try:
+        diff = pinned_differences(target)
+    except OSError:
+        diff = []
+    if not diff:
+        return
+    lines = ["warning: the pinned harness differs from harness %s on this machine — %d file(s)" % (mine, len(diff))]
+    lines += ["  --> %s" % rel for rel in diff[:PINNED_SHOWN]]
+    if len(diff) > PINNED_SHOWN:
+        lines.append("  ... and %d more" % (len(diff) - PINNED_SHOWN))
+    lines.append("\nhelp: restore the pinned copy\n        harness install --target %s" % target)
+    print("\n".join(lines), file=sys.stderr)
+
+
 def delegate(target: Path, command: str):
     """대상 리포에 고정된 하네스가 있으면 그쪽으로 넘긴다.
 
@@ -3537,6 +3579,8 @@ def delegate(target: Path, command: str):
         there = (target / ".harness" / "VERSION").read_text(encoding="utf-8").strip()
     except Exception:
         pass
+    if not source_tree(target):
+        verify_pinned(target, mine, there)
     if mine and there and mine != there:
         print("note: this project is pinned to harness %s (global is %s) — delegating to it\n"
               "      to upgrade the project, run: harness install --target %s"

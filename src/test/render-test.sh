@@ -2999,6 +2999,56 @@ rm "$d/.harness/managed"
 check "without a manifest the section is one warn item" "$(mitems "$d")" "warn|no manifest of managed files|run \`harness render\`"
 no_hangul "$work/mi-all.log" "status output for managed files"
 
+echo "UT-89 the global CLI compares the pinned copy with its own files before it delegates, when the versions match"
+# 사본을 고치면 그 사본이 도는 검사가 모두 고친 기준으로 돈다. 리포 밖의 기준은 같은 버전의 전역 CLI 뿐이다.
+p="$work/pin89"; rm -rf "$p"; mkdir -p "$p"; ( cd "$p" && git init -q . )
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1 || bad "could not install the pinned repo"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-1.out" 2> "$work/p89-1.err"
+hasnt "$work/p89-1.err" "warning:" "an untouched copy raised a warning"
+hasnt "$work/p89-1.err" "cannot verify" "an untouched copy of the same version could not be verified"
+printf '\n# edited by hand\n' >> "$p/.harness/templates/managed/script/review-mr.sh"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-2.out" 2> "$work/p89-2.err"; rc_edit=$?
+has "$work/p89-2.err" "warning: the pinned harness differs" "an edited template raised no warning"
+has "$work/p89-2.err" "  --> .harness/templates/managed/script/review-mr.sh" "the warning does not name the edited template"
+has "$work/p89-2.err" "harness install --target" "the warning does not say how to restore the copy"
+# 경고는 넘기기를 막지 않는다. doctor 는 그 사본이 돈다 — 관리 파일 절이 그 변경을 실패로 센다
+check "doctor still runs through the pinned copy" "$( [ "$rc_edit" -le 1 ] && grep -q 'managed files' "$work/p89-2.out" && echo yes)" "yes"
+"$root/bin/harness" status --target "$p" > "$work/p89-3.out" 2> "$work/p89-3.err"; check "status exit code" "$?" "0"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$work/p89-3.out"; check "status output is still JSON" "$?" "0"
+has "$work/p89-3.err" "warning: the pinned harness differs" "status raised no warning on stderr"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+printf '\n# edited\n' >> "$p/.harness/bin/harness"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-4.out" 2> "$work/p89-4.err"
+has "$work/p89-4.err" "  --> .harness/bin/harness" "an edited pinned CLI is not named"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+printf 'extra\n' > "$p/.harness/bin/extra.py"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-5.out" 2> "$work/p89-5.err"
+has "$work/p89-5.err" "  --> .harness/bin/extra.py" "a file only the copy has is not named"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+for f in $(cd "$p/.harness/templates/managed/script" && ls *.sh | head -11); do printf '\n# edited\n' >> "$p/.harness/templates/managed/script/$f"; done
+"$root/bin/harness" doctor --target "$p" > "$work/p89-6.out" 2> "$work/p89-6.err"
+check "ten files are named" "$(grep -c '^  --> ' "$work/p89-6.err")" "10"
+has "$work/p89-6.err" "  ... and 1 more" "the eleventh file is not summed up"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+# 버전이 다르거나 없으면 비교하지 않는다
+echo "0.0.9" > "$p/.harness/VERSION"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-7.out" 2> "$work/p89-7.err"
+check "one cannot-verify line for another version" "$(grep -c 'cannot verify the pinned harness' "$work/p89-7.err")" "1"
+has "$work/p89-7.err" "the project pins 0.0.9" "the cannot-verify line does not name the pinned version"
+hasnt "$work/p89-7.err" "warning: the pinned harness differs" "another version was compared"
+rm "$p/.harness/VERSION"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-8.out" 2> "$work/p89-8.err"
+has "$work/p89-8.err" "the project pins no version" "the cannot-verify line does not say there is no version"
+# 소스 리포는 사본이 없다 — 대조도 줄도 없다
+src="$work/source89"; rm -rf "$src"; mkdir -p "$src/src/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
+( cd "$src" && git init -q . )
+"$src/src/bin/harness" install --target "$src" >/dev/null 2>&1 || bad "could not install the source tree"
+"$root/bin/harness" doctor --target "$src" > "$work/p89-9.out" 2> "$work/p89-9.err"
+hasnt "$work/p89-9.err" "warning:" "the source tree raised a warning"
+hasnt "$work/p89-9.err" "cannot verify" "the source tree printed a cannot-verify line"
+cat "$work"/p89-*.out "$work"/p89-*.err > "$work/p89-all.log"; no_hangul "$work/p89-all.log" "pinned copy comparison output"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
