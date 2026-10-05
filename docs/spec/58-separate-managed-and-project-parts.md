@@ -4,7 +4,7 @@
 하네스가 쓸 경로에 이미 있는 사용자 파일은 덮지 않고 멈춘다. `.harness/managed` 는 관리 파일과 고정 사본의
 sha256 을 담고, `check`·`doctor` 는 그것과 대조해 바뀐 관리 파일을 보고한다. 전역 CLI 는 고정 사본으로 넘기기 전에
 같은 버전의 자기 파일과 사본을 대조한다. 하네스가 대상 리포를 바꾸는 지점은 전부 경로 규칙을 지키는 공용 함수 하나를 거치고,
-매니페스트는 읽을 때마다 그 규칙으로 검증한다(11절).
+매니페스트는 읽을 때마다 그 규칙의 형식으로 검증한다(11절).
 
 정본 위치:
 
@@ -83,14 +83,14 @@ sha256 을 담고, `check`·`doctor` 는 그것과 대조해 바뀐 관리 파�
 ### 2-3. 읽기 — `previous()`
 
 매니페스트는 **신뢰하지 않는 입력**이다. 커밋된 파일이라 누구든 고칠 수 있고 병합이 충돌 표지를 남길 수 있다.
-읽을 때마다 줄마다 11-2 의 경로 규칙으로 검증하고, 어긋난 줄은 11-5 대로 다룬다. 어긋난 줄의 경로는 열지도 바꾸지도 않는다.
+읽을 때마다 줄마다 11-2 의 형식으로 검증하고, 어긋난 줄은 11-5 대로 다룬다. 줄의 경로에 있는 링크 성분은 이 검증이 아니라 11-4 가 판정한다. 어긋난 줄의 경로는 열지도 바꾸지도 않는다.
 
 `previous()` 는 두 형식을 모두 읽고 경로 목록을 돌려준다. 판정 전에 줄 끝의 CR 하나를 뗀다.
 
 | 줄 | 경로 | 해시 |
 |---|---|---|
-| `^[0-9a-f]{64}  (.+)$` 에 맞는다 | 두 번째 부분. 11-2 를 지켜야 한다 | 첫 번째 부분 |
-| 그 밖의 비어 있지 않은 줄 (옛 형식) | 줄 전체(앞뒤 공백 제거). 11-2 를 지켜야 한다 | 없음 |
+| `^[0-9a-f]{64}  (.+)$` 에 맞는다 | 두 번째 부분. 11-2 의 형식을 지켜야 한다 | 첫 번째 부분 |
+| 그 밖의 비어 있지 않은 줄 (옛 형식) | 줄 전체(앞뒤 공백 제거). 11-2 의 형식을 지켜야 한다 | 없음 |
 | 빈 줄(공백뿐인 줄 포함) | 건너뛴다 | — |
 
 - 경로와 해시의 짝이 필요한 쪽(4절 · 3절)은 같은 규칙으로 읽는 별도 함수를 쓴다. `prune()` · `cmd_uninstall` · 충돌 판정은 경로만 쓴다
@@ -362,7 +362,6 @@ help: restore the pinned copy
 | 절대 경로 줄 | `.harness/managed` 에 `<64자 16진>  <바깥 파일의 절대 경로>` 줄을 더하면 render · install · uninstall 이 각각 종료 코드 2 이고 `(an absolute path)`. 바깥 파일이 그대로이고, uninstall 뒤에도 `.harness/` 와 매니페스트의 다른 경로가 남아 있다 |
 | 형식 오류 줄 | 공백이 든 줄, 빈 성분(`script//x.sh`), `.` 성분(`./CLAUDE.md`), 끝의 `/` 가 든 줄이 각각 `(not a path)` 로 종료 코드 2 |
 | 병합 충돌 표지 줄 | `.harness/managed` 에 `<<<<<<< HEAD` · `=======` · `>>>>>>> other` 세 줄을 더하면 render 가 종료 코드 2 이고 세 줄 모두 `(a merge conflict marker)`, `help:` 에 `harness install`. 표지 줄을 지우면 install 이 종료 코드 0 이다 |
-| 링크 성분 줄 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` 를 부르면 그 줄이 `through a symbolic link` 로 보고되고 바깥 파일의 해시를 대조하지 않는다 |
 | CR 줄 끝 | 두 매니페스트의 줄 끝을 CRLF 로 바꿔도 render 가 종료 코드 0 이다 |
 | 설정을 바꾸는 명령 | 위반 줄이 있을 때 `set` · `steps <새 절차>` · `checks` 가 종료 코드 2 이고 `harness.toml` 이 그대로다 |
 | check 보고 | `..` 줄과 충돌 표지 줄이 있으면 `check` 가 종료 코드 1 이고 표준 오류에 두 `<매니페스트>:<줄 번호>` 와 사유. 피해 파일이 그대로다 |
@@ -372,7 +371,7 @@ help: restore the pinned copy
 
 | 케이스 | 확인하는 것 |
 |---|---|
-| 관리 파일 링크 | 설치된 리포에서 `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render 하면 종료 코드 2. 바깥 파일이 그대로다 |
+| 관리 파일 링크 | 설치된 리포에서 매니페스트에 있는 `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render 하면 종료 코드 2. 표준 오류는 11-4 안내문(`--> script/review-mr.sh`)이고 11-5 안내문(`not safe paths`)은 없다. 바깥 파일이 그대로다. 같은 상태에서 `check` · `doctor` 는 그 줄을 `unsafe manifest line` 으로 보고하지 않는다 |
 | 링크 부모 — 관리 · 생성 | `script` 를 바깥 디렉터리 링크로 바꾸고 render 하면 종료 코드 2. 표준 오류의 `-->` 줄이 `script` 하나이고(그 아래 경로를 따로 나열하지 않는다) 바깥 디렉터리가 그대로다 |
 | 링크 부모 — 소유 | 소유 원형이 아직 없는 새 리포에서 `script/project` 를 바깥 디렉터리 링크로 두고 install 하면 종료 코드 2. 바깥 디렉터리에 `README.md` 가 생기지 않는다 |
 | 링크된 `.ai/project` | 설치된 리포의 `.ai/project` 를 같은 내용의 바깥 디렉터리 링크로 바꾸고 render 하면 종료 코드 2. 표준 오류에 `--> .ai/project`, `nothing was changed`, 11-4 의 `help:` 줄. 링크를 실제 디렉터리로 바꾸면 render 가 종료 코드 0 이다 |
@@ -420,7 +419,7 @@ help: restore the pinned copy
 | `.ai/project/architecture.md` "구성 요소" 의 `script/` 항목 | `script/project/` 는 프로젝트 것이다. 하네스는 그 안의 `README.md` 만 없을 때 깐다 |
 | 같은 파일 "데이터 흐름" 의 렌더 | render 는 쓰기 전에 사용자 파일을 판정하고, 관리 파일의 sha256 을 `.harness/managed` 에 기록한다. `check` · `doctor` 가 그것과 대조한다. 전역 CLI 는 고정 사본으로 넘기기 전에 같은 버전의 자기 파일과 대조한다 |
 | 같은 파일 "새 코드를 둘 곳" | 새 관리 스크립트 → 표는 `src/templates/managed/script/README.md`. 새 행: 대상 리포의 프로젝트 스크립트 → `script/project/` + `script/project/README.md` 표 한 줄 |
-| 같은 파일 "신뢰 경계" 의 "들어오는 입력" | 한 항목을 더한다: 매니페스트(`.harness/generated` · `.harness/managed`) — 커밋된 파일이라 신뢰하지 않는다. 읽을 때마다 줄마다 경로 규칙(하네스 루트 기준 정규화된 상대 경로, `..` · 절대 경로 · 빈 성분 · 링크 성분 거부)으로 검증하고, 어긋난 줄이 하나라도 있으면 대상 리포를 바꾸는 명령은 아무것도 바꾸지 않는다(11절) |
+| 같은 파일 "신뢰 경계" 의 "들어오는 입력" | 한 항목을 더한다: 매니페스트(`.harness/generated` · `.harness/managed`) — 커밋된 파일이라 신뢰하지 않는다. 읽을 때마다 줄마다 경로 형식(하네스 루트 기준 정규화된 상대 경로, `..` · 절대 경로 · 빈 성분 거부)으로 검증하고, 어긋난 줄이 하나라도 있으면 대상 리포를 바꾸는 명령은 아무것도 바꾸지 않는다. 줄의 경로에 있는 심볼릭 링크 성분은 변경 명령의 사전 판정이 막는다(11절) |
 | 같은 파일 "검사하지 않는 것" | 고정 사본(`.harness/bin` · `.harness/templates`)을 고치면 pre-commit · `run-lint-test.sh` · CI 의 검사도 고친 사본이 돈다. 사본과 매니페스트를 함께 고치면 그 검사들은 알아채지 못한다. 사본 변조를 잡는 것은 같은 버전의 전역 CLI 가 넘기기 전에 하는 대조뿐이고, 그것도 경고만 한다 |
 
 ## 9. 결정 기록
@@ -448,7 +447,7 @@ help: restore the pinned copy
 ## 11. 대상 리포 경로 안전
 
 하네스가 대상 리포를 바꿀 때 리포 밖으로 새거나 리포 안의 남의 파일을 덮지 않게 하는 규칙이다.
-경로 규칙(11-2)을 하나 두고, 사전 판정(11-4)과 공용 함수(11-3)가 같은 규칙을 쓴다. 매니페스트는 그 규칙으로 검증한다(11-5).
+경로 규칙(11-2)을 하나 두고, 사전 판정(11-4)과 공용 함수(11-3)가 같은 규칙을 쓴다. 매니페스트는 그 규칙의 형식으로 검증한다(11-5). 링크는 매니페스트 줄이든 아니든 11-4 · 11-3 이 판정한다.
 
 ### 11-1. 적용 범위
 
@@ -506,6 +505,8 @@ help: restore the pinned copy
 | 그 밖의 형식 어긋남 | `not a path` |
 | 링크 성분 | `through a symbolic link` |
 
+매니페스트 줄(11-5)에는 위 넷 — 충돌 표지와 형식 — 만 쓴다. `through a symbolic link` 는 사전 판정(11-4)과 공용 함수(11-3)의 사유다.
+
 ### 11-3. 공용 함수 — `guarded_path()`
 
 `guarded_path(root, rel, verb)` 는 11-2 를 판정하고 통과하면 `root / rel` 을 돌려준다. `verb` 는 `create` · `write` · `remove` · `move` 다.
@@ -558,7 +559,7 @@ help: the harness does not write through symbolic links under the harness root
 
 ### 11-5. 매니페스트 검증
 
-`.harness/generated` · `.harness/managed` 를 읽는 명령은 읽을 때마다 줄마다 2-3 대로 경로를 뽑아 11-2 의 형식과 링크로 판정한다.
+`.harness/generated` · `.harness/managed` 를 읽는 명령은 읽을 때마다 줄마다 2-3 대로 경로를 뽑아 11-2 의 형식으로 판정한다. 줄의 문자열만 보고 파일 시스템은 보지 않는다.
 `.harness/` 로 시작하는 줄도 같다. 어긋난 줄의 경로는 열지도 바꾸지도 않는다.
 
 변경 명령(render · install · set · steps · checks · uninstall):
@@ -587,7 +588,7 @@ help: the manifest lists only files the harness wrote, as paths under the harnes
         harness install
 ```
 
-- 사유가 `through a symbolic link` 인 줄은 11-4 와 같은 조치다. 링크를 실제 파일 · 디렉터리로 바꾸면 그 줄은 통과한다
+- 줄의 경로에 있는 링크 성분은 이 검증의 어긋남이 아니다. 변경 명령은 그 경로를 11-4 사전 판정에서 판정한다 — render 가 이번에 쓸 경로와 정리가 지울 옛 경로, uninstall 의 두 매니페스트 경로가 11-4 의 판정 대상이라 변경 명령이 바꾸는 매니페스트 경로는 전부 거기 든다. 보고 형식은 11-4 의 것 하나다
 
 읽기 명령(check · doctor · status 의 doctor 항목):
 
@@ -602,7 +603,7 @@ help: the manifest lists only files the harness wrote, as paths under the harnes
 - 그래서 `.ai/project` · `docs/adr` · `docs/spec` · `script` 같은 디렉터리를 링크로 둔 설치는 지원하지 않는다. 그런 기존 설치는 이 규칙이 든
   하네스로 갱신하면 render · install · set · steps · checks · uninstall 이 11-4 로 멈추고, 링크를 실제 디렉터리로 바꿀 때까지 대상 리포를 바꾸지 않는다
 - 조치는 11-4 의 `help:` 다 — 링크를 그것이 가리키는 디렉터리 · 파일의 사본으로 바꾸고 명령을 다시 부른다
-- `check` · `doctor` 는 이 링크로 멈추지 않는다. 매니페스트 줄에 링크 성분이 있으면 11-5 대로 그 줄을 보고한다
+- `check` · `doctor` 는 이 링크로 멈추지 않고, 매니페스트 줄의 경로에 있는 링크 성분을 `unsafe manifest line` 으로 보고하지 않는다 — 11-5 는 형식만 본다
 
 ### 11-7. `steps --rename`
 

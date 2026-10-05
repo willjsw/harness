@@ -420,7 +420,7 @@ render 가 무엇이든 바꾸기 전에 이번에 바꿀 경로 전부를 같�
   - 링크(`lstat`): 하네스 루트 아래의 성분 `a` · `a/b` · … · 경로 자신 가운데 심볼릭 링크가 없다. 링크 대상이 있는지와 상관없다. 하네스 루트 자신과
     그 위는 보지 않는다. 아직 없는 성분은 어긋남이 아니다. 없을 때만 까는 소유 파일 · CI 골격과 그 부모도 같다
   - 사유: 위에서부터 처음 맞는 하나 — `an absolute path` · `has a .. component` · `not a path` · `through a symbolic link`. 링크면 링크인 성분도 돌려준다.
-    매니페스트 줄의 `a merge conflict marker` 는 T11 이 이 함수 앞에 더한다
+    형식 판정은 파일 시스템을 보지 않는 부분으로 따로 부를 수 있게 둔다 — T11 의 매니페스트 검증이 그 부분만 쓰고 `a merge conflict marker` 를 앞에 더한다
 - `guarded_path(root, rel, verb)`: `verb` 는 `create` · `write` · `remove` · `move`. 시스템 호출 바로 앞에서 판정하고 통과하면 `root / rel` 을 돌려준다.
   사전 판정이 통과시킨 경로도 다시 본다. 어긋나면 아무것도 하지 않고 명세 11-3 의 안내문을 표준 오류로 낸 뒤 종료 코드 2 —
   링크면 `error: refusing to <verb> through a symbolic link` 와 `-->` 링크인 성분, 형식이면
@@ -446,7 +446,7 @@ render 가 무엇이든 바꾸기 전에 이번에 바꿀 경로 전부를 같�
 
 ### 완료 조건
 
-- [ ] 설치된 리포에서 `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render 하면 종료 코드 2 이고 바깥 파일이 그대로다
+- [ ] 설치된 리포에서 매니페스트에 있는 `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render 하면 종료 코드 2 이고 표준 오류가 11-4 안내문(`--> script/review-mr.sh`)이며 바깥 파일이 그대로다
 - [ ] `script` 를 바깥 디렉터리 링크로 바꾸고 render 하면 종료 코드 2, 표준 오류의 `-->` 줄이 `script` 하나이고 바깥 디렉터리가 그대로다
 - [ ] 설치된 리포의 `.ai/project` 를 같은 내용의 바깥 디렉터리 링크로 바꾸고 render 하면 종료 코드 2 이고 표준 오류에 `--> .ai/project` · `nothing was changed` · 11-4 의 `help:` 줄이 있다. 링크를 실제 디렉터리로 바꾸면 render 가 종료 코드 0 이다
 - [ ] 소유 원형이 없는 새 리포에서 `script/project` 를 바깥 디렉터리 링크로 두고 install 하면 종료 코드 2 이고 바깥 디렉터리에 `README.md` 가 생기지 않는다
@@ -473,7 +473,7 @@ render 가 무엇이든 바꾸기 전에 이번에 바꿀 경로 전부를 같�
 | UT-04 | 대상 없는 링크 | 경로 자신이 대상 없는 링크 | `through a symbolic link` 와 그 경로 |
 | UT-05 | 직전 재검사 | 사전 판정을 통과한 경로의 부모를 링크로 바꾼 뒤 `guarded_path(..., "write")` | 종료 코드 2, `refusing to write through a symbolic link`, 링크 대상 그대로 |
 | UT-06 | 형식 오류는 경로를 내지 않는다 | `guarded_path(root, "../victim.md", "remove")` | 종료 코드 2, 표준 오류에 `(has a .. component)` 가 있고 `victim.md` 가 없다 |
-| UT-07 | 관리 파일 링크 | `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render | 종료 코드 2, 바깥 파일 그대로 |
+| UT-07 | 관리 파일 링크 | 매니페스트에 있는 `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render | 종료 코드 2, `go through a symbolic link` · `--> script/review-mr.sh`, 바깥 파일 그대로 |
 | UT-08 | 링크 부모 — 관리 · 생성 | `script` 를 바깥 디렉터리 링크로 바꾸고 render | 종료 코드 2, `-->` 줄이 `script` 하나, 바깥 디렉터리 그대로 |
 | UT-09 | 링크 부모 — 소유 | 새 리포에 `script/project` 바깥 디렉터리 링크를 두고 install | 종료 코드 2, 바깥 디렉터리에 `README.md` 없음 |
 | UT-10 | 링크된 `.ai/project` | `.ai/project` 를 같은 내용의 바깥 디렉터리 링크로 바꾸고 render, 이어 실제 디렉터리로 되돌리고 render | 처음 종료 코드 2 와 `--> .ai/project` · `nothing was changed` · `help:`, 되돌린 뒤 종료 코드 0 |
@@ -549,13 +549,15 @@ install 과 uninstall 이 대상 리포를 바꾸기 전에 바꿀 경로 전부
 
 ### 작업 내용
 
-`.harness/generated` · `.harness/managed` 를 신뢰하지 않는 입력으로 읽는다. 읽을 때마다 줄마다 T9 의 경로 규칙으로 검증하고, 어긋난 줄이 하나라도 있으면
+`.harness/generated` · `.harness/managed` 를 신뢰하지 않는 입력으로 읽는다. 읽을 때마다 줄마다 T9 의 경로 규칙 가운데 형식으로 검증하고, 어긋난 줄이 하나라도 있으면
 대상 리포를 바꾸는 명령(render · install · set · steps · checks · uninstall)이 아무것도 바꾸지 않고 멈추게 한다. 결정 기록 0017.
 
 - 명세 2-3 · 11-5 의 변경 명령 · 3-2 의 1(매니페스트 검증이 맨 앞) · 3-5 의 첫 줄 · 3-6 의 순서(매니페스트 검증 부분) · 2-4 의 `cmd_uninstall` 순서 · 7-4 의 매니페스트 검증 케이스 가운데 변경 명령의 것
 - 읽기: `previous()` 와 해시 짝 읽기 함수가 판정 전에 줄 끝의 CR 하나를 떼고, 줄마다 2-3 표대로 경로를 뽑아 T9 의 판정 함수(형식 · 링크)로 본다.
   `.harness/` 로 시작하는 줄도 같다. `<<<<<<<` · `|||||||` · `=======` · `>>>>>>>` 로 시작하는 줄은 `a merge conflict marker` 다. 빈 줄(공백뿐인 줄 포함)은 건너뛴다.
   두 함수 모두 검증을 거친 줄만 돌려주고, 어긋난 줄은 매니페스트 이름 · 줄 번호(1부터) · 사유로 따로 돌려준다. 어긋난 줄의 경로는 열지도 바꾸지도 않는다
+- 검증은 줄의 문자열만 본다. T9 의 판정 함수 가운데 형식 부분만 쓰고 파일 시스템(링크 성분)은 보지 않는다. 사유는 `a merge conflict marker` · `an absolute path` ·
+  `has a .. component` · `not a path` 넷뿐이다. 매니페스트 경로의 링크 성분은 T9 · T10 의 사전 판정이 판정하고 11-4 안내문 하나로 보고한다
 - 변경 명령: 어긋난 줄이 있으면 명세 11-5 의 안내문(`error: the harness manifest has <N> line(s) that are not safe paths under the harness root` ·
   `-->` 줄은 `<매니페스트>:<줄 번호> (<사유>)` 로 매니페스트 이름 순 · 줄 번호 순 · 개수를 자르지 않음 · `nothing was changed` · `help:` 와 `harness <명령>`)을
   표준 오류로 내고 종료 코드 2. 사유가 `a merge conflict marker` 인 줄이 있으면 `help:` 끝에 충돌 조치 줄(`harness install`)을 더한다. **줄의 내용은 출력하지 않는다**
@@ -576,6 +578,8 @@ install 과 uninstall 이 대상 리포를 바꾸기 전에 바꿀 경로 전부
 - [ ] 두 매니페스트의 줄 끝을 CRLF 로 바꿔도 render 가 종료 코드 0 이다
 - [ ] 위반 줄이 있을 때 `set` · `steps <새 절차>` · `checks` 가 종료 코드 2 이고 `harness.toml` 이 바이트 단위로 그대로다
 - [ ] 표준 오류 어디에도 어긋난 줄의 내용(바깥 파일의 경로)이 없다
+- [ ] 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 render 하면 표준 오류가 11-4 안내문이고 `not safe paths` 가 없다
+- [ ] T9 의 `script` 링크 케이스(`-->` 줄이 `script` 하나)와 `docs/adr` 링크의 `set adr.dir` 케이스(`reverted`)가 이 task 뒤에도 그대로 통과한다
 - [ ] `script/run-lint-test.sh` 가 통과한다
 
 ### 브랜치
@@ -591,7 +595,7 @@ install 과 uninstall 이 대상 리포를 바꾸기 전에 바꿀 경로 전부
 | UT-02 | 절대 경로 줄 | `.harness/managed` 에 해시와 바깥 파일 절대 경로 줄을 더하고 render · install · uninstall 각각 | 각각 종료 코드 2 와 `(an absolute path)`, 바깥 파일 그대로, uninstall 뒤 `.harness/` 와 다른 경로가 남는다 |
 | UT-03 | 형식 오류 줄 | 공백이 든 줄 · `script//x.sh` · `./CLAUDE.md` · `script/` 를 하나씩 더하고 render | 각각 종료 코드 2 와 `(not a path)` |
 | UT-04 | 병합 충돌 표지 | 표지 세 줄을 더하고 render, 이어 표지 줄을 지우고 install | 처음 종료 코드 2 · 세 줄 모두 `(a merge conflict marker)` · `help:` 에 `harness install`, 지운 뒤 종료 코드 0 |
-| UT-05 | 링크 성분 줄 — 변경 명령 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 render | 종료 코드 2, 그 줄에 `(through a symbolic link)`, 바깥 파일 그대로 |
+| UT-05 | 링크는 매니페스트 검증이 아니다 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 render | 종료 코드 2, 표준 오류가 11-4 안내문(`go through a symbolic link` · `--> script/review-mr.sh`)이고 `not safe paths` 없음, 바깥 파일 그대로 |
 | UT-06 | CR 줄 끝 | 두 매니페스트를 CRLF 로 바꾸고 render | 종료 코드 0 |
 | UT-07 | 설정을 바꾸는 명령 | 위반 줄을 두고 `set` · `steps <새 절차>` · `checks` | 각각 종료 코드 2, `harness.toml` 바이트 단위로 그대로 |
 | UT-08 | uninstall 순서 | `.harness/generated` 를 지우고 `.harness/managed` 에 `..` 줄만 남긴 채 `uninstall` | 종료 코드 2, `no harness manifest` 가 아니라 `not safe paths` 안내문 |
@@ -609,7 +613,8 @@ install 과 uninstall 이 대상 리포를 바꾸기 전에 바꿀 경로 전부
 읽기 명령은 멈추지 않는다. `check` · `doctor` 가 T11 의 검증에 어긋난 매니페스트 줄을 오류로 보고하고, 그 줄의 경로는 읽지 않은 채 나머지 줄로 판정을 이어 가게 한다.
 UI Doctor 가 그 항목을 한국어로 옮긴다. 결정 기록 0017.
 
-- 명세 4-1 의 끝 문단 · 4-2 의 어긋난 줄 보고 · 4-3 의 `unsafe manifest line` 항목 · 4-4 표의 두 행 · 11-5 의 읽기 명령 · 11-6 의 끝 줄 · 7-4 의 링크 성분 줄 · check 보고 · doctor 보고
+- 명세 4-1 의 끝 문단 · 4-2 의 어긋난 줄 보고 · 4-3 의 `unsafe manifest line` 항목 · 4-4 표의 두 행 · 11-5 의 읽기 명령 · 11-6 의 끝 줄 · 7-4 의 관리 파일 링크(check · doctor 부분) · check 보고 · doctor 보고
+- 어긋난 줄은 T11 의 형식 검증에 어긋난 줄이다. 매니페스트 경로의 링크 성분은 `unsafe manifest line` 으로 보고하지 않는다
 - 판정: 어긋난 줄은 4-1 표로 가르지 않고 그 경로를 읽지 않는다. `check` 의 생성 파일 어긋남이 `.harness/generated` 를 읽을 때도 같다
 - `cmd_check`: 두 매니페스트 가운데 어긋난 줄이 하나라도 있으면 종료 코드 1. 다른 어긋남과 함께 있으면 모두 보고한다. 출력은 명세 4-2 원문 —
   경로 열은 `<매니페스트>:<줄 번호>` 를 `%-52s` 로, 그 뒤 사유(괄호를 뗀 것). 병합 충돌 표지 줄이 있으면 `help:` 에 11-5 의 충돌 조치 줄을 더한다
@@ -624,7 +629,7 @@ UI Doctor 가 그 항목을 한국어로 옮긴다. 결정 기록 0017.
 
 ### 완료 조건
 
-- [ ] 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` 를 부르면 그 줄이 `through a symbolic link` 로 보고되고 바깥 파일의 해시를 대조하지 않는다
+- [ ] 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` · `harness status` 를 부르면 그 줄이 `unsafe manifest line` 으로 보고되지 않는다
 - [ ] `..` 줄과 충돌 표지 줄이 있으면 `check` 가 종료 코드 1 이고 표준 오류에 두 `<매니페스트>:<줄 번호>` 와 사유가 있으며 피해 파일이 그대로다
 - [ ] 같은 상태에서 `harness status` 의 `doctor.items` 에 `state` `bad` · `what` `unsafe manifest line` 항목이 있고, `.harness/generated` 의 줄은 `section` `generated files`, `.harness/managed` 의 줄은 `managed files` 다. detail 에 줄의 내용이 없다
 - [ ] 어긋난 줄이 있는 절에 `ok` 항목이 없다
@@ -640,7 +645,7 @@ UI Doctor 가 그 항목을 한국어로 옮긴다. 결정 기록 0017.
 
 | ID | 테스트 내용 | 입력 | 기대 결과 |
 | --- | --- | --- | --- |
-| UT-01 | 링크 성분 줄 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` | 종료 코드 1, 그 줄이 `through a symbolic link`, `modified managed file` 로 보고되지 않는다 |
+| UT-01 | 링크는 어긋난 줄이 아니다 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` · `harness status` | 표준 오류에 `not safe paths under the harness root` 가 없고 doctor 항목에 `unsafe manifest line` 이 없다 |
 | UT-02 | check 보고 | `.harness/generated` 에 `../victim.md`, `.harness/managed` 에 충돌 표지 한 줄을 더하고 `check` | 종료 코드 1, 두 `<매니페스트>:<줄 번호>` 와 `has a .. component` · `a merge conflict marker`, `help:` 에 `harness install`, `victim.md` 그대로 |
 | UT-03 | 다른 어긋남과 함께 | UT-02 에 관리 파일 변경을 더하고 `check` | 종료 코드 1, 두 오류가 모두 나온다 |
 | UT-04 | doctor 보고 | UT-02 상태에서 `harness status` | `generated files` · `managed files` 절에 각각 `bad` `unsafe manifest line`, detail 이 `<매니페스트>:<줄 번호> (<사유>)`, 두 절에 `ok` 없음 |
@@ -709,9 +714,9 @@ UI Doctor 가 그 항목을 한국어로 옮긴다. 결정 기록 0017.
 
 - 사람 지시 있음 — #58 결정 게이트에서 사용자가 이 보호 문서의 "신뢰 경계" 한 줄 수정을 지시했다. 이 task 의 범위는 그 한 항목이다
 - 명세 8절 표의 "신뢰 경계" 행 · 결정 기록 0017
-- "들어오는 입력" 에 한 항목: 매니페스트(`.harness/generated` · `.harness/managed`) — 커밋된 파일이라 신뢰하지 않는다. 읽을 때마다 줄마다 경로 규칙
-  (하네스 루트 기준 정규화된 상대 경로, `..` · 절대 경로 · 빈 성분 · 링크 성분 거부)으로 검증하고, 어긋난 줄이 하나라도 있으면 대상 리포를 바꾸는 명령은
-  아무것도 바꾸지 않는다
+- "들어오는 입력" 에 한 항목: 매니페스트(`.harness/generated` · `.harness/managed`) — 커밋된 파일이라 신뢰하지 않는다. 읽을 때마다 줄마다 경로 형식
+  (하네스 루트 기준 정규화된 상대 경로, `..` · 절대 경로 · 빈 성분 거부)으로 검증하고, 어긋난 줄이 하나라도 있으면 대상 리포를 바꾸는 명령은
+  아무것도 바꾸지 않는다. 줄의 경로에 있는 심볼릭 링크 성분은 변경 명령의 사전 판정이 막는다
 - 이 리포에서 render 해 생성물(`.ai/AI_AGENT.md`)을 함께 커밋한다
 - 건드릴 파일: `.ai/project/architecture.md`, 생성물 `.ai/AI_AGENT.md`
 
