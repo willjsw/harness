@@ -2705,6 +2705,60 @@ doctor-emfile remote warn reviewer runner \`codex\` could not check"
 cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
 unset -f at_plan at_run
 
+echo "UT-87 user files and the project's own place: script/project/ is the project's, and a file the harness would write is not taken over silently"
+# 프로젝트 스크립트를 하네스 자리에 두면 갱신이 알림 없이 덮는다. 자리를 나누고, 겹치면 쓰기 전에 멈춘다.
+t="$work/own87"; rm -rf "$t"; mkdir -p "$t"
+( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1; check "install on a new repo" "$?" "0"
+cmp -s "$t/script/project/README.md" "$root/templates/owned/script/project/README.md" && ok \
+  || bad "install did not lay the project scripts README as its template"
+printf '| `deploy.sh` | the project deploys | by hand |\n' >> "$t/script/project/README.md"
+"$root/bin/harness" render --target "$t" >/dev/null
+has "$t/script/project/README.md" '`deploy.sh`' "render overwrote the project scripts README"
+"$root/bin/harness" status --target "$t" > "$work/own87-status.json" 2>&1
+python3 - "$work/own87-status.json" > "$work/own87-facts" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print(" ".join(i["state"] for i in d["doctor"]["items"]
+               if i["section"] == "project facts" and i["what"] == "script/project/README.md"))
+PY
+check "doctor sees the project scripts README as filled in" "$(cat "$work/own87-facts")" "ok"
+"$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1; check "uninstall exit code" "$?" "0"
+[ -f "$t/script/project/README.md" ] && ok || bad "uninstall removed the project scripts README"
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1
+"$root/bin/harness" uninstall --target "$t" --purge --yes >/dev/null 2>&1; check "purge exit code" "$?" "0"
+[ -e "$t/script/project/README.md" ] && bad "--purge left the project scripts README" || ok
+# 하네스는 script/project/ 에 쓰지 않는다 — 관리 템플릿, 생성 템플릿, plan() 어느 쪽도
+( cd "$root/templates/managed" && find . -type f | sed 's|^\./||' ) > "$work/own87-paths"
+( cd "$root/templates/generated" && find . -type f | sed 's|^\./||' ) >> "$work/own87-paths"
+python3 - "$root/bin/harness" "$work/base" >> "$work/own87-paths" <<'PY'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+for rel, _c, _m in h.plan(cfg, target):
+    print(rel)
+PY
+grep -q '^script/harness.env$' "$work/own87-paths" && ok || bad "the path list does not carry plan() paths"
+grep -q '^script/project/' "$work/own87-paths" && bad "the harness writes under script/project/: $(grep '^script/project/' "$work/own87-paths" | head -1)" || ok
+# 규칙 문서가 프로젝트 스크립트를 새 자리로 보낸다
+t="$work/base"
+python3 - "$t/.ai/AI_AGENT.md" > "$work/own87-canon" <<'PY'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+def chapter(n):
+    m = re.search(r"^## %d\. .*?(?=^## \d+\. |\Z)" % n, s, re.S | re.M)
+    return m.group(0) if m else ""
+print("3", "`script/project/README.md`" in chapter(3) and "`script/project/`" in chapter(3))
+print("9", "| `script/project/README.md` |" in chapter(9))
+print("10", re.search(r"^\| `script/project/` \| \*\*소유\*\*", chapter(10), re.M) is not None)
+PY
+check "the rule canon names script/project/ in chapters 3, 9 and 10" "$(cat "$work/own87-canon" | tr '\n' ' ')" "3 True 9 True 10 True "
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
