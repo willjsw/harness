@@ -49,18 +49,22 @@ class Blocks:
 
 
 def group_commands(pgid):
-    """그룹에 남은 명령. ps 를 띄우지 못했거나 5초 안에 끝나지 않으면 None."""
+    """그룹에 남은 명령(그룹 대표인 본문 자신 포함). 목록을 믿을 수 없으면 None — ps 를 띄우지 못했거나,
+    5초 안에 끝나지 않았거나, 0 이 아닌 코드로 끝났거나, 아직 살아 있는 본문 자신조차 목록에 없을 때."""
     try:
         r = subprocess.run(["ps", "-A", "-o", "pgid=,pid=,command="], stdin=subprocess.DEVNULL,
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, errors="replace", timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None
-    out = []
+    if r.returncode != 0:
+        return None
+    out, leader = [], False
     for l in r.stdout.splitlines():
         f = l.split(None, 2)
-        if len(f) == 3 and f[0] == str(pgid) and f[1] != str(pgid):
+        if len(f) == 3 and f[0] == str(pgid):
+            leader = leader or f[1] == str(pgid)
             out.append("  %s %s" % (f[1], f[2][:200]))
-    return out
+    return out if leader else None
 
 
 def main(argv):
@@ -2832,9 +2836,11 @@ unset -f at_plan at_run
 echo "UT-95 a block that never finishes is stopped and named with what was still running, instead of hanging the run"
 # 어느 블록의 어느 명령이 멈추든 이 테스트 전체가 진행 없이 기다린다. 블록 감시가 그것을 실패와 위치로 바꾼다.
 # 실제 시각에 기대지 않는다 — 판정은 시각을 넘겨받는 Blocks 로, 종료 절차는 바꿔 끼운 시계로 본다.
-wd="$work/watch"; rm -rf "$wd"; mkdir -p "$wd/nops" "$wd/denyps" "$wd/failps" "$wd/hangps"
+wd="$work/watch"; rm -rf "$wd"; mkdir -p "$wd/nops" "$wd/denyps" "$wd/failps" "$wd/emptyps" "$wd/otherps" "$wd/hangps"
 : > "$wd/denyps/ps"                                   # 실행 권한이 없는 ps
 printf '#!/bin/sh\nexit 1\n' > "$wd/failps/ps"; chmod +x "$wd/failps/ps"
+printf '#!/bin/sh\nexit 0\n' > "$wd/emptyps/ps"; chmod +x "$wd/emptyps/ps"          # 성공했지만 아무것도 내지 않는 ps
+printf '#!/bin/sh\necho "1 1 /sbin/init"\n' > "$wd/otherps/ps"; chmod +x "$wd/otherps/ps"  # 다른 그룹만 내는 ps
 printf '#!/bin/sh\nexec /bin/sleep 100000\n' > "$wd/hangps/ps"; chmod +x "$wd/hangps/ps"
 cat > "$wd/hang.sh" <<'SH'
 #!/bin/bash
@@ -2907,7 +2913,8 @@ UT-01 True
 UT-07c False True
 [900.0, 0.5, None, None, None, None, None, None, None]"
 # 멈춘 블록 — 이름과 남은 명령을 보고하고, 진단이 어떻게 되든 그룹째 끝내고 124
-for c in normal:"$PATH" nops:"$wd/nops" denyps:"$wd/denyps" failps:"$wd/failps" hangps:"$wd/hangps"; do
+for c in normal:"$PATH" nops:"$wd/nops" denyps:"$wd/denyps" failps:"$wd/failps" \
+         emptyps:"$wd/emptyps" otherps:"$wd/otherps" hangps:"$wd/hangps"; do
   name=${c%%:*}; drive "$name" jump hang.sh "${c#*:}"; check "$name: exit code of a stopped run" "$?" "124"
   has "$wd/$name.err" "render-test: UT-01 did not finish within 60s and was stopped" "$name: the failure does not name the stuck block and the limit"
   has "$wd/$name.out" "UT-01 stuck" "$name: the watched run's output did not pass through"
@@ -2917,7 +2924,9 @@ for c in normal:"$PATH" nops:"$wd/nops" denyps:"$wd/denyps" failps:"$wd/failps" 
   no_hangul "$wd/$name.err" "$name: the stopped run report"
 done
 has "$wd/normal.err" "hang.sh" "the failure does not name the command that was still running"
-for name in nops denyps hangps; do
+has "$wd/normal.err" "still running:" "a working diagnosis does not list what was still running"
+hasnt "$wd/normal.err" "could not list" "a working diagnosis was reported as failed"
+for name in nops denyps failps emptyps otherps hangps; do
   has "$wd/$name.err" "could not list what was still running" "$name: a failed diagnosis is not reported as such"
 done
 # 제때 끝나는 본문 — 종료 코드 그대로, 멈춤 보고 없음, 바깥 입력을 받지 않는다
