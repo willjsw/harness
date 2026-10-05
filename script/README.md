@@ -24,7 +24,7 @@
 | `test-secret-scan.sh` | 시크릿 스캔 회귀 테스트 — 무엇을 잡고 무엇을 지나가는지 | `run-lint-test.sh` |
 | `test-rollback-work.sh` | 되감기 회귀 테스트 — 무엇을 닫고 무엇을 남기는지 | `run-lint-test.sh` |
 | `test-sync-task-issues.sh` | 동기화 회귀 테스트 — 분해 절이 생성 호출의 어느 인수로 가는지. 로컬 bare 원격과 페이크 어댑터로만 돈다 | `run-lint-test.sh` |
-| `test-forge-labels.sh` | GitHub 어댑터의 라벨 준비 회귀 테스트 — 만들지 못한 라벨을 삼키지 않고, 그때 이슈·리뷰 요청을 바꾸지 않는지. `gh` 스텁으로만 돈다 | `run-lint-test.sh` |
+| `test-forge-labels.sh` | 어댑터의 라벨 준비 회귀 테스트 — GitHub 이 만들지 못한 라벨을 삼키지 않고 그때 이슈·리뷰 요청을 바꾸지 않는지, `tracker_labels_ensure` 의 빈 인수·무인수, Jira 의 무호출. CLI 스텁으로만 돈다 | `run-lint-test.sh` |
 | `secret-scan.sh` | 커밋에 **새로 들어오는** 자격증명을 찾는다. python3 만 쓴다. `--staged` | pre-commit 훅, 수동 |
 | `rollback-work.sh` | 이슈 하나에 대해 하네스가 만든 것을 되감는다 — 리뷰 요청·task 이슈를 닫고 로컬 브랜치를 지운다. **요구사항 이슈와 원격 브랜치는 남긴다.** 확인을 받는다. `--dry-run`·`--yes` | 잘못 돈 `work` 를 치울 때 |
 | `create-carryover-issue.sh` | 범위 밖으로 넘긴 지적의 이월 이슈 생성 — 본문 검사 뒤 원본에서 필수 필드 상속. `--dry-run` | 구현자가 이월처를 만들 때 |

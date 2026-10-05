@@ -192,6 +192,13 @@ sys.exit(0 if sys.argv[2] in ids else 1)' "$work/issues.json" "$issue"; then
     bad "tracker_issue_list" "$(head -1 "$work/err")"
   fi
 
+  # 설정의 이슈 라벨로 한 번 — 이미 있는 라벨에 대해 도는 멱등 호출이다.
+  if tracker_labels_ensure "$ISSUE_LABEL_REQUIREMENT" "$ISSUE_LABEL_TASK" "$ISSUE_LABEL_INVALID" 2>"$work/err"; then
+    ok "tracker_labels_ensure"
+  else
+    bad "tracker_labels_ensure" "$(head -1 "$work/err")"
+  fi
+
   found=$(harness_issue_open_mrs "$issue" 2>"$work/err")
   rc=$?
   if [ $rc -eq 0 ]; then

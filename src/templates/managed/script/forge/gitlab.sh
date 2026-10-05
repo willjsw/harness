@@ -130,6 +130,20 @@ json.dump([x["name"] for x in v], sys.stdout, ensure_ascii=False)
 '
 }
 
+# 검증 상태: 미검증. 실제 GitLab 으로 돌려보지 않았다 — 이미 있다는 실패는 glab 오류의 `already exists` · `409` 로 가른다.
+# 그 밖의 실패는 그 라벨과 glab 의 오류 끝 줄을 표준 오류로 내고 1. 뒤 라벨로 가지 않는다.
+tracker_labels_ensure() {
+  for _l in "$@"; do
+    [ -n "$_l" ] || continue
+    _gl_err=$("$GITLAB_CLI" label create --name "$_l" --color "#ededed" </dev/null 2>&1 >/dev/null) && continue
+    case "$_gl_err" in *"already exists"*|*"409"*) continue ;; esac
+    echo "error: could not create label \`$_l\`" >&2
+    _gl_tail=$(printf '%s\n' "$_gl_err" | sed '/^[[:space:]]*$/d' | tail -1)
+    [ -z "$_gl_tail" ] || printf '  %s\n' "$_gl_tail" >&2
+    return 1
+  done
+}
+
 fi
 
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────

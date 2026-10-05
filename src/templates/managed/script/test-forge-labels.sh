@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# GitHub 어댑터의 라벨 준비 회귀 테스트 — 만들지 못한 라벨을 삼키지 않고, 그때 이슈·리뷰 요청을 바꾸지 않는다.
+# 어댑터의 라벨 준비 회귀 테스트 — GitHub 은 만들지 못한 라벨을 삼키지 않고 그때 이슈·리뷰 요청을 바꾸지 않는다.
+# Jira 는 라벨을 미리 두지 않으므로 원격을 부르지 않는다.
 #
 #   script/test-forge-labels.sh
 #
 # 종료 코드: 0 = 전 케이스 통과 · 1 = 실패한 케이스 있음 · 2 = 실행 실패
 #
-# 원격을 부르지 않는다. `gh` 스텁을 PATH 앞에 두고 받은 인수를 기록한다.
+# 원격을 부르지 않는다. `gh` · `jira` 스텁을 PATH 앞에 두고 받은 인수를 기록한다.
 set -uo pipefail
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -106,6 +107,38 @@ check issue-close "the issue is neither edited nor closed" 0 "$(calls '^issue ')
 STUB_CREATE_FAIL=round:2 adapter review_mr_labels_set 5 round:2 round:1
 check mr-labels "review_mr_labels_set fails when its label could not be made" 1 "$?"
 check mr-labels "the pull request is not edited" 0 "$(calls '^pr edit')"
+
+# 계약 함수 tracker_labels_ensure — 빈 인수는 건너뛰고, 인수가 없으면 부르지 않으며, 실패를 전달한다
+adapter tracker_labels_ensure "" Task
+check ensure-skip "exit code with an empty argument" 0 "$?"
+check ensure-skip "only the non-empty label is created" "label create Task --color ededed" "$(grep '^label create' "$log")"
+
+adapter tracker_labels_ensure
+check ensure-none "exit code with no arguments" 0 "$?"
+check ensure-none "gh is not called" 0 "$(grep -c . "$log" | tr -d ' ')"
+
+STUB_CREATE_FAIL=Second adapter tracker_labels_ensure First Second Third
+check ensure-fail "exit code when the second label fails" 1 "$?"
+check ensure-fail "stderr names the failed label" 1 "$(grep -c 'could not create label `Second`' "$err" | tr -d ' ')"
+check ensure-fail "the label after it is not tried" 0 "$(calls '^label create Third ')"
+
+STUB_CREATE_FAIL=Task STUB_EXISTING=Task adapter tracker_labels_ensure Task
+check ensure-exists "an existing label is a success" 0 "$?"
+
+# Jira 는 라벨을 미리 두지 않는다 — 원격을 부르지 않고 성공한다
+if [ -f "$root/script/forge/jira.sh" ]; then
+  cp "$sandbox/bin/gh" "$sandbox/bin/jira"
+  n=$((n + 1)); log="$sandbox/calls-$n.log"; : > "$log"
+  (
+    export PATH="$sandbox/bin:$PATH" STUB_LOG="$log"
+    _FORGE_WANT_TRACKER=1 _FORGE_WANT_REVIEW=0
+    . "$root/script/forge/_common.sh"
+    . "$root/script/forge/jira.sh"
+    tracker_labels_ensure Requirement Task
+  ) >/dev/null 2>&1
+  check jira "Jira's tracker_labels_ensure exits 0" 0 "$?"
+  check jira "Jira's tracker_labels_ensure calls nothing" 0 "$(grep -c . "$log" | tr -d ' ')"
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then

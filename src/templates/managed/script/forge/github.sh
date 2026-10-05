@@ -141,6 +141,10 @@ json.dump([x["name"] for x in v], sys.stdout, ensure_ascii=False)
 '
 }
 
+tracker_labels_ensure() {
+  _gh_ensure_label "$@"
+}
+
 fi
 
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────

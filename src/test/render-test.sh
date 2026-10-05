@@ -527,6 +527,12 @@ has "$work/selftest.log" "skip" "read-only, but it did not report skipping the w
 check "writes pass when the contract holds" "$(run_selftest '' --write 1 100)" "0"
 check "issue creation passes when the contract holds" "$(run_selftest '' --create-issue 1 100)" "0"
 hasnt "$work/selftest.log" "skip  " "ran every item, yet something was skipped"
+has "$work/selftest.log" "tracker_labels_ensure" "the self-test does not prepare the issue labels"
+# 페이크는 받은 라벨을 기록한다 — 자체 검사가 설정의 이슈 라벨 셋을 넘긴다
+check "the self-test passes the configured issue labels" "$(LC_ALL=C sort -u "$fstate/ensured_labels" | tr '\n' ' ')" "Requirement Task invalid "
+rm -f "$fstate/ensured_labels"
+( cd "$t" && FAKE_STATE="$fstate" sh -c '. ./script/forge.sh && tracker_labels_ensure A "" B C' ); check "the fake's tracker_labels_ensure exits 0" "$?" "0"
+check "the fake records each non-empty label" "$(tr '\n' ' ' < "$fstate/ensured_labels")" "A B C "
 
 # 계약을 어기는 아홉 가지를 각각 잡아야 한다. 하나라도 통과로 지나가면 "검증됨" 이 거짓이 된다.
 for brk in mr_view threads thread_id issue_list open_mrs; do

@@ -177,6 +177,14 @@ tracker_labels() {
   python3 -c 'import json, sys; json.dump(sys.argv[1].split(), sys.stdout)' "$FAKE_LABELS"
 }
 
+# 받은 라벨을 FAKE_STATE/ensured_labels 에 한 줄씩 남긴다. 빈 인수는 건너뛴다.
+tracker_labels_ensure() {
+  for _l in "$@"; do
+    [ -n "$_l" ] || continue
+    printf '%s\n' "$_l" >> "$FAKE_STATE/ensured_labels"
+  done
+}
+
 review_branch_protected() { # <브랜치>
   [ "$FAKE_BREAK" = protected ] && { echo yes; return 0; }
   for _b in $FAKE_PROTECTED; do
