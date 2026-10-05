@@ -3599,6 +3599,42 @@ grep -q "issue-closed" "$t.records/usage.log" && grep -q "issue-query-failed" "$
 no_hangul "$work/pf99.err" "work-preflight issue check output"
 unset -f pf99
 
+echo "UT-100 doctor --remote finds a configured label past the first 1,000 through the GitHub adapter"
+# 목록을 개수 상한까지만 읽으면 forge-setup 이 만든 라벨을 doctor 가 없다고 보고한다.
+t="$work/labels100"; setup "$t"
+"$root/bin/harness" set --target "$t" forge.tracker github forge.review_host github >/dev/null 2>&1 || bad "could not switch to GitHub"
+git init -q --bare "$work/labels100-origin.git"
+( cd "$t" && git init -q -b development . && git remote add origin "$work/labels100-origin.git" && git add -A \
+  && git -c core.hooksPath=/dev/null -c user.email=t@t -c user.name=t commit -qm init \
+  && git -c core.hooksPath=/dev/null push -q origin development ) || bad "could not prepare the repo with an origin"
+gh100="$work/gh100"; rm -rf "$gh100"; mkdir -p "$gh100"
+cat > "$gh100/gh" <<'SH'
+#!/bin/sh
+# 로그인은 되어 있고, 라벨은 1,000개 뒤에 설정의 라벨이 있다. 페이지마다 배열을 이어 붙여 낸다
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "api --paginate")
+    case "$3" in
+      "repos/{owner}/{repo}/labels?"*)
+        python3 -c '
+import json
+names = ["filler-%04d" % i for i in range(1, 1001)] + ["Requirement", "Task", "invalid"]
+for k in range(0, len(names), 100):
+    print(json.dumps([{"name": n} for n in names[k:k + 100]]))'
+        exit 0 ;;
+    esac ;;
+esac
+exit 1
+SH
+chmod +x "$gh100/gh"
+PATH="$gh100:$PATH" "$root/bin/harness" doctor --remote --target "$t" > "$work/labels100.txt" 2>&1
+sed -n '/^remote$/,/^$/p' "$work/labels100.txt" | grep '^  ' > "$work/labels100.sec"
+for l in Requirement Task invalid; do
+  has "$work/labels100.sec" "  ok   label \`$l\`  — on github" "doctor does not see label $l past the first 1,000"
+done
+hasnt "$work/labels100.sec" "missing on github" "doctor reports a label missing that is on the forge"
+no_hangul "$work/labels100.txt" "doctor --remote label output"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

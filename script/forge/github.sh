@@ -69,6 +69,25 @@ _gh_ensure_label() {
   done
 }
 
+# 목록 조회는 REST 를 끝까지 페이지 단위로 읽어 배열 하나로 낸다. `gh <대상> list --limit` 는 개수 상한이라
+# 그 밖의 항목이 조용히 빠진다. `--paginate` 는 페이지마다 배열을 이어 붙여 내므로 하나씩 읽어 합친다.
+# gh 가 실패하면 출력이 일부라도 0 이 아닌 코드로 돌아간다 — 빈 배열로 바꾸지 않는다.
+_gh_paged() {
+  _gh_pages=$("$GITHUB_CLI" api --paginate "$1" </dev/null) || return 1
+  printf '%s' "$_gh_pages" | python3 -c '
+import json, sys
+text, out, dec, i = sys.stdin.read().strip(), [], json.JSONDecoder(), 0
+while i < len(text):
+    v, i = dec.raw_decode(text, i)
+    if not isinstance(v, list):
+        raise SystemExit("list response is not an array")
+    out += v
+    while i < len(text) and text[i] in " \t\r\n":
+        i += 1
+json.dump(out, sys.stdout, ensure_ascii=False)
+'
+}
+
 _GH_PR_FIELDS=number,headRefName,headRefOid,body,labels,state
 _GH_ISSUE_FIELDS=number,title,state,body,labels,assignees,milestone
 
@@ -84,8 +103,10 @@ tracker_issue_view() {
   "$GITHUB_CLI" issue view "$1" --json "$_GH_ISSUE_FIELDS" | python3 -c "$_gh_norm_issue"
 }
 
+# REST 의 이슈 목록은 리뷰 요청도 함께 준다. pull_request 키가 있는 항목을 뺀다.
 tracker_issue_list() {
-  "$GITHUB_CLI" issue list --state all --limit 1000 --json "$_GH_ISSUE_FIELDS" \
+  _gh_paged "repos/{owner}/{repo}/issues?state=all&per_page=100" \
+    | python3 -c 'import json, sys; json.dump([x for x in json.load(sys.stdin) if "pull_request" not in x], sys.stdout)' \
     | python3 -c "$_gh_norm_issue"
 }
 
@@ -127,7 +148,7 @@ tracker_auth() {
 }
 
 tracker_labels() {
-  "$GITHUB_CLI" label list --json name --limit 1000 </dev/null | python3 -c '
+  _gh_paged "repos/{owner}/{repo}/labels?per_page=100" | python3 -c '
 import json, sys
 v = json.load(sys.stdin)
 if not isinstance(v, list):
@@ -238,8 +259,13 @@ review_mr_thread_reply() {
   "$GITHUB_CLI" api "repos/{owner}/{repo}/pulls/$1/comments/$2/replies" -f "body=$3" >/dev/null
 }
 
+# REST 의 리뷰 요청은 브랜치와 head 를 head.ref · head.sha 로 준다. 정규화 전에 gh 의 필드 이름으로 옮긴다.
 review_mr_list_open() {
-  "$GITHUB_CLI" pr list --state open --limit 200 --json "$_GH_PR_FIELDS" | python3 -c "$_gh_norm_mr"
+  _gh_paged "repos/{owner}/{repo}/pulls?state=open&per_page=100" | python3 -c '
+import json, sys
+json.dump([dict(x, headRefName=(x.get("head") or {}).get("ref") or "", headRefOid=(x.get("head") or {}).get("sha") or "")
+           for x in json.load(sys.stdin)], sys.stdout)
+' | python3 -c "$_gh_norm_mr"
 }
 
 review_mr_close() {

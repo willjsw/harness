@@ -54,7 +54,8 @@ _gl_paged() {
   printf '['
   _first=1
   while :; do
-    _batch=$("$GITLAB_CLI" api "${_path}?per_page=100&page=${_page}") || return 1
+    case "$_path" in *\?*) _sep='&' ;; *) _sep='?' ;; esac
+    _batch=$("$GITLAB_CLI" api "${_path}${_sep}per_page=100&page=${_page}") || return 1
     _n=$(printf '%s' "$_batch" | python3 -c 'import json,sys; v=json.load(sys.stdin); print(len(v) if isinstance(v,list) else -1)') || return 1
     [ "$_n" -ge 0 ] || { echo "error: list response is not an array: $_path" >&2; return 1; }
     [ "$_n" -eq 0 ] && break
@@ -208,8 +209,9 @@ review_mr_thread_reply() {
     -f "body=$3" >/dev/null
 }
 
+# 검증 상태: 미검증. 열린 리뷰 요청을 첫 페이지만이 아니라 끝까지 읽는다.
 review_mr_list_open() {
-  "$GITLAB_CLI" api "projects/:id/merge_requests?state=opened&per_page=100" | python3 -c "$_gl_norm_mr"
+  _gl_paged "projects/:id/merge_requests?state=opened" | python3 -c "$_gl_norm_mr"
 }
 
 review_auth() {

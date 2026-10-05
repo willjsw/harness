@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 어댑터의 라벨 준비 회귀 테스트 — GitHub 은 만들지 못한 라벨을 삼키지 않고 그때 이슈·리뷰 요청을 바꾸지 않는다.
+# 어댑터의 라벨 준비·목록 회귀 테스트 — GitHub 은 만들지 못한 라벨을 삼키지 않고 그때 이슈·리뷰 요청을 바꾸지 않으며,
+# 라벨·이슈·열린 리뷰 요청 목록을 개수 상한 없이 끝까지 읽는다.
 # Jira 는 라벨을 미리 두지 않으므로 원격을 부르지 않는다.
 #
 #   script/test-forge-labels.sh
@@ -45,7 +46,29 @@ case "$1 $2" in
 esac
 case "$1" in
   api)
-    [ "${STUB_LIST_FAIL:-}" = 1 ] && { echo "HTTP 500" >&2; exit 1; }
+    [ "${STUB_LIST_FAIL:-}" = 1 ] && { printf '[{"name":"partial"}]'; echo "HTTP 500" >&2; exit 1; }
+    # --paginate — 페이지(100개)마다 배열을 이어 붙여 낸다. 이슈 목록에는 리뷰 요청 한 건이 섞인다
+    if [ "$2" = "--paginate" ]; then
+      # shellcheck disable=SC2086
+      python3 -c '
+import json, sys
+path, names = sys.argv[1], sys.argv[2:]
+if path.startswith("repos/{owner}/{repo}/labels?"):
+    items = [{"name": n} for n in names]
+elif path.startswith("repos/{owner}/{repo}/issues?state=all"):
+    items = [{"number": i, "title": "issue %d" % i, "state": "open", "body": "", "labels": [{"name": "Task"}],
+              "assignees": [{"login": "user-a"}], "milestone": {"title": "M1"}} for i in range(1, 1003)]
+    items.insert(500, {"number": 9999, "title": "a pull request", "state": "open", "pull_request": {}})
+elif path.startswith("repos/{owner}/{repo}/pulls?state=open"):
+    items = [{"number": i, "head": {"ref": "feat/%d-x" % i, "sha": "%040d" % i}, "body": "Closes #%d" % i,
+              "labels": [], "state": "open"} for i in range(1, 203)]
+else:
+    print("HTTP 404: Not Found", file=sys.stderr); sys.exit(1)
+for k in range(0, len(items), 100):
+    print(json.dumps(items[k:k + 100]))
+' "$3" ${STUB_EXISTING:-}
+      exit $?
+    fi
     case "$2" in
       "repos/{owner}/{repo}/labels/"*)
         # shellcheck disable=SC2086
@@ -155,6 +178,27 @@ check ensure-fail "the label after it is not tried" 0 "$(calls '^label create Th
 
 STUB_CREATE_FAIL=Task STUB_EXISTING=Task adapter tracker_labels_ensure Task
 check ensure-exists "an existing label is a success" 0 "$?"
+
+# 목록 함수는 상한 없이 끝까지 읽는다 — 1,000개 밖의 라벨·이슈와 200개 밖의 리뷰 요청도 낸다
+STUB_EXISTING="$many Late" adapter tracker_labels
+check labels-all "tracker_labels exit code" 0 "$?"
+check labels-all "every label past the first 1,000 comes back" "1001 Late" \
+  "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); print(len(v), v[-1])' "$sandbox/out-$n.log")"
+check labels-all "label list with a cap is not used" 0 "$(calls '^label list')"
+STUB_LIST_FAIL=1 adapter tracker_labels
+check labels-fail "a failed page is a failure, not a short list" failed "$([ $? -ne 0 ] && echo failed || echo passed)"
+check labels-fail "nothing is printed as the label list" "" "$(cat "$sandbox/out-$n.log")"
+adapter tracker_issue_list
+check issues-all "tracker_issue_list exit code" 0 "$?"
+check issues-all "every issue, without the pull request, normalized" "1002 1002 False open Task user-a M1" \
+  "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); i=v[-1]
+print(len(v), i["iid"], any(x["iid"] == "9999" for x in v), i["state"], i["labels"][0], i["assignee"], i["milestone"])' "$sandbox/out-$n.log")"
+adapter review_mr_list_open
+check mrs-all "review_mr_list_open exit code" 0 "$?"
+check mrs-all "every open review request with its branch and head" "202 202 feat/202-x 202 open" \
+  "$(python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); m=v[-1]
+print(len(v), m["iid"], m["source_branch"], int(m["head_sha"]), m["state"])' "$sandbox/out-$n.log")"
+check mrs-all "pr list with a cap is not used" 0 "$(calls '^pr list')"
 
 # Jira 는 라벨을 미리 두지 않는다 — 원격을 부르지 않고 성공한다
 if [ -f "$root/script/forge/jira.sh" ]; then
