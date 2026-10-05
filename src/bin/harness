@@ -1166,6 +1166,27 @@ def plan(cfg: dict, target: Path = None) -> list:
     return sorted(out)
 
 
+def linked_component(root: Path, rel: str, last: bool = True):
+    """root 아래 rel 의 경로 성분 가운데 심볼릭 링크인 첫 것(root 기준 경로). 없으면 None.
+
+    root 자신과 그 위는 보지 않는다. last 가 거짓이면 마지막 성분(파일 자체)은 빼고 부모만 본다.
+    """
+    parts = rel.split("/")
+    for i in range(1, len(parts) + (1 if last else 0)):
+        head = "/".join(parts[:i])
+        if (root / head).is_symlink():
+            return head
+    return None
+
+
+def refuse_link(root: Path, rel: str):
+    """쓰기 직전의 방어 — 링크를 따라 리포 밖에 쓰지 않는다. 쓰기 전 판정이 먼저 막고, 이것은 그 뒤에 바뀐 경우다."""
+    hit = linked_component(root, rel)
+    if hit:
+        die("error: refusing to write through a symbolic link\n  --> %s\n\n"
+            "help: replace the link with a regular file or directory, then run the command again" % hit)
+
+
 def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None):
     """관리 파일은 덮어쓰고, 소유 파일은 없을 때만 깐다. (바뀐 수, 깐 경로 전부)"""
     n, paths = 0, []
@@ -1181,6 +1202,7 @@ def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None)
         out = dst / rel
         if only_if_absent and out.exists():
             continue
+        refuse_link(dst, rel)
         out.parent.mkdir(parents=True, exist_ok=True)
         text = f.read_text(encoding="utf-8")
         if subst is not None:
@@ -1312,15 +1334,25 @@ def user_files(cfg: dict, target: Path) -> list:
     - 하네스가 쓸 경로에 이미 있으나 이전 매니페스트에 없는 것. 내용은 보지 않는다
     - 쓸 경로에 디렉터리가 있는 것. 매니페스트에 있어도 덮을 수 없다
     - 쓸 경로의 부모 가운데 디렉터리가 아닌 것. 소유 파일·CI 골격·매니페스트의 부모도 본다
-    - 심볼릭 링크인 `.harness` — 사본을 갈아 끼우면 링크 너머의 파일을 지운다
+    - 쓸 경로와 그 부모 가운데 심볼릭 링크인 것 — 링크를 따라 쓰면 리포 밖의 파일이 바뀐다. 매니페스트에 있어도 같다.
+      `.harness` 가 링크면 사본을 갈아 끼울 때 링크 너머의 파일을 지운다. 하네스 루트 자신과 그 위는 보지 않는다
+    - 없을 때만 까는 경로가 대상이 없는 링크면 그 링크를 따라 새 파일을 만들게 되므로 같게 본다
     """
     ours = set(previous(target, MANIFEST)) | set(previous(target, MANIFEST_MANAGED))
     writes = harness_paths(cfg)
     found = {}
-    pin = target / PINNED.rstrip("/")
-    if pin.is_symlink():
+    seeded = seeded_paths(cfg)
+    if (target / PINNED.rstrip("/")).is_symlink():
         found[PINNED.rstrip("/")] = "a symbolic link"
-    for rel in sorted(writes | seeded_paths(cfg) | {MANIFEST, MANIFEST_MANAGED}):
+    for rel in sorted(writes | seeded | {MANIFEST, MANIFEST_MANAGED}):
+        own = rel in writes or rel in (MANIFEST, MANIFEST_MANAGED)
+        hit = linked_component(target, rel, last=own)
+        if hit is None and not own and (target / rel).is_symlink() and not (target / rel).exists():
+            hit = rel
+        if hit is not None:
+            if not any(hit == h or hit.startswith(h + "/") for h in found):
+                found[hit] = "a symbolic link"
+            continue
         parts = rel.split("/")
         for i in range(1, len(parts)):
             head = "/".join(parts[:i])
@@ -1390,6 +1422,7 @@ def cmd_render(cfg, target, args):
     written = 0
     for rel, content, mode in items:
         p = target / rel
+        refuse_link(target, rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         old = p.read_text(encoding="utf-8") if p.is_file() else None
         if old != content:
@@ -1408,6 +1441,8 @@ def cmd_render(cfg, target, args):
     if (target / PINNED / "bin" / "harness").is_file():
         hashes.update((rel, h) for rel, h in manifest_entries(target)
                       if rel.startswith(PINNED) and h is not None)
+    refuse_link(target, MANIFEST)
+    refuse_link(target, MANIFEST_MANAGED)
     mf = target / MANIFEST
     mf.parent.mkdir(parents=True, exist_ok=True)
     mf.write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
