@@ -54,8 +54,13 @@ python3 - "$repo_root/script/harness.plan.json" "$work/script/harness.plan.json"
 import json, sys
 p = json.load(open(sys.argv[1]))
 p["metrics"]["dir"] = sys.argv[3]
+# 로그인 확인은 스텁이 알아보는 인자로 고정한다 — 벤더 선언에 확인 명령이 없어도 그 경로를 탄다
+r = p["roles"]["code-reviewer"]
+r["auth_check"] = [r["exe"], "stub-auth-check"]
+r["auth_timeout"] = 30
 json.dump(p, open(sys.argv[2], "w"))
 PY
+cp "$work/script/harness.plan.json" "$sandbox/plan.json"
 cp "$repo_root/.ai/templates/code-reviewer.md" "$work/.ai/templates/"
 
 # 상한만 이 테스트의 값으로 덮는다. 나머지는 실제 설정 그대로다.
@@ -73,6 +78,7 @@ review_require()  { return 0; }
 tracker_require() { return 0; }
 
 review_mr_view() {
+  echo "review_mr_view $1" >> "$FAKE_STATE/forge-calls"
   python3 - "$(git rev-parse --abbrev-ref HEAD)" "$(git rev-parse HEAD)" \
            "$(cat "$FAKE_STATE/labels" 2>/dev/null || true)" \
            "$(cat "$FAKE_STATE/mr-description" 2>/dev/null || true)" <<'PY'
@@ -178,6 +184,11 @@ cat > "$stub/$reviewer_bin" <<'STUB'
 #!/usr/bin/env bash
 # 리뷰 도구 스텁. 호출 흔적과 받은 입력을 남기고 준비된 리뷰 본문을 결과 파일로 넘긴다.
 set -uo pipefail
+# 로그인 확인 — 기록만 남기고 STUB_AUTH 의 코드로 끝난다(기본 0)
+if [ "$*" = "stub-auth-check" ]; then
+  echo "auth" >> "$FAKE_STATE/auth-calls"
+  exit "${STUB_AUTH:-0}"
+fi
 echo "called" >> "$FAKE_STATE/reviewer-calls"
 out=""; prev=""
 for a in "$@"; do
@@ -405,11 +416,53 @@ run_post() { # <MR번호> <리뷰본문> [리뷰한리비전]
 }
 
 echo "UT-01 each review run bumps the round label by 1"
-rm -f "$state/labels" "$state/reviewer-calls"
+rm -f "$state/labels" "$state/reviewer-calls" "$state/auth-calls"
 check UT-01 "round 1 exit code" 0 "$(run_review "$sandbox/clean.md")"
 check UT-01 "round 1 label" "$ROUND:1" "$(labels)"
 check UT-01 "round 2 exit code" 0 "$(run_review "$sandbox/clean.md")"
 check UT-01 "round 2 label — previous one removed" "$ROUND:2" "$(labels)"
+
+check UT-01 "the runner's sign-in is checked before each round" 2 "$(wc -l < "$state/auth-calls" | tr -d ' ')"
+
+echo "UT-34 a review runner that is not ready stops before the round label and the forge"
+plan_variant() { # [<파이썬 문장>] — 실행 계획 사본의 code-reviewer 항목 r 을 고친다. 인수가 없으면 되돌린다
+  cp "$sandbox/plan.json" "$work/script/harness.plan.json"
+  [ $# -eq 0 ] || python3 -c '
+import json, sys
+p = json.load(open(sys.argv[1])); r = p["roles"]["code-reviewer"]
+exec(sys.argv[2])
+json.dump(p, open(sys.argv[1], "w"))' "$work/script/harness.plan.json" "$1"
+}
+for c in "signed-out|not signed in|STUB_AUTH=1" "unconfirmed|could not check sign-in|STUB_AUTH=0" \
+         "missing|is not installed|STUB_AUTH=0"; do
+  name=${c%%|*}; rest=${c#*|}; want=${rest%%|*}; auth=${rest#*|}
+  case "$name" in
+    unconfirmed) plan_variant 'r["auth_check"] = ["/nonexistent/auth-check-for-test"]' ;;
+    missing)     plan_variant 'r["exe"] = "no-such-reviewer-cli-for-test"' ;;
+    *)           plan_variant ;;
+  esac
+  echo "$ROUND:2" > "$state/labels"
+  rm -f "$state/reviewer-calls" "$state/forge-calls"
+  rc=$( ( cd "$work" && env PATH="$stub:$PATH" FAKE_STATE="$state" STUB_REVIEW="$sandbox/clean.md" "$auth" \
+          script/review-mr.sh 1 >"$state/last.log" 2>&1 ); echo $? )
+  check UT-34 "$name: exit code" 2 "$rc"
+  check UT-34 "$name: the runner's reason is passed through" 1 "$(grep -c -- "$want" "$state/last.log" | tr -d ' ')"
+  check UT-34 "$name: says the round was not used" 1 "$(grep -c 'help: the round was not used — fix the review runner, then rerun' "$state/last.log" | tr -d ' ')"
+  check UT-34 "$name: the round label is unchanged" "$ROUND:2" "$(labels)"
+  check UT-34 "$name: the reviewer did not run" 0 "$(reviewer_calls)"
+  check UT-34 "$name: the forge was not read" no "$([ -s "$state/forge-calls" ] && echo yes || echo no)"
+done
+# 서브에이전트 역할 — 실행 파일이 없으면 지금의 안내 그대로 멈춘다
+plan_variant 'r["exe"] = ""'
+echo "$ROUND:2" > "$state/labels"; rm -f "$state/reviewer-calls" "$state/auth-calls"
+rc=$( ( cd "$work" && env PATH="$stub:$PATH" FAKE_STATE="$state" STUB_REVIEW="$sandbox/clean.md" \
+        script/review-mr.sh 1 >"$state/last.log" 2>&1 ); echo $? )
+check UT-34 "subagent: exit code" 2 "$rc"
+check UT-34 "subagent: the subagent guidance" 1 "$(grep -c 'error: no review runner is configured' "$state/last.log" | tr -d ' ')"
+check UT-34 "subagent: the sign-in is not checked" no "$([ -s "$state/auth-calls" ] && echo yes || echo no)"
+check UT-34 "subagent: the round label is unchanged" "$ROUND:2" "$(labels)"
+plan_variant
+unset -f plan_variant
 
 echo "UT-02 at the cap no review runs"
 echo "$ROUND:$cap" > "$state/labels"
