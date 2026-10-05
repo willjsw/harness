@@ -18,6 +18,18 @@ test("explain", () => {
   assert.deepEqual(explain({ state: "warn", what: "something new", detail: "why" }, b), { title: "something new", body: "why" });
 });
 
+test("the git hooks command comes from the doctor detail", () => {
+  const b = "/demo";
+  const root = explain({ state: "bad", what: "git hooks enabled", detail: "run `git config core.hooksPath script/githooks`" }, b);
+  assert.equal(root.run.cmd, "git config core.hooksPath script/githooks");
+  const sub = explain({ state: "bad", what: "git hooks enabled", detail: "run `git config core.hooksPath packages/api/script/githooks`" }, b);
+  assert.equal(sub.run.cmd, "git config core.hooksPath packages/api/script/githooks");
+  assert.equal(sub.run.kind, "hooks");
+  const none = explain({ state: "bad", what: "git hooks enabled", detail: "not a git repository" }, b);
+  assert.equal(none.run, undefined);
+  assert.match(none.title, /git 훅/);
+});
+
 test("explain registry lines", () => {
   const b = "/demo";
   const line = { state: "warn", what: "`demo` is registered to another path", detail: "/elsewhere/demo" };

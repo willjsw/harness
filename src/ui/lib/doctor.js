@@ -143,9 +143,12 @@ export function explain(i, base) {
     return { title: "프로젝트 검증이 아직 통과하지 않습니다",
       body: "script/verify-project.sh 는 이 프로젝트의 린트·테스트를 돌리는 스크립트입니다. Project Settings 의 명령 탭에 적은 명령을 이 스크립트에도 넣어야 통과합니다.",
       run: { kind: "verify", cmd: "sh script/verify-project.sh" } };
-  if (w === "git hooks enabled" && i.state !== "ok")
-    return { title: "git 훅이 꺼져 있습니다", body: "커밋·push 할 때 하네스 검사(생성 파일 일치, 보호 브랜치)가 돌지 않습니다.",
-      run: { kind: "hooks", cmd: "git config core.hooksPath script/githooks" } };
+  if (w === "git hooks enabled" && i.state !== "ok") {
+    // 켜는 명령은 doctor 가 detail 에 백틱으로 싣는다 — 서브프로젝트면 그 경로가 앞에 붙는다
+    const cmd = d.match(/`([^`]+)`/)?.[1];
+    const hooks = { title: "git 훅이 꺼져 있습니다", body: "커밋·push 할 때 하네스 검사(생성 파일 일치, 보호 브랜치)가 돌지 않습니다." };
+    return cmd ? { ...hooks, run: { kind: "hooks", cmd } } : hooks;
+  }
   if ((m = w.match(/^(\d+) files differ from the config$/)))
     return { title: "생성 파일이 설정과 다릅니다", body: `${m[1]}개 파일이 harness.toml 과 맞지 않습니다. 다시 생성하지 않으면 커밋이 막힙니다.`,
       run: { kind: "render", cmd: "harness render" } };

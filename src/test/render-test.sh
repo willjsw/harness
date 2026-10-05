@@ -3397,10 +3397,16 @@ check "render-test refuses a limit that is not a positive number" "$?" "2"
 has "$wd/top.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "render-test does not say why it refused the limit"
 unset -f drive gone
 
-echo "UT-96 install turns git hooks on only when core.hooksPath is empty, and leaves any other setting with the command to run"
+echo "UT-96 install turns git hooks on only when core.hooksPath is empty, and install, doctor and uninstall judge the value by the harness root it points at"
 # 훅이 꺼진 채면 커밋 형식·시크릿 스캔·생성물 검사가 하나도 돌지 않는다. 남이 둔 설정을 덮으면 그 도구의 훅이 사라진다.
 h96() { HARNESS_HOME="$work/home96" "$root/bin/harness" "$@"; }
 hp96() { git -C "$1" config core.hooksPath || echo "(none)"; }
+hk_item() { # hk_item <대상> — doctor --json 의 `git hooks enabled` 항목의 state 와 detail
+  "$root/bin/harness" doctor --json --target "$1" 2>/dev/null | python3 -c '
+import json, sys
+hit = [i for i in json.load(sys.stdin)["items"] if i["what"] == "git hooks enabled"]
+print("%s|%s" % (hit[0]["state"], hit[0]["detail"]) if hit else "none")'
+}
 hk="$work/hk"; rm -rf "$hk"; mkdir -p "$hk"
 # 빈 값 — 켠다. `.sample` 훅만 있으면 비어 있는 것으로 본다
 t="$hk/empty"; mkdir -p "$t"; ( cd "$t" && git init -q . )
@@ -3440,7 +3446,25 @@ has "$work/hk-mono.out" "set core.hooksPath to packages/api/script/githooks" "in
 h96 install --target "$m/packages/web" > "$work/hk-mono2.out" 2>&1; check "install into a second subproject exits 0" "$?" "0"
 check "a second subproject keeps the first one's value" "$(hp96 "$m")" "packages/api/script/githooks"
 has "$work/hk-mono2.out" "git config core.hooksPath packages/web/script/githooks" "the second subproject does not give its own command"
+# doctor · uninstall 도 서브프로젝트의 기대 값으로 가른다 — 리포 루트의 값은 서브프로젝트의 훅이 아니다
+check "a subproject's doctor sees its own hooks on" "$(hk_item "$m/packages/api")" "ok|"
+check "a sibling subproject's doctor sees its hooks off, with its own command" "$(hk_item "$m/packages/web")" \
+  "bad|run \`git config core.hooksPath packages/web/script/githooks\`"
+m2="$hk/mono-root"; mkdir -p "$m2/packages/svc"; ( cd "$m2" && git init -q . && git config core.hooksPath script/githooks )
+h96 install --target "$m2/packages/svc" > "$work/hk-mono3.out" 2>&1; check "install under a root value exits 0" "$?" "0"
+check "the repository root's value is left as is" "$(hp96 "$m2")" "script/githooks"
+check "a subproject's doctor does not take the root value as its hooks" "$(hk_item "$m2/packages/svc")" \
+  "bad|run \`git config core.hooksPath packages/svc/script/githooks\`"
+h96 uninstall --target "$m/packages/web" > "$work/hk-rm-web.out" 2>&1; check "uninstall of the second subproject exits 0" "$?" "0"
+check "uninstall keeps a value that points at another subproject" "$(hp96 "$m")" "packages/api/script/githooks"
+hasnt "$work/hk-rm-web.out" "unset core.hooksPath" "uninstall announced unsetting a value it kept"
+h96 uninstall --target "$m/packages/api" > "$work/hk-rm-api.out" 2>&1; check "uninstall of the first subproject exits 0" "$?" "0"
+check "uninstall clears the subproject's own value" "$(hp96 "$m")" "(none)"
+has "$work/hk-rm-api.out" "unset core.hooksPath" "uninstall does not say it cleared the value"
+h96 uninstall --target "$hk/other" > "$work/hk-rm-other.out" 2>&1; check "uninstall over another tool's value exits 0" "$?" "0"
+check "uninstall keeps another tool's value" "$(hp96 "$hk/other")" ".husky"
 cat "$work"/hk-*.out > "$work/hk-all.log"; no_hangul "$work/hk-all.log" "install hooks output"
+unset -f h96 hp96 hk_item
 
 echo
 if [ "$fail" -eq 0 ]; then

@@ -1909,6 +1909,8 @@ def cmd_uninstall(_cfg, target, args):
         if rc:
             return rc
 
+    # 훅 디렉터리를 지우기 전에 가른다. 다른 서브프로젝트나 다른 도구를 가리키는 값은 이 하네스의 것이 아니다
+    ours_hooks = hooks_on(target)
     removed, kept = [], []
     for rel in sorted(set(gen) | set(man)):
         if rel.startswith(PINNED):
@@ -1931,9 +1933,7 @@ def cmd_uninstall(_cfg, target, args):
     unregister(target)
 
     # 훅 설정이 사라진 디렉터리를 가리키면 커밋할 때마다 git 이 실패한다.
-    if hooks_path(target) == "script/githooks":
-        subprocess.run(["git", "-C", str(target), "config", "--unset", "core.hooksPath"],
-                       capture_output=True)
+    if ours_hooks and git(target, "config", "--unset", "core.hooksPath").returncode == 0:
         print("  unset core.hooksPath (it pointed at a directory that is now gone)")
 
     # 하네스가 만든 빈 디렉터리를 정리한다. 작업 산출물이 남아 있으면 그대로 둔다.
@@ -2220,9 +2220,9 @@ def doctor_items(cfg, target, remote=False):
         line("warn", "`%s` is registered to another path" % name, at)
 
     section("git")
-    hp = hooks_path(target)
-    line("ok" if hp == "script/githooks" else "bad", "git hooks enabled",
-         "" if hp == "script/githooks" else "run `git config core.hooksPath script/githooks`")
+    on = hooks_on(target)
+    line("ok" if on else "bad", "git hooks enabled",
+         "" if on else "run `git config core.hooksPath %s`" % hooks_expected(target))
     if git(target, "rev-parse", "--show-toplevel").returncode == 0:
         left = left_worktrees(cfg, target)
         for name, path in left:
