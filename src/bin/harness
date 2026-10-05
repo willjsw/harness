@@ -1179,12 +1179,12 @@ def linked_component(root: Path, rel: str, last: bool = True):
     return None
 
 
-def refuse_link(root: Path, rel: str):
-    """쓰기 직전의 방어 — 링크를 따라 리포 밖에 쓰지 않는다. 쓰기 전 판정이 먼저 막고, 이것은 그 뒤에 바뀐 경우다."""
+def refuse_link(root: Path, rel: str, verb: str = "write"):
+    """쓰기·지우기·옮기기 직전의 방어 — 링크를 따라 리포 밖을 바꾸지 않는다. 사전 판정이 먼저 막고, 이것은 그 뒤에 바뀐 경우다."""
     hit = linked_component(root, rel)
     if hit:
-        die("error: refusing to write through a symbolic link\n  --> %s\n\n"
-            "help: replace the link with a regular file or directory, then run the command again" % hit)
+        die("error: refusing to %s through a symbolic link\n  --> %s\n\n"
+            "help: replace the link with a regular file or directory, then run the command again" % (verb, hit))
 
 
 def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None):
@@ -1255,6 +1255,7 @@ def sha256_of(p: Path) -> str:
 
 def write_manifest_hashes(target: Path, entries: dict):
     """`.harness/managed` 를 경로 순의 `<sha256>  <경로>` 줄로 쓴다. 해시가 None 인 경로는 옛 형식 그대로 경로만 쓴다."""
+    refuse_link(target, MANIFEST_MANAGED)
     (target / MANIFEST_MANAGED).write_text(
         "".join(("%s  %s\n" % (entries[rel], rel)) if entries[rel] else rel + "\n" for rel in sorted(entries)),
         encoding="utf-8")
@@ -1282,7 +1283,8 @@ def prune(target: Path, keep: set, manifest: str) -> int:
         if rel in keep or rel.startswith(PINNED):
             continue
         stale = target / rel
-        if stale.is_file():
+        if stale.is_file() or stale.is_symlink():
+            refuse_link(target, rel, "remove")
             stale.unlink()
             n += 1
             for d in stale.parents:
@@ -1337,11 +1339,20 @@ def user_files(cfg: dict, target: Path) -> list:
     - 쓸 경로와 그 부모 가운데 심볼릭 링크인 것 — 링크를 따라 쓰면 리포 밖의 파일이 바뀐다. 매니페스트에 있어도 같다.
       `.harness` 가 링크면 사본을 갈아 끼울 때 링크 너머의 파일을 지운다. 하네스 루트 자신과 그 위는 보지 않는다
     - 없을 때만 까는 경로가 대상이 없는 링크면 그 링크를 따라 새 파일을 만들게 되므로 같게 본다
+    - 정리(`prune`)가 지울 옛 경로와 그 부모 가운데 심볼릭 링크인 것 — 지우면 리포 밖의 파일이 사라진다
     """
-    ours = set(previous(target, MANIFEST)) | set(previous(target, MANIFEST_MANAGED))
+    prev_gen, prev_man = set(previous(target, MANIFEST)), set(previous(target, MANIFEST_MANAGED))
+    ours = prev_gen | prev_man
     writes = harness_paths(cfg)
+    made = {rel for rel, _c, _m in plan(cfg)}
     found = {}
     seeded = seeded_paths(cfg)
+    # 정리가 지울 옛 경로 — 지우기 전에 같은 방식으로 링크를 본다. 고정 사본은 정리하지 않는다
+    stale = {rel for rel in (prev_gen - made) | (prev_man - writes) if not rel.startswith(PINNED)}
+    for rel in sorted(stale):
+        hit = linked_component(target, rel)
+        if hit is not None and not any(hit == h or hit.startswith(h + "/") for h in found):
+            found[hit] = "a symbolic link"
     if (target / PINNED.rstrip("/")).is_symlink():
         found[PINNED.rstrip("/")] = "a symbolic link"
     for rel in sorted(writes | seeded | {MANIFEST, MANIFEST_MANAGED}):
@@ -1398,6 +1409,8 @@ def refuse_user_files(cfg, target: Path, args) -> bool:
 def adopt_user_files(cfg, target: Path):
     """사용자 파일을 `<경로>.orig` 로 옮긴다. 이름만 바꾸므로 권한 비트가 그대로다."""
     for rel, _why in user_files(cfg, target):
+        refuse_link(target, rel, "move")
+        refuse_link(target, rel + ".orig", "move")
         os.rename(target / rel, target / (rel + ".orig"))
         print("render: adopted %s — yours is at %s.orig" % (rel, rel))
 
@@ -1546,6 +1559,7 @@ def seed_config(target: Path):
     dst = target / "harness.toml"
     if dst.exists():
         return
+    refuse_link(target, "harness.toml")   # 대상이 없는 링크 — 따라 쓰면 링크가 가리키는 곳에 설정이 생긴다
     text = DEFAULT_CONFIG.read_text(encoding="utf-8")
     dst.write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
                    encoding="utf-8")
@@ -1683,8 +1697,11 @@ def install_registered(cfg, target: Path, args=None) -> bool:
         # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
         # 생성물이 작업 트리가 아니라 지난 사본을 따라간다. 훅과 검증 스크립트는 `.harness/bin/harness`
         # 가 없으면 `src/bin/harness` 를 쓴다. 옛 방식으로 깔린 사본이 있으면 걷어낸다(매니페스트는 남긴다).
+        refuse_link(target, PINNED.rstrip("/"), "remove")
         for stale in (dst / "bin", dst / "templates", dst / "VERSION"):
-            if stale.is_dir():
+            if stale.is_symlink():
+                stale.unlink()   # 링크 자체만 걷는다 — 따라가 지우지 않는다
+            elif stale.is_dir():
                 shutil.rmtree(stale)
             elif stale.is_file():
                 stale.unlink()
@@ -1693,6 +1710,7 @@ def install_registered(cfg, target: Path, args=None) -> bool:
         return True
     # 사본만 갈아 끼운다. 매니페스트가 사라지면 이전에 깐 하네스 파일이 전부 프로젝트 것으로 보인다.
     keep = {Path(MANIFEST).name, Path(MANIFEST_MANAGED).name}
+    refuse_link(target, PINNED.rstrip("/"), "remove")
     if dst.is_dir():
         for old in dst.iterdir():
             if old.name in keep and old.is_file():
@@ -1795,6 +1813,19 @@ def cmd_uninstall(_cfg, target, args):
         die("error: no harness manifest at %s\n\n  Nothing was installed here, or it has already been removed." % MANIFEST)
 
     owned = owned_files(target)
+    # 지우기 전에 링크를 본다 — 링크를 따라 지우면 리포 밖의 파일이 사라진다. 하나라도 있으면 아무것도 지우지 않는다
+    doomed = [r for r in set(gen) | set(man) if not r.startswith(PINNED)] + (owned if args.purge else [])
+    links = sorted({h for h in (linked_component(target, r) for r in doomed) if h})
+    if (target / PINNED.rstrip("/")).is_symlink():
+        links.append(PINNED.rstrip("/"))
+    if links:
+        print("error: %d path(s) the harness would remove are symbolic links or lie under one" % len(links), file=sys.stderr)
+        for h in links:
+            print("  --> %s" % h, file=sys.stderr)
+        print("nothing was removed\n\n"
+              "help: replace the links with regular files or directories, then run `harness uninstall` again",
+              file=sys.stderr)
+        return 2
     if args.purge:
         rc = confirm_purge(target, sorted(r for r in set(gen) | set(man) if not r.startswith(PINNED)), owned, args)
         if rc:

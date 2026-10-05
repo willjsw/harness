@@ -2900,6 +2900,54 @@ mv "$sl87/script" "$sl87/script.real"; ln -s "$so87/dir" "$sl87/script"
 has "$work/u87-17.err" "  --> script (a symbolic link)" "the refusal does not say the parent is a symbolic link"
 check "the directory behind the link keeps its file" "$(cat "$so87/dir/keep.txt")" "outside nested"
 check "nothing was written behind the link" "$(ls "$so87/dir" | tr '\n' ' ')" "keep.txt "
+# 정리·제거·넘겨받기·설정 씨앗·사본 걷기도 링크를 따라가지 않는다 — 무엇이든 쓰거나 지우기 전에 멈춘다
+lk87="$work/linkall87"; lo87="$work/linkall87-outside"; rm -rf "$lk87" "$lo87"; mkdir -p "$lk87" "$lo87"
+( cd "$lk87" && git init -q . )
+"$root/bin/harness" install --target "$lk87" >/dev/null 2>&1 || bad "could not install the link repo"
+[ -f "$lk87/docs/adr/README.md" ] && ok || bad "the decision-record README was not installed"
+mv "$lk87/docs/adr" "$lo87/adr"; ln -s "$lo87/adr" "$lk87/docs/adr"
+cp "$lk87/harness.toml" "$work/u87-lk.toml"; cp "$lk87/.harness/managed" "$work/u87-lk.mf"; cp "$lk87/.harness/generated" "$work/u87-lk.gen"
+# 정리가 지울 옛 경로의 부모가 링크
+"$root/bin/harness" set --target "$lk87" adr.dir docs/decisions > "$work/u87-18.out" 2> "$work/u87-18.err"; check "set whose prune would go through a link" "$?" "2"
+has "$work/u87-18.err" "  --> docs/adr (a symbolic link)" "the refusal does not name the linked directory prune would remove from"
+has "$work/u87-18.err" "reverted — the config is unchanged" "set did not revert"
+[ -f "$lo87/adr/README.md" ] && ok || bad "prune removed the README behind the link"
+cmp -s "$lk87/harness.toml" "$work/u87-lk.toml" && ok || bad "set left the config changed"
+cmp -s "$lk87/.harness/managed" "$work/u87-lk.mf" && cmp -s "$lk87/.harness/generated" "$work/u87-lk.gen" && ok || bad "the refused set rewrote a manifest"
+[ -e "$lk87/docs/decisions" ] && bad "the refused set wrote the new decision-record directory" || ok
+# 제거가 지울 경로의 부모가 링크
+"$root/bin/harness" uninstall --target "$lk87" > "$work/u87-19.out" 2> "$work/u87-19.err"; check "uninstall through a link" "$?" "2"
+has "$work/u87-19.err" "  --> docs/adr" "the uninstall refusal does not name the link"
+has "$work/u87-19.err" "nothing was removed" "the uninstall refusal does not say nothing was removed"
+[ -f "$lo87/adr/README.md" ] && ok || bad "uninstall removed the README behind the link"
+[ -f "$lk87/CLAUDE.md" ] && [ -d "$lk87/.harness" ] && ok || bad "the refused uninstall removed harness files"
+rm "$lk87/docs/adr"; mv "$lo87/adr" "$lk87/docs/adr"
+# --purge 가 지울 소유 파일의 부모가 링크
+mv "$lk87/.ai/project" "$lo87/project"; ln -s "$lo87/project" "$lk87/.ai/project"
+"$root/bin/harness" uninstall --target "$lk87" --purge --yes > "$work/u87-20.out" 2> "$work/u87-20.err"; check "uninstall --purge through a linked owned directory" "$?" "2"
+[ -f "$lo87/project/scope.md" ] && ok || bad "--purge removed an owned file behind the link"
+rm "$lk87/.ai/project"; mv "$lo87/project" "$lk87/.ai/project"
+# 넘겨받을 사용자 파일이 링크면 옮기지 않는다
+ad87="$work/adoptlink87"; rm -rf "$ad87"; mkdir -p "$ad87"; ( cd "$ad87" && git init -q . )
+printf 'my notes outside\n' > "$lo87/notes.md"; ln -s "$lo87/notes.md" "$ad87/CLAUDE.md"
+"$root/bin/harness" install --target "$ad87" --adopt > "$work/u87-21.out" 2> "$work/u87-21.err"; check "install --adopt over a linked user file" "$?" "2"
+has "$work/u87-21.err" "  --> CLAUDE.md (a symbolic link)" "the refusal does not say the user file is a link"
+check "the file behind the link is untouched" "$(cat "$lo87/notes.md")" "my notes outside"
+[ -L "$ad87/CLAUDE.md" ] && [ ! -e "$ad87/CLAUDE.md.orig" ] && ok || bad "the refused adopt moved the link"
+# 대상이 없는 harness.toml 링크를 따라 기본 설정을 쓰지 않는다
+sd87="$work/seedlink87"; rm -rf "$sd87"; mkdir -p "$sd87"; ( cd "$sd87" && git init -q . )
+ln -s "$lo87/seeded.toml" "$sd87/harness.toml"
+"$root/bin/harness" install --target "$sd87" > "$work/u87-22.out" 2> "$work/u87-22.err"; check "install over a dangling harness.toml link" "$?" "2"
+has "$work/u87-22.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
+[ -e "$lo87/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
+# 소스 리포가 옛 사본을 걷을 때 .harness/ 아래 링크는 링크만 걷는다
+src87="$work/source87"; rm -rf "$src87"; mkdir -p "$src87/src/bin" "$lo87/oldbin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src87/src/bin/"; cp -R "$root/templates" "$src87/src/templates"
+( cd "$src87" && git init -q . )
+printf 'outside bin\n' > "$lo87/oldbin/keep"; mkdir -p "$src87/.harness"; ln -s "$lo87/oldbin" "$src87/.harness/bin"
+"$src87/src/bin/harness" install --target "$src87" > "$work/u87-23.out" 2> "$work/u87-23.err"; check "install on a source tree with a linked .harness/bin" "$?" "0"
+check "the directory behind the old copy's link keeps its file" "$(cat "$lo87/oldbin/keep" 2>/dev/null)" "outside bin"
+[ -e "$src87/.harness/bin" ] && bad "the old copy's link was not cleared" || ok
 cat "$work"/u87-*.out "$work"/u87-*.err > "$work/u87-all.log"; no_hangul "$work/u87-all.log" "user file refusal output"
 
 echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
