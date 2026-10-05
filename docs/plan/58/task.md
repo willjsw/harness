@@ -63,7 +63,7 @@
 `.harness/managed` 를 경로 목록에서 `<sha256>  <경로>` 줄로 바꾸고, install 이 고정 사본의 해시를, render 가 관리 파일의 해시를 기록하게 한다.
 옛 형식 매니페스트도 읽는다. 재설치가 매니페스트를 지우지 않게 한다.
 
-- 명세 2절(2-1 형식 · 2-2 담는 것 · 2-3 읽기 · 2-4 정리와 설치) · 7-2 의 형식 · 옛 형식 읽기 케이스 · 7-4 의 매니페스트 읽기
+- 명세 2절(2-1 형식 · 2-2 담는 것 · 2-3 읽기 · 2-4 정리와 설치) · 7-2 의 형식 · 옛 형식 읽기 케이스 · 7-5 의 매니페스트 읽기
 - 줄 형식: sha256 소문자 16진 64자, 공백 두 칸, 하네스 루트 기준 상대 경로. 경로 순 정렬, LF 끝
 - `previous()` 는 두 형식을 명세 2-3 표대로 읽어 경로 목록을 돌려준다. 경로와 해시 짝을 돌려주는 읽기 함수를 따로 둔다 — T4 · T5 가 쓴다.
   옛 형식 줄의 해시는 없음이다
@@ -119,9 +119,11 @@
 render · install 이 관리 파일이나 생성 파일을 쓸 경로에 이전 매니페스트에 없는 파일(사용자 파일)이 있으면 아무것도 쓰지 않고 종료 코드 2
 로 멈추게 한다. `--adopt` 를 주면 원래 파일을 `<경로>.orig` 로 옮기고 넘겨받는다. 설정을 바꾸는 명령은 멈추면 설정을 되돌린다.
 
-- 명세 3절(3-1 판정 · 3-2 순서 · 3-3 안내문 · 3-4 `--adopt` · 3-5 설정을 바꾸는 명령 · 3-6 install) · 6절의 충돌 판정 · 7-1 의 나머지 케이스 · 7-4 의 기존 케이스
+- 명세 3절(3-1 판정 · 3-2 순서 · 3-3 안내문 · 3-4 `--adopt` · 3-5 설정을 바꾸는 명령 · 3-6 install) · 6절의 충돌 판정 · 7-1 의 나머지 케이스 · 7-5 의 기존 케이스
 - 판정 함수: 이번 render 가 쓸 관리 파일 경로(쓰지 않는 역할의 계약처럼 건너뛰는 경로 제외)와 `plan()` 경로 가운데, 이미 있으면서
   (디렉터리 포함) `.harness/generated` ∪ `.harness/managed` 의 경로에 없는 것. 내용은 보지 않는다. 소유 파일과 CI 골격은 대상이 아니다
+- 경로에 디렉터리가 있으면 이전 매니페스트에 있어도 사용자 파일이다. 쓸 경로(관리 파일 · 생성 파일 · 소유 파일 · CI 골격 · 매니페스트)의 부모 가운데
+  디렉터리가 아닌 것은 그 부모를 사용자 파일로 판정하고 `(not a directory)` 를 붙인다. 심볼릭 링크는 이 판정에 넣지 않는다 — T9 의 사전 판정이 막는다
 - `cmd_render`: 소유 파일과 CI 골격을 깔기 전에 판정한다. 사용자 파일이 있으면 명세 3-3 의 안내문을 표준 오류로 내고 종료 코드 2.
   `script/` 아래 경로가 있으면 `help:` 에 `project scripts belong in script/project/, which the harness never writes` 를 더하고,
   넘겨받을 수 없는 경로에는 `(a directory)` · `(<path>.orig already exists)` 를 붙인다
@@ -145,6 +147,7 @@ render · install 이 관리 파일이나 생성 파일을 쓸 경로에 이전 
 - [ ] 멈춘 install 뒤 두 파일 내용이 그대로이고 `.harness/` · `.ai/AI_AGENT.md` · `script/project/README.md` · 등록부의 `project.json` 이 없다
 - [ ] `install --adopt` 가 종료 코드 0 이고 `.orig` 두 파일이 원래 내용, 두 경로가 매니페스트에 있고 `.orig` 는 없으며 표준 출력에 `adopted` 두 줄이 있다
 - [ ] `<경로>.orig` 가 이미 있거나 경로에 디렉터리가 있으면 `install --adopt` 가 종료 코드 2 이고 아무것도 바뀌지 않는다
+- [ ] 새 리포에 일반 파일 `script` 를 두고 install 하면 종료 코드 2 이고 표준 오류에 `script (not a directory)` 가 있으며 고정 사본 · 생성물 · 소유 파일 · 등록부가 없다
 - [ ] 설치된 리포에서 재설치가 종료 코드 0 이고, 고친 관리 파일이 덮인다
 - [ ] 하네스가 쓰지 않는 이름의 `script/deploy.sh` 가 있어도 render 가 통과하고 그 파일이 그대로다
 - [ ] `steps` · `set` 이 사용자 파일로 멈추면 종료 코드 2, `reverted`, `harness.toml` 이 바이트 단위로 그대로다
@@ -169,6 +172,7 @@ render · install 이 관리 파일이나 생성 파일을 쓸 경로에 이전 
 | UT-08 | 설정을 바꾸는 명령 — set | 새 생성 경로가 생기는 값에 대응하는 경로에 사용자 파일을 두고 `set` | 종료 코드 2, `reverted`, `harness.toml` 그대로 |
 | UT-09 | render 도 쓰기 전에 멈춘다 | 설치된 리포에서 설정을 바꿔 새 생성 경로가 생기게 하고 그 경로에 사용자 파일을 둔 뒤 render | 종료 코드 2, 소유 파일 · 매니페스트가 그대로 |
 | UT-10 | 한글 없는 출력 | UT-01 ~ UT-09 의 표준 출력·표준 오류 | 한글이 없다 |
+| UT-11 | 디렉터리가 아닌 부모 | 새 리포에 일반 파일 `script` 를 두고 install | 종료 코드 2, 표준 오류에 `script (not a directory)`, 고정 사본 · 생성물 · 소유 파일 · 등록부 없음 |
 
 ## T4 · feat: check 가 관리 파일과 고정 사본을 매니페스트와 대조
 
@@ -230,14 +234,14 @@ render · install 이 관리 파일이나 생성 파일을 쓸 경로에 이전 
 `harness doctor` 의 결과 목록에 `managed files` 절을 더해 바뀌거나 없어진 관리 파일과 해시가 없는 매니페스트를 보고하고, UI Doctor 가 그 항목을
 한국어로 옮기게 한다. doctor 결과 목록은 #59 가 만든 구조(`section` · `state` · `what` · `detail`)를 쓴다.
 
-- 명세 4-3 `harness doctor` · 4-4 UI 문구 · 6절의 doctor · 7-1 의 다른 이름의 사용자 스크립트(doctor 부분) · 7-2 의 옛 형식 대조(doctor) · doctor 항목 · 7-5
+- 명세 4-3 `harness doctor` · 4-4 UI 문구 · 6절의 doctor · 7-1 의 다른 이름의 사용자 스크립트(doctor 부분) · 7-2 의 옛 형식 대조(doctor) · doctor 항목 · 7-6
 - `cmd_doctor`: `generated files` 절 바로 뒤에 `managed files` 절. T4 의 판정 함수로 명세 4-3 표의 항목을 낸다. `bad` 는 경로 순 10개까지,
   넘으면 `<N> more modified or missing managed file(s)` 한 항목. `.harness/managed` 가 없으면 `warn` `no manifest of managed files` 한 항목만.
   `.harness/bin/harness` 가 있는데 고정 사본 줄이 없거나 해시가 없으면 `warn` `the pinned copy has no recorded hash`
 - `src/ui/lib/doctor.js`: `SECTIONS` 에 `"managed files": "관리 파일"`, `explain()` 이 명세 4-4 표의 다섯 항목을 옮긴다. `.harness/` 로 시작하는
   detail 의 `modified` · `missing` 항목은 조치를 `cmd`: `harness install` 로 한다
 - `render-test.sh` 의 T2 블록에 doctor 항목 · 옛 형식 대조(doctor) 케이스를, T1 블록의 다른 이름의 사용자 스크립트 케이스에 doctor 확인을 더한다
-- `doctor.test.js` 에 명세 7-5 케이스
+- `doctor.test.js` 에 명세 7-6 케이스
 - 건드릴 파일: `src/bin/harness`(`cmd_doctor`), `src/ui/lib/doctor.js`, `src/ui/lib/doctor.test.js`, `src/test/render-test.sh`
 
 ### 완료 조건
@@ -366,7 +370,7 @@ render · install 이 관리 파일이나 생성 파일을 쓸 경로에 이전 
 에이전트가 근거로 읽는 보호 문서 `.ai/project/glossary.md` · `.ai/project/architecture.md` 를 T1 ~ T6 이 만든 사실에 맞춘다.
 보호 문서이므로 사람이 지시한 턴에서만 고친다.
 
-- 명세 8절 표 전부
+- 명세 8절 표 가운데 "신뢰 경계" 행을 뺀 나머지. 그 행은 T14 가 반영한다
 - `.ai/project/glossary.md`: "소유 파일" 목록에 `script/project/README.md`, "매니페스트" 의 새 정의(`.harness/generated` 는 생성 파일 경로,
   `.harness/managed` 는 관리 파일과 고정 사본의 sha256 과 경로, 정리·제거·변조 감지의 근거), 새 행 "사용자 파일"
 - `.ai/project/architecture.md`: "구성 요소" 의 `script/` 항목(`script/project/` 는 프로젝트 것), "데이터 흐름" 의 렌더(사용자 파일 판정 · sha256 기록 ·
@@ -394,3 +398,338 @@ render · install 이 관리 파일이나 생성 파일을 쓸 경로에 이전 
 | --- | --- | --- | --- |
 | UT-01 | 생성물 일치 | 두 문서를 고치고 render 뒤 `check` | 종료 코드 0 |
 | UT-02 | 문서 참조가 살아 있다 | 이 리포에서 `doctor` | `references` 절에 두 문서의 끊긴 참조 경고가 없다 |
+
+## T9 · feat: 경로 규칙과 공용 함수 `guarded_path()`, render 의 사전 판정과 변경 지점 전환
+
+### 상위 Requirement
+
+- relates to #58
+
+### 작업 내용
+
+하네스가 대상 리포를 바꾸는 경로의 규칙(11-2)을 함수 하나로 두고, 그 규칙을 지키는 경로만 돌려주는 공용 함수 `guarded_path()`(11-3)를 만든다.
+render 가 무엇이든 바꾸기 전에 이번에 바꿀 경로 전부를 같은 규칙으로 판정하게 하고(11-4 의 render 행), render 가 대상 리포를 바꾸는 지점 여섯 곳을
+공용 함수로 옮긴다. T3 이 사용자 파일 판정과 쓰기 지점마다 덧댄 링크 검사를 이 판정으로 대체한다. 결정 기록 0017.
+
+- 명세 11-2 · 11-3 · 11-4 의 render 행과 안내문 · 11-1 의 지점 가운데 `copy_tree()` 두 곳 · 생성 파일 쓰기 · 매니페스트 쓰기 · `prune()` · `--adopt`,
+  3-1 의 끝 줄(링크는 3-1 이 아니라 11-4 가 막는다) · 3-2 의 1(사전 판정 → 사용자 파일 판정) · 3-4 의 `.orig` 옮기기 · 3-5 의 사전 판정으로 멈춘 경우의 되돌리기 ·
+  2-4 의 `prune()` · 11-6 · 7-4 의 심볼릭 링크 케이스 일부
+- 경로 규칙 판정 함수: 하네스 루트 기준 상대 경로 문자열을 받아 어긋남의 사유를 돌려준다. 하네스 루트는 `--target` 을 `resolve()` 한 경로다
+  - 형식(문자열만 본다): `/` 로 나눈 성분이 하나 이상이고 성분마다 `[\w.-]+`(`PROTECTED_PATH` 의 성분과 같은 문자 집합). 앞의 `/` · 끝의 `/` · 빈 성분 ·
+    `.` · `..` 성분이 없다
+  - 링크(`lstat`): 하네스 루트 아래의 성분 `a` · `a/b` · … · 경로 자신 가운데 심볼릭 링크가 없다. 링크 대상이 있는지와 상관없다. 하네스 루트 자신과
+    그 위는 보지 않는다. 아직 없는 성분은 어긋남이 아니다. 없을 때만 까는 소유 파일 · CI 골격과 그 부모도 같다
+  - 사유: 위에서부터 처음 맞는 하나 — `an absolute path` · `has a .. component` · `not a path` · `through a symbolic link`. 링크면 링크인 성분도 돌려준다.
+    매니페스트 줄의 `a merge conflict marker` 는 T11 이 이 함수 앞에 더한다
+- `guarded_path(root, rel, verb)`: `verb` 는 `create` · `write` · `remove` · `move`. 시스템 호출 바로 앞에서 판정하고 통과하면 `root / rel` 을 돌려준다.
+  사전 판정이 통과시킨 경로도 다시 본다. 어긋나면 아무것도 하지 않고 명세 11-3 의 안내문을 표준 오류로 낸 뒤 종료 코드 2 —
+  링크면 `error: refusing to <verb> through a symbolic link` 와 `-->` 링크인 성분, 형식이면
+  `error: refusing to <verb> a path that is not safe under the harness root (<사유>)` 이고 경로를 출력하지 않는다
+- 사전 판정(render): 관리 파일 경로 · `plan()` 의 경로 · 소유 파일과 CI 골격의 경로 · `.harness/generated` · `.harness/managed` · 정리가 지울 옛 경로,
+  `--adopt` 면 넘겨받을 경로와 `<경로>.orig` 를 판정한다. 링크 성분이 하나라도 있으면 전부 모아 명세 11-4 의 안내문(`go through a symbolic link` ·
+  `-->` 링크인 성분 경로 순 · 한 링크 아래 경로를 따로 나열하지 않음 · `nothing was changed` · `help:` 와 `harness <명령>`)을 내고 종료 코드 2.
+  `<명령>` 은 사용자가 부른 명령이다. 사용자 파일 판정(3-1)보다 먼저 돈다
+- `user_files()` 에서 링크 판정을 뺀다. 남는 것은 3-1 의 사용자 파일 · 디렉터리 · `(not a directory)` · `.orig` 판정이다
+- 지점 전환 — 대상 리포를 바꾸는 시스템 호출을 전부 `guarded_path()` 가 돌려준 경로에 한다
+  - `copy_tree()` 의 관리 파일과 소유 파일 · CI 골격: 디렉터리 만들기는 만들 디렉터리마다, 쓰기 · 권한은 그 파일
+  - `cmd_render` 의 `plan()` 루프: 부모 디렉터리 만들기 · 쓰기 · 권한
+  - 매니페스트 쓰기: `.harness/generated` 와 `write_manifest_hashes()`(install 이 부르는 쓰기도 이 함수다)
+  - `prune()`: 지우는 파일, 걷는 빈 부모 디렉터리마다
+  - `--adopt`: 원래 경로와 `<경로>.orig` 둘 다
+- 이 지점들의 `refuse_link()` 호출을 걷어낸다. T10 이 맡는 지점의 호출은 남긴다
+- `set` · `steps` · `checks` 는 render 가 사전 판정으로 멈추면 설정을 되돌리고 `reverted — the config is unchanged` 를 낸다(3-5)
+- `render-test.sh` 에 명세 7-4 블록(경로 안전)을 새로 둔다. 번호는 이 커밋을 만들 때 `develop` 의 `render-test.sh` 에 있는 최대 `UT-<번호>` 의 다음 번호다.
+  T3 블록에 있는 심볼릭 링크 케이스를 이 블록으로 옮긴다(검증하는 내용은 7-4 표를 따른다). 링크 대상과 피해 파일은 하네스 루트 바깥의 테스트 임시 디렉터리 안에 둔다
+- `guarded_path()` 자체의 판정(형식 사유 · 직전 재검사)은 기존 블록처럼 `src/bin/harness` 를 모듈로 읽어 부르는 단위 케이스로 본다
+- 건드릴 파일: `src/bin/harness`(경로 규칙 판정 함수 · `guarded_path()` · 사전 판정 · `user_files()` · `copy_tree()` · `cmd_render` · `prune()` · `write_manifest_hashes()` ·
+  넘겨받기 · `set` · `steps` · `checks` 의 되돌리기), `src/test/render-test.sh`
+
+### 완료 조건
+
+- [ ] 설치된 리포에서 `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render 하면 종료 코드 2 이고 바깥 파일이 그대로다
+- [ ] `script` 를 바깥 디렉터리 링크로 바꾸고 render 하면 종료 코드 2, 표준 오류의 `-->` 줄이 `script` 하나이고 바깥 디렉터리가 그대로다
+- [ ] 설치된 리포의 `.ai/project` 를 같은 내용의 바깥 디렉터리 링크로 바꾸고 render 하면 종료 코드 2 이고 표준 오류에 `--> .ai/project` · `nothing was changed` · 11-4 의 `help:` 줄이 있다. 링크를 실제 디렉터리로 바꾸면 render 가 종료 코드 0 이다
+- [ ] 소유 원형이 없는 새 리포에서 `script/project` 를 바깥 디렉터리 링크로 두고 install 하면 종료 코드 2 이고 바깥 디렉터리에 `README.md` 가 생기지 않는다
+- [ ] `docs/adr` 를 바깥 디렉터리 링크로 두고 `set adr.dir docs/decisions` 하면 종료 코드 2, `reverted`, 바깥 `README.md` · `harness.toml` · 매니페스트가 그대로다
+- [ ] `CLAUDE.md` 가 바깥 파일 링크인 새 리포에서 `install --adopt` 가 종료 코드 2 이고 바깥 파일이 그대로이며 `CLAUDE.md.orig` 가 없다
+- [ ] 하네스 루트를 가리키는 링크 경로를 `--target` 으로 주면 render 가 종료 코드 0 이다
+- [ ] `guarded_path()` 가 사전 판정 뒤에 생긴 링크를 직전 재검사로 거부하고, 형식이 어긋난 경로는 경로를 출력하지 않고 사유만 낸다
+- [ ] 이 task 가 맡은 지점 여섯 곳에 `refuse_link()` 호출이 없다
+- [ ] T3 의 사용자 파일 케이스(링크 케이스를 뺀 것)가 그대로 통과한다
+- [ ] `script/run-lint-test.sh` 가 통과한다
+
+### 브랜치
+
+- `fix/58-separate-managed-and-project-parts` — 상위 이슈의 브랜치를 함께 쓴다
+- 머지 타깃: `develop`
+
+### 단위 테스트 항목
+
+| ID | 테스트 내용 | 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| UT-01 | 형식 사유 | 판정 함수에 `/etc/x` · `a/../b` · `a//b` · `./a` · `a/` · `a b` | 순서대로 `an absolute path` · `has a .. component` · `not a path` 네 번 |
+| UT-02 | 정상 경로 | `script/review-mr.sh` · `.harness/managed` · `docs/workflow/changing.md` | 어긋남 없음 |
+| UT-03 | 아직 없는 성분 | 없는 디렉터리 아래의 경로 | 어긋남 없음 |
+| UT-04 | 대상 없는 링크 | 경로 자신이 대상 없는 링크 | `through a symbolic link` 와 그 경로 |
+| UT-05 | 직전 재검사 | 사전 판정을 통과한 경로의 부모를 링크로 바꾼 뒤 `guarded_path(..., "write")` | 종료 코드 2, `refusing to write through a symbolic link`, 링크 대상 그대로 |
+| UT-06 | 형식 오류는 경로를 내지 않는다 | `guarded_path(root, "../victim.md", "remove")` | 종료 코드 2, 표준 오류에 `(has a .. component)` 가 있고 `victim.md` 가 없다 |
+| UT-07 | 관리 파일 링크 | `script/review-mr.sh` 를 바깥 파일 링크로 바꾸고 render | 종료 코드 2, 바깥 파일 그대로 |
+| UT-08 | 링크 부모 — 관리 · 생성 | `script` 를 바깥 디렉터리 링크로 바꾸고 render | 종료 코드 2, `-->` 줄이 `script` 하나, 바깥 디렉터리 그대로 |
+| UT-09 | 링크 부모 — 소유 | 새 리포에 `script/project` 바깥 디렉터리 링크를 두고 install | 종료 코드 2, 바깥 디렉터리에 `README.md` 없음 |
+| UT-10 | 링크된 `.ai/project` | `.ai/project` 를 같은 내용의 바깥 디렉터리 링크로 바꾸고 render, 이어 실제 디렉터리로 되돌리고 render | 처음 종료 코드 2 와 `--> .ai/project` · `nothing was changed` · `help:`, 되돌린 뒤 종료 코드 0 |
+| UT-11 | 정리 대상 링크 | `docs/adr` 바깥 디렉터리 링크(대상에 `README.md`)에서 `set adr.dir docs/decisions` | 종료 코드 2, `reverted`, 바깥 `README.md` · `harness.toml` · 매니페스트 그대로 |
+| UT-12 | `--adopt` 링크 | 새 리포에 바깥 파일 링크 `CLAUDE.md` 를 두고 `install --adopt` | 종료 코드 2, 바깥 파일 그대로, `CLAUDE.md.orig` 없음 |
+| UT-13 | 하네스 루트 위의 링크 | 하네스 루트를 가리키는 링크를 `--target` 으로 render | 종료 코드 0 |
+| UT-14 | 한글 없는 출력 | UT-05 ~ UT-13 의 표준 출력·표준 오류 | 한글이 없다 |
+
+## T10 · feat: install · uninstall 의 사전 판정과 변경 지점을 공용 함수로 전환
+
+### 상위 Requirement
+
+- relates to #58
+
+### 작업 내용
+
+install 과 uninstall 이 대상 리포를 바꾸기 전에 바꿀 경로 전부를 경로 규칙으로 판정하게 하고(11-4 의 install · uninstall 행), 두 명령의 변경 지점
+네 곳을 T9 의 `guarded_path()` 로 옮긴다. 이 task 로 `refuse_link()` · `linked_component()` 를 부르는 곳이 없어지므로 둘을 지운다. 결정 기록 0017.
+
+- 명세 11-4 의 install · uninstall 행과 끝의 두 줄(install 의 기본 `harness.toml` · `seed_config()`) · 11-1 의 지점 가운데 `install_registered()` 두 곳 ·
+  `seed_config()` · `cmd_uninstall` · 11-3 의 디렉터리 통째 걷기 · 2-4 의 `cmd_uninstall` · 3-6 의 순서(사전 판정 부분) · 7-4 의 심볼릭 링크 케이스 나머지
+- 사전 판정(install): T9 의 render 경로에 `.harness` · `.harness/bin` · `.harness/templates` · `.harness/VERSION` 을 더한다. 등록 판정 뒤, `.harness/` 를 바꾸기 전에
+  돌고 사용자 파일 판정보다 먼저다. 판정은 설치하려는 CLI 의 템플릿과 설정으로 한다. 소스 리포 분기도 옛 사본을 걷어내기 전에 같은 판정을 거친다.
+  멈추면 `.harness/` · 생성 파일 · 등록부가 그대로다. `main()` 이 설정이 없던 대상에 먼저 깐 기본 `harness.toml` 은 남는다
+- 사전 판정(uninstall): 두 매니페스트의 경로 · `.harness` · `--purge` 면 지울 소유 파일과 `harness.toml`. `--purge` 의 확인 목록을 내기 전이다.
+  안내문은 T9 의 11-4 안내문이고 `<명령>` 은 `uninstall` 이다 — T3 이 둔 uninstall 전용 링크 안내문을 대체한다
+- 지점 전환
+  - `install_registered()` 사본 교체: `.harness` 를 `guarded_path()` 로 거친 뒤 안의 항목을 걷는다. 안의 링크는 링크 자신만 지우고 따라가지 않는다.
+    디렉터리 만들기 · 사본 복사 · `.harness/VERSION` 쓰기도 공용 함수가 돌려준 경로에 한다
+  - `install_registered()` 소스 리포 옛 사본 정리: `.harness/bin` · `.harness/templates` · `.harness/VERSION` 을 공용 함수로 거친 뒤 지운다. 안의 링크는 링크 자신만 지운다
+  - `seed_config()`: 설정을 읽기 전에 돌아 사전 판정보다 앞선다. `harness.toml` 이 없을 때(대상 없는 링크 포함) 공용 함수를 거쳐 쓰고, 링크면 쓰지 않고 11-3 대로 멈춘다
+  - `cmd_uninstall`: 매니페스트의 경로 · 소유 파일 · `harness.toml`(`--purge`) 지우기, `.harness/` 걷기(안의 링크는 링크 자신만), 빈 부모 디렉터리 걷기를
+    디렉터리마다 공용 함수로
+- `refuse_link()` · `linked_component()` 를 지운다
+- `render-test.sh` 의 T9 블록에 케이스를 더한다
+- 건드릴 파일: `src/bin/harness`(사전 판정 · `install_registered()` · `seed_config()` · `cmd_uninstall` · `refuse_link()` · `linked_component()`), `src/test/render-test.sh`
+
+### 완료 조건
+
+- [ ] 새 리포와 설치된 리포 각각에서 `.harness` 를 바깥 디렉터리 링크로 두고 install 하면 종료 코드 2 이고, 링크 대상의 파일 · 하위 디렉터리 파일이 그대로이며 등록부에 기록이 없다
+- [ ] `.harness/bin` 이 바깥 디렉터리 링크인 소스 트리 복제본에서 install 하면 종료 코드 2 이고 바깥 디렉터리가 그대로다
+- [ ] `harness.toml` 이 대상 없는 링크인 새 리포에서 install 하면 종료 코드 2 이고 링크 대상 경로에 파일이 생기지 않는다
+- [ ] `docs/adr` 가 바깥 디렉터리 링크인 설치 리포에서 `uninstall` 이 종료 코드 2 이고 바깥 디렉터리 · `.harness/` · 매니페스트의 경로가 그대로다
+- [ ] `.ai/project` 가 바깥 디렉터리 링크일 때 `uninstall --purge --yes` 가 종료 코드 2 이고 바깥 디렉터리가 그대로다. `--yes` 없이 비대화형으로 부르면 확인 목록 대신 링크 오류로 종료 코드 2 다
+- [ ] 소유 원형이 없는 새 리포에서 `script/project` 를 바깥 디렉터리 링크로 두고 install 하면 `.harness/` 가 생기지 않는다
+- [ ] `src/bin/harness` 에 `refuse_link` · `linked_component` 가 없다
+- [ ] `script/run-lint-test.sh` 가 통과한다
+
+### 브랜치
+
+- `fix/58-separate-managed-and-project-parts` — 상위 이슈의 브랜치를 함께 쓴다
+- 머지 타깃: `develop`
+
+### 단위 테스트 항목
+
+| ID | 테스트 내용 | 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| UT-01 | `.harness` 링크 — 새 리포 | 새 리포에 바깥 디렉터리 링크 `.harness`(하위 디렉터리에 파일)를 두고 install | 종료 코드 2, 링크 대상 파일 · 하위 파일 그대로, 등록부에 기록 없음 |
+| UT-02 | `.harness` 링크 — 설치된 리포 | 설치된 리포의 `.harness` 를 바깥 디렉터리 링크로 바꾸고 install | 종료 코드 2, 링크 대상 그대로, 등록부 그대로 |
+| UT-03 | 소스 리포 옛 사본 | 소스 트리 복제본의 `.harness/bin` 을 바깥 디렉터리 링크로 두고 install | 종료 코드 2, 바깥 디렉터리 그대로 |
+| UT-04 | 설정 씨앗 | 새 리포의 `harness.toml` 이 대상 없는 링크인 채 install | 종료 코드 2, 링크 대상 경로에 파일 없음 |
+| UT-05 | uninstall 링크 | 설치 리포의 `docs/adr` 를 바깥 디렉터리 링크로 바꾸고 `uninstall` | 종료 코드 2, 표준 오류에 `--> docs/adr` · `nothing was changed`, 바깥 디렉터리 · `.harness/` · 매니페스트의 경로 그대로 |
+| UT-06 | purge 링크 | `.ai/project` 바깥 디렉터리 링크에서 `uninstall --purge --yes`, 이어 `--yes` 없이 비대화형 | 둘 다 종료 코드 2, 바깥 디렉터리 그대로, 두 번째에 확인 목록이 없다 |
+| UT-07 | install 은 사본을 바꾸기 전에 멈춘다 | 새 리포에 `script/project` 바깥 디렉터리 링크를 두고 install | 종료 코드 2, `.harness/` 없음 |
+| UT-08 | 정상 uninstall | 링크 없는 설치 리포에서 `uninstall` | 종료 코드 0, 매니페스트의 경로와 `.harness/` 가 없다 |
+| UT-09 | 한글 없는 출력 | UT-01 ~ UT-08 의 표준 출력·표준 오류 | 한글이 없다 |
+
+## T11 · feat: 매니페스트를 읽을 때마다 경로 규칙으로 검증하고 어긋나면 변경 명령을 멈춤
+
+### 상위 Requirement
+
+- relates to #58
+
+### 작업 내용
+
+`.harness/generated` · `.harness/managed` 를 신뢰하지 않는 입력으로 읽는다. 읽을 때마다 줄마다 T9 의 경로 규칙으로 검증하고, 어긋난 줄이 하나라도 있으면
+대상 리포를 바꾸는 명령(render · install · set · steps · checks · uninstall)이 아무것도 바꾸지 않고 멈추게 한다. 결정 기록 0017.
+
+- 명세 2-3 · 11-5 의 변경 명령 · 3-2 의 1(매니페스트 검증이 맨 앞) · 3-5 의 첫 줄 · 3-6 의 순서(매니페스트 검증 부분) · 2-4 의 `cmd_uninstall` 순서 · 7-4 의 매니페스트 검증 케이스 가운데 변경 명령의 것
+- 읽기: `previous()` 와 해시 짝 읽기 함수가 판정 전에 줄 끝의 CR 하나를 떼고, 줄마다 2-3 표대로 경로를 뽑아 T9 의 판정 함수(형식 · 링크)로 본다.
+  `.harness/` 로 시작하는 줄도 같다. `<<<<<<<` · `|||||||` · `=======` · `>>>>>>>` 로 시작하는 줄은 `a merge conflict marker` 다. 빈 줄(공백뿐인 줄 포함)은 건너뛴다.
+  두 함수 모두 검증을 거친 줄만 돌려주고, 어긋난 줄은 매니페스트 이름 · 줄 번호(1부터) · 사유로 따로 돌려준다. 어긋난 줄의 경로는 열지도 바꾸지도 않는다
+- 변경 명령: 어긋난 줄이 있으면 명세 11-5 의 안내문(`error: the harness manifest has <N> line(s) that are not safe paths under the harness root` ·
+  `-->` 줄은 `<매니페스트>:<줄 번호> (<사유>)` 로 매니페스트 이름 순 · 줄 번호 순 · 개수를 자르지 않음 · `nothing was changed` · `help:` 와 `harness <명령>`)을
+  표준 오류로 내고 종료 코드 2. 사유가 `a merge conflict marker` 인 줄이 있으면 `help:` 끝에 충돌 조치 줄(`harness install`)을 더한다. **줄의 내용은 출력하지 않는다**
+- 순서
+  - render: 매니페스트 검증 → 사전 판정(T9) → 사용자 파일 판정
+  - install: 등록 판정 뒤, `.harness/` 를 바꾸기 전에 매니페스트 검증 → 사전 판정(T10) → 사용자 파일 판정. 소스 리포 분기도 같다
+  - `set` · `steps` · `checks`: 설정을 쓰기 전에 검증하고, 어긋나면 설정을 쓰지 않고 종료 코드 2. `steps --dry-run` 은 매니페스트를 읽지 않는다
+  - uninstall: "매니페스트가 없다" 판정보다 먼저
+- `render-test.sh` 의 T9 블록에 케이스를 더한다. 피해 파일은 하네스 루트 바깥의 테스트 임시 디렉터리 안에 둔다
+- 건드릴 파일: `src/bin/harness`(`previous()` · 해시 짝 읽기 · 매니페스트 검증과 안내문 · `cmd_render` · `install_registered()` · `cmd_set` · `cmd_steps` · `cmd_checks` · `cmd_uninstall`), `src/test/render-test.sh`
+
+### 완료 조건
+
+- [ ] 하네스 루트의 부모에 `victim.md` 를 두고 `.harness/generated` 에 `../victim.md` 한 줄을 더해 render 하면 종료 코드 2, 표준 오류에 `.harness/generated:<줄 번호> (has a .. component)` 와 `nothing was changed` 가 있고, `victim.md` · 두 매니페스트 · 관리 파일 · 생성 파일이 그대로다
+- [ ] `.harness/managed` 에 `<64자 16진>  <바깥 파일의 절대 경로>` 줄을 더하면 render · install · uninstall 이 각각 종료 코드 2 이고 `(an absolute path)` 가 있다. 바깥 파일이 그대로이고 uninstall 뒤에도 `.harness/` 와 매니페스트의 다른 경로가 남아 있다
+- [ ] 공백이 든 줄 · `script//x.sh` · `./CLAUDE.md` · 끝의 `/` 가 든 줄이 각각 `(not a path)` 로 종료 코드 2 다
+- [ ] `<<<<<<< HEAD` · `=======` · `>>>>>>> other` 세 줄을 더하면 render 가 종료 코드 2 이고 세 줄 모두 `(a merge conflict marker)`, `help:` 에 `harness install` 이 있다. 표지 줄을 지우면 install 이 종료 코드 0 이다
+- [ ] 두 매니페스트의 줄 끝을 CRLF 로 바꿔도 render 가 종료 코드 0 이다
+- [ ] 위반 줄이 있을 때 `set` · `steps <새 절차>` · `checks` 가 종료 코드 2 이고 `harness.toml` 이 바이트 단위로 그대로다
+- [ ] 표준 오류 어디에도 어긋난 줄의 내용(바깥 파일의 경로)이 없다
+- [ ] `script/run-lint-test.sh` 가 통과한다
+
+### 브랜치
+
+- `fix/58-separate-managed-and-project-parts` — 상위 이슈의 브랜치를 함께 쓴다
+- 머지 타깃: `develop`
+
+### 단위 테스트 항목
+
+| ID | 테스트 내용 | 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| UT-01 | `..` 줄 | `.harness/generated` 에 `../victim.md` 를 더하고 render | 종료 코드 2, `.harness/generated:<줄 번호> (has a .. component)` · `nothing was changed`, `victim.md` · 매니페스트 · 관리 · 생성 파일 그대로 |
+| UT-02 | 절대 경로 줄 | `.harness/managed` 에 해시와 바깥 파일 절대 경로 줄을 더하고 render · install · uninstall 각각 | 각각 종료 코드 2 와 `(an absolute path)`, 바깥 파일 그대로, uninstall 뒤 `.harness/` 와 다른 경로가 남는다 |
+| UT-03 | 형식 오류 줄 | 공백이 든 줄 · `script//x.sh` · `./CLAUDE.md` · `script/` 를 하나씩 더하고 render | 각각 종료 코드 2 와 `(not a path)` |
+| UT-04 | 병합 충돌 표지 | 표지 세 줄을 더하고 render, 이어 표지 줄을 지우고 install | 처음 종료 코드 2 · 세 줄 모두 `(a merge conflict marker)` · `help:` 에 `harness install`, 지운 뒤 종료 코드 0 |
+| UT-05 | 링크 성분 줄 — 변경 명령 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 render | 종료 코드 2, 그 줄에 `(through a symbolic link)`, 바깥 파일 그대로 |
+| UT-06 | CR 줄 끝 | 두 매니페스트를 CRLF 로 바꾸고 render | 종료 코드 0 |
+| UT-07 | 설정을 바꾸는 명령 | 위반 줄을 두고 `set` · `steps <새 절차>` · `checks` | 각각 종료 코드 2, `harness.toml` 바이트 단위로 그대로 |
+| UT-08 | uninstall 순서 | `.harness/generated` 를 지우고 `.harness/managed` 에 `..` 줄만 남긴 채 `uninstall` | 종료 코드 2, `no harness manifest` 가 아니라 `not safe paths` 안내문 |
+| UT-09 | 내용을 옮기지 않는다 | UT-02 의 표준 출력·표준 오류 | 바깥 파일의 절대 경로 문자열이 없다 |
+| UT-10 | 한글 없는 출력 | UT-01 ~ UT-08 의 표준 출력·표준 오류 | 한글이 없다 |
+
+## T12 · feat: check · doctor 가 매니페스트의 어긋난 줄을 보고하고 UI 가 옮김
+
+### 상위 Requirement
+
+- relates to #58
+
+### 작업 내용
+
+읽기 명령은 멈추지 않는다. `check` · `doctor` 가 T11 의 검증에 어긋난 매니페스트 줄을 오류로 보고하고, 그 줄의 경로는 읽지 않은 채 나머지 줄로 판정을 이어 가게 한다.
+UI Doctor 가 그 항목을 한국어로 옮긴다. 결정 기록 0017.
+
+- 명세 4-1 의 끝 문단 · 4-2 의 어긋난 줄 보고 · 4-3 의 `unsafe manifest line` 항목 · 4-4 표의 두 행 · 11-5 의 읽기 명령 · 11-6 의 끝 줄 · 7-4 의 링크 성분 줄 · check 보고 · doctor 보고
+- 판정: 어긋난 줄은 4-1 표로 가르지 않고 그 경로를 읽지 않는다. `check` 의 생성 파일 어긋남이 `.harness/generated` 를 읽을 때도 같다
+- `cmd_check`: 두 매니페스트 가운데 어긋난 줄이 하나라도 있으면 종료 코드 1. 다른 어긋남과 함께 있으면 모두 보고한다. 출력은 명세 4-2 원문 —
+  경로 열은 `<매니페스트>:<줄 번호>` 를 `%-52s` 로, 그 뒤 사유(괄호를 뗀 것). 병합 충돌 표지 줄이 있으면 `help:` 에 11-5 의 충돌 조치 줄을 더한다
+- `cmd_doctor`: 어긋난 줄마다 `bad` `unsafe manifest line`, detail `<매니페스트>:<줄 번호> (<사유>)`. `.harness/managed` 의 줄은 `managed files` 절에,
+  `.harness/generated` 의 줄은 `generated files` 절에 낸다. 각 절에서 줄 번호 순 10개까지, 넘으면 `bad` `<N> more unsafe manifest line(s)` 한 항목. 이 항목이 있는 절에는 `ok` 를 내지 않는다
+- 표준 출력 · 표준 오류 · doctor 항목 어디에도 줄의 내용을 옮기지 않는다
+- `src/ui/lib/doctor.js`: `explain()` 이 `unsafe manifest line` 을 하네스 기록(detail 의 매니페스트와 줄 번호)에 하네스 루트 아래의 정상 경로가 아닌 줄이 있어
+  render · install · set · steps · checks · uninstall 이 아무것도 바꾸지 않고 멈춘다는 항목으로 옮긴다. 사유가 `a merge conflict marker` 면 양쪽 줄을 남기고
+  표지 줄을 지운 뒤 `harness install` 로 다시 쓰게 한다는 것을 더한다. 조치는 없다(파일을 손으로 고친다). `<N> more unsafe manifest line(s)` 는 나머지 건수, 조치 없음
+- `render-test.sh` 의 T9 블록에 케이스를 더하고 `doctor.test.js` 에 위 두 행의 케이스를 더한다
+- 건드릴 파일: `src/bin/harness`(`cmd_check` · `cmd_doctor` · 관리 파일 판정 함수), `src/ui/lib/doctor.js`, `src/ui/lib/doctor.test.js`, `src/test/render-test.sh`
+
+### 완료 조건
+
+- [ ] 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` 를 부르면 그 줄이 `through a symbolic link` 로 보고되고 바깥 파일의 해시를 대조하지 않는다
+- [ ] `..` 줄과 충돌 표지 줄이 있으면 `check` 가 종료 코드 1 이고 표준 오류에 두 `<매니페스트>:<줄 번호>` 와 사유가 있으며 피해 파일이 그대로다
+- [ ] 같은 상태에서 `harness status` 의 `doctor.items` 에 `state` `bad` · `what` `unsafe manifest line` 항목이 있고, `.harness/generated` 의 줄은 `section` `generated files`, `.harness/managed` 의 줄은 `managed files` 다. detail 에 줄의 내용이 없다
+- [ ] 어긋난 줄이 있는 절에 `ok` 항목이 없다
+- [ ] UI Doctor 가 `unsafe manifest line` 을 한국어로 옮기고 조치를 두지 않는다
+- [ ] `script/run-lint-test.sh` 가 통과한다
+
+### 브랜치
+
+- `fix/58-separate-managed-and-project-parts` — 상위 이슈의 브랜치를 함께 쓴다
+- 머지 타깃: `develop`
+
+### 단위 테스트 항목
+
+| ID | 테스트 내용 | 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| UT-01 | 링크 성분 줄 | 매니페스트에 있는 관리 파일을 바깥 파일 링크로 바꾸고 `check` | 종료 코드 1, 그 줄이 `through a symbolic link`, `modified managed file` 로 보고되지 않는다 |
+| UT-02 | check 보고 | `.harness/generated` 에 `../victim.md`, `.harness/managed` 에 충돌 표지 한 줄을 더하고 `check` | 종료 코드 1, 두 `<매니페스트>:<줄 번호>` 와 `has a .. component` · `a merge conflict marker`, `help:` 에 `harness install`, `victim.md` 그대로 |
+| UT-03 | 다른 어긋남과 함께 | UT-02 에 관리 파일 변경을 더하고 `check` | 종료 코드 1, 두 오류가 모두 나온다 |
+| UT-04 | doctor 보고 | UT-02 상태에서 `harness status` | `generated files` · `managed files` 절에 각각 `bad` `unsafe manifest line`, detail 이 `<매니페스트>:<줄 번호> (<사유>)`, 두 절에 `ok` 없음 |
+| UT-05 | 개수 제한 | `.harness/managed` 에 어긋난 줄 11개를 더하고 `harness status` | `managed files` 절에 `unsafe manifest line` 10개와 `1 more unsafe manifest line(s)` |
+| UT-06 | 내용을 옮기지 않는다 | 바깥 절대 경로 줄을 더하고 `check` · `harness status` | 출력과 doctor 항목에 그 절대 경로 문자열이 없다 |
+| UT-07 | UI 문구 | `explain()` 에 `unsafe manifest line` · detail `.harness/managed:3 (a merge conflict marker)` | 원문과 다른 제목, 본문에 `.harness/managed` 와 `harness install`, `run` · `cmd` 없음 |
+| UT-08 | UI 나머지 건수 | `explain()` 에 `2 more unsafe manifest line(s)` | 한국어 항목, `run` · `cmd` 없음 |
+| UT-09 | 한글 없는 출력 | UT-01 ~ UT-06 의 표준 출력·표준 오류 | 한글이 없다 |
+
+## T13 · fix: `steps --rename` 이 새 이름 자리의 파일을 덮지 않고 멈춤
+
+### 상위 Requirement
+
+- relates to #58
+
+### 작업 내용
+
+`steps <절차> --rename <새 이름>` 은 절차 메모 `.ai/project/workflows/<절차>.md` 를 새 이름으로 옮기면서 그 자리에 있던 파일을 덮는다.
+설정을 쓰기 전에 두 문서의 경로를 판정해, 새 이름 자리에 무엇이든 있거나 경로에 링크가 있으면 아무것도 바꾸지 않고 멈추게 한다.
+옮기기는 T9 의 `guarded_path()` 를 거친다 — 명세 11-1 의 변경 지점 가운데 마지막 하나다. 결정 기록 0017.
+
+- 명세 11-7 · 11-1 의 `rename_or_delete_workflow()` · 7-4 의 `steps --rename` 케이스
+- 판정은 이름 중복 판정 뒤, 설정을 쓰기 전이다. 원래 문서는 `.ai/project/workflows/<절차>.md`, 새 문서는 `.ai/project/workflows/<새 이름>.md`
+  - 두 문서의 경로에 링크 성분이 있다(파일 자신 포함): T9 의 11-4 안내문(`-->` 는 링크인 성분)을 내고 종료 코드 2
+  - 새 문서의 자리에 무엇이든 있다(파일 · 디렉터리 · 링크): 명세 11-7 의 안내문(`error: cannot rename the workflow notes — a file is already at the new name` ·
+    `-->` 새 문서 경로 · `nothing was changed` · `help:` 와 `harness steps <절차> --rename <새 이름>`)을 내고 종료 코드 2
+  - 둘 다 아니다: 설정을 쓰고 지금처럼 render 한다. 원래 문서가 있으면 원래 경로와 새 경로를 둘 다 `guarded_path(..., "move")` 로 거쳐 옮긴다
+- 멈추면 `harness.toml` · 두 문서가 그대로다. `steps <절차> --delete` 는 지금처럼 문서를 남긴다
+- `render-test.sh` 의 T9 블록에 케이스를 더한다
+- 건드릴 파일: `src/bin/harness`(`rename_or_delete_workflow()`), `src/test/render-test.sh`
+
+### 완료 조건
+
+- [ ] 사용자 절차 `hotfix` 가 있고 `hotfix.md` · `quickfix.md` 를 다른 내용으로 두면 `steps hotfix --rename quickfix` 가 종료 코드 2 이고 두 파일과 `harness.toml` 이 바이트 단위로 그대로다
+- [ ] `quickfix.md` 가 없으면 종료 코드 0 이고 `hotfix.md` 의 내용이 `quickfix.md` 로 옮겨진다
+- [ ] `.ai/project/workflows` 가 바깥 디렉터리 링크면 같은 명령이 종료 코드 2 이고 바깥 디렉터리와 `harness.toml` 이 그대로다. `hotfix.md` 하나만 바깥 파일 링크일 때도 같다
+- [ ] `steps hotfix --delete` 가 `hotfix.md` 를 남긴다
+- [ ] `script/run-lint-test.sh` 가 통과한다
+
+### 브랜치
+
+- `fix/58-separate-managed-and-project-parts` — 상위 이슈의 브랜치를 함께 쓴다
+- 머지 타깃: `develop`
+
+### 단위 테스트 항목
+
+| ID | 테스트 내용 | 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| UT-01 | 대상 존재 | `hotfix.md` · `quickfix.md` 를 다른 내용으로 두고 `steps hotfix --rename quickfix` | 종료 코드 2, `a file is already at the new name` · `--> .ai/project/workflows/quickfix.md` · `nothing was changed`, 두 파일 · `harness.toml` 그대로 |
+| UT-02 | 대상이 디렉터리 | `quickfix.md` 자리에 디렉터리를 두고 같은 명령 | 종료 코드 2, `harness.toml` 그대로 |
+| UT-03 | 대상 없음 | `quickfix.md` 없이 같은 명령 | 종료 코드 0, `quickfix.md` 가 `hotfix.md` 의 원래 내용, `hotfix.md` 없음 |
+| UT-04 | 링크 디렉터리 | `.ai/project/workflows` 를 바깥 디렉터리 링크로 두고 같은 명령 | 종료 코드 2, `go through a symbolic link`, 바깥 디렉터리 · `harness.toml` 그대로 |
+| UT-05 | 링크 파일 | `hotfix.md` 만 바깥 파일 링크로 두고 같은 명령 | 종료 코드 2, 바깥 파일 · `harness.toml` 그대로 |
+| UT-06 | delete 는 남긴다 | `steps hotfix --delete` | 종료 코드 0, `hotfix.md` 가 남는다 |
+| UT-07 | 한글 없는 출력 | UT-01 ~ UT-06 의 표준 출력·표준 오류 | 한글이 없다 |
+
+## T14 · docs: 아키텍처 문서 "신뢰 경계" 에 매니페스트를 들어오는 입력으로 추가
+
+### 상위 Requirement
+
+- relates to #58
+
+### 작업 내용
+
+에이전트가 근거로 읽는 `.ai/project/architecture.md` 의 "신뢰 경계" 가 매니페스트를 들어오는 입력으로 적게 한다. T11 · T12 가 만든 동작을 기준 문서에 남긴다.
+
+- 사람 지시 있음 — #58 결정 게이트에서 사용자가 이 보호 문서의 "신뢰 경계" 한 줄 수정을 지시했다. 이 task 의 범위는 그 한 항목이다
+- 명세 8절 표의 "신뢰 경계" 행 · 결정 기록 0017
+- "들어오는 입력" 에 한 항목: 매니페스트(`.harness/generated` · `.harness/managed`) — 커밋된 파일이라 신뢰하지 않는다. 읽을 때마다 줄마다 경로 규칙
+  (하네스 루트 기준 정규화된 상대 경로, `..` · 절대 경로 · 빈 성분 · 링크 성분 거부)으로 검증하고, 어긋난 줄이 하나라도 있으면 대상 리포를 바꾸는 명령은
+  아무것도 바꾸지 않는다
+- 이 리포에서 render 해 생성물(`.ai/AI_AGENT.md`)을 함께 커밋한다
+- 건드릴 파일: `.ai/project/architecture.md`, 생성물 `.ai/AI_AGENT.md`
+
+### 완료 조건
+
+- [ ] architecture 의 "신뢰 경계" "들어오는 입력" 에 매니페스트 항목이 명세 8절과 같은 사실로 있다
+- [ ] 같은 문서의 다른 절이 바뀌지 않았다
+- [ ] render 뒤 `.ai/AI_AGENT.md` 에 변경이 반영되고 `check` 가 통과한다
+- [ ] `script/run-lint-test.sh` 가 통과한다
+
+### 브랜치
+
+- `fix/58-separate-managed-and-project-parts` — 상위 이슈의 브랜치를 함께 쓴다
+- 머지 타깃: `develop`
+
+### 단위 테스트 항목
+
+| ID | 테스트 내용 | 입력 | 기대 결과 |
+| --- | --- | --- | --- |
+| UT-01 | 생성물 일치 | 문서를 고치고 render 뒤 `check` | 종료 코드 0 |
+| UT-02 | 문서 참조가 살아 있다 | 이 리포에서 `doctor` | `references` 절에 이 문서의 끊긴 참조 경고가 없다 |

@@ -18,7 +18,7 @@
 
 | 문서 | 다루는 것 |
 |---|---|
-| [`58-separate-managed-and-project-parts.md`](58-separate-managed-and-project-parts.md) | 관리 부품과 프로젝트 부품의 경계 — `script/project/` 소유 자리, 사용자 파일 덮어쓰기 차단과 `--adopt`, `.harness/managed` 의 sha256 매니페스트(옛 형식 호환), `check`·`doctor` 의 관리 파일 대조, 전역 CLI 의 고정 사본 대조 |
+| [`58-separate-managed-and-project-parts.md`](58-separate-managed-and-project-parts.md) | 관리 부품과 프로젝트 부품의 경계 — `script/project/` 소유 자리, 사용자 파일 덮어쓰기 차단과 `--adopt`, `.harness/managed` 의 sha256 매니페스트(옛 형식 호환), `check`·`doctor` 의 관리 파일 대조, 전역 CLI 의 고정 사본 대조, 대상 리포 경로 안전(경로 규칙 · 공용 함수 · 사전 판정 · 매니페스트 검증 · 링크 거부 · `steps --rename` 덮어쓰기 차단) |
 | [`60-automate-work-prerequisites.md`](60-automate-work-prerequisites.md) | `/work` 착수 전제 — install 의 `core.hooksPath` 설정(모노레포 기대 값 · doctor · uninstall · UI 문구), forge 별 이슈·리뷰 요청 템플릿 생성, `harness forge-setup` 과 어댑터 라벨 준비 함수, `_gh_ensure_label` 실패 전달, preflight 의 이슈 확인, 회차 전 리뷰 러너 점검 |
 | [`62-unify-ui-writes-through-cli.md`](62-unify-ui-writes-through-cli.md) | UI 쓰기의 CLI 일원화 — `write-doc`(문서·역할·절차 메모 쓰기와 render) · `fix`(훅 경로·검증) · `install --create`·`--git-init`, schema 의 경로·설정 주석·기본 보호 목록 키, Doctor 조치 고르기(항목 네 키 매핑), `write-doc` 보호 문서 가드와 deny, UI 의 fs 쓰기·경로 조립 제거, 옛 사본 재설치 안내 |
 | [`59-doctor-remote-readiness.md`](59-doctor-remote-readiness.md) | doctor 결과의 항목 목록과 텍스트·JSON 렌더, `status` 의 목록 사용, `--remote` 원격 준비 점검(origin·base·기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너)과 등급, 벤더 `auth_check` 와 `run-agent.py --check`, forge 읽기 함수, 자리표시자·미검증 표지, UI Doctor 의 원격 점검 |
