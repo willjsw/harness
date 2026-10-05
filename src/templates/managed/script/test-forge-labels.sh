@@ -19,8 +19,9 @@ mkdir -p "$sandbox/bin" || exit 2
 
 # 스텁의 동작은 환경 변수로 정한다.
 #   STUB_CREATE_FAIL  label create 가 실패할 라벨(공백 구분)
-#   STUB_EXISTING     label list 가 낼 라벨(공백 구분)
-#   STUB_LIST_FAIL    1 이면 label list 가 실패한다
+#   STUB_EXISTING     원격에 있는 라벨(공백 구분). 이름 조회(api …/labels/<이름>)는 전부에서 찾고,
+#                     label list 는 실제 CLI 처럼 --limit 개까지만 낸다
+#   STUB_LIST_FAIL    1 이면 라벨 조회가 실패한다
 cat > "$sandbox/bin/gh" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$STUB_LOG"
@@ -35,10 +36,29 @@ case "$1 $2" in
     exit 0 ;;
   "label list")
     [ "${STUB_LIST_FAIL:-}" = 1 ] && { echo "HTTP 500" >&2; exit 1; }
+    limit=30; prev=""
+    for a in "$@"; do [ "$prev" = "--limit" ] && limit=$a; prev=$a; done
     # shellcheck disable=SC2086
-    python3 -c 'import json, sys; print(json.dumps([{"name": n} for n in sys.argv[1:]]))' ${STUB_EXISTING:-}
+    python3 -c 'import json, sys; print(json.dumps([{"name": n} for n in sys.argv[2:][:int(sys.argv[1])]]))' "$limit" ${STUB_EXISTING:-}
     exit 0 ;;
   "issue create") echo "https://example.invalid/o/r/issues/7"; exit 0 ;;
+esac
+case "$1" in
+  api)
+    [ "${STUB_LIST_FAIL:-}" = 1 ] && { echo "HTTP 500" >&2; exit 1; }
+    case "$2" in
+      "repos/{owner}/{repo}/labels/"*)
+        # shellcheck disable=SC2086
+        python3 -c '
+import sys, urllib.parse
+name = urllib.parse.unquote(sys.argv[1].rsplit("/", 1)[1])
+if name in sys.argv[2:]:
+    print(name)
+else:
+    print("HTTP 404: Not Found", file=sys.stderr)
+    sys.exit(1)' "$2" ${STUB_EXISTING:-}
+        exit $? ;;
+    esac ;;
 esac
 exit 0
 SH
@@ -76,8 +96,19 @@ check created "label create called once" 1 "$(calls '^label create Task ')"
 
 STUB_CREATE_FAIL=Task STUB_EXISTING="Task Bug" adapter _gh_ensure_label Task
 check exists "exit code when the label already exists" 0 "$?"
-check exists "the remote was asked whether it exists" 1 "$(calls '^label list')"
+check exists "the label itself was looked up by name" 1 "$(calls '^api repos/{owner}/{repo}/labels/Task ')"
 check exists "nothing on stderr" "" "$(cat "$err")"
+
+# 라벨이 1,000개를 넘어도 이미 있는 라벨은 있다고 본다 — 목록의 상한 밖이어도 이름으로 찾는다
+many=$(python3 -c 'print(" ".join("label-%04d" % i for i in range(1, 1001)))')
+STUB_CREATE_FAIL=Late STUB_EXISTING="$many Late" adapter _gh_ensure_label Late
+check beyond-1000 "exit code for an existing label past the first 1,000" 0 "$?"
+check beyond-1000 "nothing on stderr" "" "$(cat "$err")"
+
+# 이름은 경로 한 칸으로 인코딩된다 — 빗금이 든 이름도 그 라벨 하나를 찾는다
+STUB_CREATE_FAIL="needs/review" STUB_EXISTING="review needs/review" adapter _gh_ensure_label "needs/review"
+check encoded "an existing name with a slash is found" 0 "$?"
+check encoded "the name is encoded as one path segment" 1 "$(calls '^api repos/{owner}/{repo}/labels/needs%2Freview ')"
 
 STUB_CREATE_FAIL=Task STUB_EXISTING="Bug" adapter _gh_ensure_label Task
 rc=$?

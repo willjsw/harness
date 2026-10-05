@@ -53,20 +53,15 @@ v = json.load(sys.stdin)
 json.dump([one(x) for x in v] if isinstance(v, list) else one(v), sys.stdout, ensure_ascii=False)
 '
 
-# 라벨이 없으면 붙이기가 실패하므로 먼저 만든다. 멱등하게 쓴다 — 라벨마다 만들고, 만들지 못하면 원격에 이미 있는지 본다. "이미 있음" 만이 정상인 실패다.
+# 라벨이 없으면 붙이기가 실패하므로 먼저 만든다. 멱등하게 쓴다 — 라벨마다 만들고, 만들지 못하면 그 라벨 하나를
+# 이름으로 직접 조회해 원격에 이미 있는지 본다. 목록을 훑지 않으므로 라벨 수에 상한이 없다. "이미 있음" 만이 정상인 실패다.
 # 없으면(조회 실패 포함) 그 라벨과 `label create` 의 오류 끝 줄을 표준 오류로 내고 1 — 뒤 라벨로 가지 않는다.
 _gh_ensure_label() {
   for _l in "$@"; do
     [ -n "$_l" ] || continue
     _gh_err=$("$GITHUB_CLI" label create "$_l" --color ededed 2>&1 >/dev/null) && continue
-    "$GITHUB_CLI" label list --json name --limit 1000 </dev/null 2>/dev/null | python3 -c '
-import json, sys
-try:
-    names = [x.get("name") for x in json.load(sys.stdin)]
-except (ValueError, AttributeError, TypeError):
-    sys.exit(1)
-sys.exit(0 if sys.argv[1] in names else 1)
-' "$_l" 2>/dev/null && continue
+    _gh_enc=$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$_l") \
+      && "$GITHUB_CLI" api "repos/{owner}/{repo}/labels/$_gh_enc" --jq .name </dev/null >/dev/null 2>&1 && continue
     echo "error: could not create label \`$_l\`" >&2
     _gh_tail=$(printf '%s\n' "$_gh_err" | sed '/^[[:space:]]*$/d' | tail -1)
     [ -z "$_gh_tail" ] || printf '  %s\n' "$_gh_tail" >&2
