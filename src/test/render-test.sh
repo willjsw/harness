@@ -7,6 +7,81 @@
 # 생성 파일을 손으로 고치면 check 가 잡는가, 불변식 위반이 render 를 막는가.
 # 이 셋이 하네스가 약속하는 전부다.
 set -uo pipefail
+# 블록 감시. 이 테스트 전체를 새 세션(프로세스 그룹)으로 띄우고 표준 출력의 블록 표지(`UT-<번호>` 로
+# 시작하는 줄)를 지켜본다. 한 블록이 RENDER_TEST_BLOCK_LIMIT 초(기본 900) 안에 다음 표지로 넘어가지 않으면
+# 그 블록 이름과 그때 돌던 명령을 찍고 그룹째 끝낸 뒤 124 로 끝난다 — 어느 블록의 어느 명령이 멈추든
+# 진행 없이 기다리지 않는다. 시간은 기기가 깨어 있는 동안만 센다(macOS CLOCK_UPTIME_RAW, 그 밖은
+# monotonic) — 잠자기로 얼어 있던 시간을 멈춤으로 세지 않는다. 표준 입력은 닫는다.
+# 제한 시간이 유한한 양수가 아니면 아무것도 띄우지 않고 2 로 끝난다.
+# 테스트 안에서 감시 자체를 검사할 수 있게 본문을 변수에 둔다.
+watch_py='
+import math, os, re, signal, subprocess, sys, threading, time
+raw = os.environ.get("RENDER_TEST_BLOCK_LIMIT", "900")
+try:
+    limit = float(raw)
+except ValueError:
+    limit = float("nan")
+if not (math.isfinite(limit) and limit > 0):
+    print("error: RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds, got %r" % raw, file=sys.stderr)
+    sys.exit(2)
+clock = getattr(time, "CLOCK_UPTIME_RAW", None)
+now = (lambda: time.clock_gettime(clock)) if clock is not None else time.monotonic
+marker = re.compile(rb"^UT-[0-9]+[a-z]*\b")
+state = {"block": "(before the first block)", "since": now()}
+p = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                     env=dict(os.environ, RENDER_TEST_WATCHED="1"), start_new_session=True)
+def pump():
+    for line in iter(p.stdout.readline, b""):
+        if marker.match(line):
+            state["block"] = line.split(b" ", 1)[0].decode("ascii", "replace")
+            state["since"] = now()
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+reader = threading.Thread(target=pump, daemon=True)
+reader.start()
+def group():
+    """그룹에 남은 명령 — 멈춘 지점을 이름으로 보이려고 찍는다."""
+    r = subprocess.run(["ps", "-A", "-o", "pgid=,pid=,command="], capture_output=True, text=True)
+    out = []
+    for l in r.stdout.splitlines():
+        f = l.split(None, 2)
+        if len(f) == 3 and f[0] == str(p.pid) and f[1] != str(p.pid):
+            out.append("  %s %s" % (f[1], f[2][:200]))
+    return out
+def stop(sig):
+    try:
+        os.killpg(p.pid, sig)
+    except OSError:
+        pass
+def finish(code):
+    stop(signal.SIGKILL)
+    p.wait()
+    reader.join(5)
+    sys.stdout.flush()
+    os._exit(code)
+def interrupted(signum, _frame):
+    stop(signal.SIGTERM)
+    finish(128 + signum)
+for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+    signal.signal(s, interrupted)
+while p.poll() is None:
+    if now() - state["since"] >= limit:
+        block = state["block"]
+        running = group()
+        print("render-test: %s did not finish within %gs and was stopped" % (block, limit), file=sys.stderr)
+        if running:
+            print("  still running:", file=sys.stderr)
+            print("\n".join(running), file=sys.stderr)
+        stop(signal.SIGTERM)
+        grace = now() + 5
+        while p.poll() is None and now() < grace:
+            time.sleep(0.1)
+        finish(124)
+    time.sleep(0.2)
+# 본문이 끝나도 그룹에 남은 자식이 출력 통로를 쥔 채 다음 단계를 붙잡지 않게 정리한다
+finish(p.returncode if p.returncode >= 0 else 128 - p.returncode)
+'
+[ -n "${RENDER_TEST_WATCHED:-}" ] || exec python3 -c "$watch_py" bash "$0" "$@"
 # 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
 # git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
 unset $(git rev-parse --local-env-vars 2>/dev/null)
@@ -30,63 +105,6 @@ has()  { if grep -qF -- "$2" "$1"; then ok; else bad "$3"; fi; }
 # 제자리 편집. BSD sed 는 `-i ''`, GNU sed 는 `-i` 만 받으므로 두 쪽이 같이 받는 `-i.bak` 을 쓰고 지운다.
 sedi() { sed -i.bak "$1" "$2" && rm -f "$2.bak"; }
 hasnt(){ if grep -qF -- "$2" "$1"; then bad "$3"; else ok; fi; }
-
-# 하위 테스트 스크립트 하나에 주는 제한 시간(초). 평소 가장 느린 것이 수십 초다.
-subtest_limit=${RENDER_TEST_SUBTEST_LIMIT:-900}
-
-# limited <초> <명령...> — 명령을 새 세션(프로세스 그룹)으로 띄우고 제한 시간 안에 끝나지 않으면
-# 그룹째 끝낸 뒤 124 로 돌아온다. 끝나면 명령의 종료 코드 그대로다. 표준 입력은 닫는다 — 입력을 기다리며
-# 멈추지 않는다. 시간은 기기가 깨어 있는 동안만 센다(macOS CLOCK_UPTIME_RAW, 그 밖은 monotonic) —
-# 잠자기로 얼어 있던 시간 때문에 깨어난 직후 잘못 끝내지 않는다. 이 테스트가 중단되면 그룹도 함께 끝낸다.
-limited() {
-  python3 -c '
-import os, signal, subprocess, sys, time
-clock = getattr(time, "CLOCK_UPTIME_RAW", None)
-now = (lambda: time.clock_gettime(clock)) if clock is not None else time.monotonic
-limit = float(sys.argv[1])
-p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True)
-def stop(sig):
-    try:
-        os.killpg(p.pid, sig)
-    except OSError:
-        pass
-def interrupted(signum, _frame):
-    stop(signal.SIGTERM); stop(signal.SIGKILL); p.wait(); sys.exit(128 + signum)
-for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-    signal.signal(s, interrupted)
-end = now() + limit
-while p.poll() is None:
-    if now() >= end:
-        stop(signal.SIGTERM)
-        grace = now() + 5
-        while p.poll() is None and now() < grace:
-            time.sleep(0.1)
-        stop(signal.SIGKILL)
-        p.wait()
-        sys.exit(124)
-    time.sleep(0.1)
-# 직계 자식이 끝나도 그룹에 남은 손자가 있으면 정리한다 — 출력 통로를 쥔 채 남아 다음 단계를 붙잡지 않게
-stop(signal.SIGKILL)
-sys.exit(p.returncode if p.returncode >= 0 else 128 - p.returncode)
-' "$@"
-}
-
-# run_subtest <리포> <스크립트이름> <로그> [환경변수=값...] — 리포의 script/<이름>.sh 를 제한 시간 안에 돌린다.
-# 통과하면 ok, 실패하면 이름과 로그 끝부분을, 제한 시간을 넘기면 멈췄다는 사실과 이름을 남긴다.
-run_subtest() {
-  local repo=$1 name=$2 log=$3 rc
-  shift 3
-  ( cd "$repo" && limited "$subtest_limit" env "$@" "./script/$name.sh" ) >"$log" 2>&1
-  rc=$?
-  case "$rc" in
-    0) ok ;;
-    124) bad "$name did not finish within ${subtest_limit}s and was stopped — $log"
-         tail -5 "$log" >&2 ;;
-    *) bad "$name failed (exit $rc) — $log"
-       tail -5 "$log" >&2 ;;
-  esac
-  return "$rc"
-}
 
 
 records_under_work() { # records_under_work <리포> — 두 기록 경로가 $work 아래를 가리키는지 본다
@@ -398,15 +416,16 @@ isolate_records "$t"
 # 목록을 적지 않고 설치된 것을 센다 — 적어 두면 새 테스트가 여기서 빠진 채 지나간다.
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
-  run_subtest "$t" "$s" "$work/$s.log"
+  if ( cd "$t" && "./script/$s.sh" >"$work/$s.log" 2>&1 ); then
+    ok
+  else
+    bad "$s failed — $work/$s.log"
+    tail -5 "$work/$s.log" >&2
+  fi
 done
 # 프로젝트 명령을 정하기 전이므로 검증 일괄은 실패한다. 그 사실 자체가 신호다.
-# 검증 일괄은 하위 테스트 전부를 다시 돌리므로 그 수만큼의 제한 시간을 준다.
-n_sub=$(ls "$t"/script/test-*.sh | wc -l | tr -d ' ')
-( cd "$t" && limited "$((subtest_limit * (n_sub + 1)))" ./script/run-lint-test.sh ) >"$work/lint.log" 2>&1
-rc=$?
-[ "$rc" = 124 ] && bad "run-lint-test.sh in the installed repo did not finish in time and was stopped — $work/lint.log"
-check "verification bundle right after install" "$rc" "1"
+( cd "$t" && ./script/run-lint-test.sh >"$work/lint.log" 2>&1 )
+check "verification bundle right after install" "$?" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
 ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
 
@@ -420,8 +439,8 @@ wt_gitdir=$(git -C "$victim-wt" rev-parse --absolute-git-dir)
 branches_before=$(git -C "$victim" branch --format='%(refname:short)' | sort)
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
-  # 실패하면 run_subtest 가 이름과 로그(.hookenv.log — 이 환경에서의 실행)를 남긴다
-  run_subtest "$t" "$s" "$work/$s.hookenv.log" GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index"
+  ( cd "$t" && GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index" "./script/$s.sh" >"$work/$s.hookenv.log" 2>&1 ) \
+    || bad "$s failed under a linked worktree's hook environment — $work/$s.hookenv.log"
   check "$s: core.bare of the worktree's repo" "$(git -C "$victim" config core.bare)" "false"
   check "$s: branches of the worktree's repo" "$(git -C "$victim" branch --format='%(refname:short)' | sort)" "$branches_before"
 done
@@ -2761,41 +2780,61 @@ doctor-emfile remote warn reviewer runner \`codex\` could not check"
 cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
 unset -f at_plan at_run
 
-echo "UT-95 a sub-test script that never finishes is stopped and named instead of hanging the run"
-# 하위 테스트가 멈추면 이 테스트 전체가 진행 없이 멈춘다. 제한 시간이 그것을 실패와 이름으로 바꾼다.
-hang="$work/hang"; rm -rf "$hang"; mkdir -p "$hang/script"
-cat > "$hang/script/test-hang.sh" <<'SH'
+echo "UT-95 a block that never finishes is stopped and named with what was still running, instead of hanging the run"
+# 어느 블록의 어느 명령이 멈추든 이 테스트 전체가 진행 없이 기다린다. 블록 감시가 그것을 실패와 위치로 바꾼다.
+wd="$work/watch"; rm -rf "$wd"; mkdir -p "$wd/script"
+cat > "$wd/script/test-hang.sh" <<'SH'
 #!/usr/bin/env bash
 # 끝나지 않는 하위 테스트. 손자 프로세스도 하나 남긴다
 sleep 300 &
-echo "child $!" > "${HANG_PID_FILE:?}"
+echo "child $!" > "$WATCH_DIR/hang.pid"
 sleep 300
 SH
-cat > "$hang/script/test-stdin.sh" <<'SH'
+cat > "$wd/body.sh" <<'SH'
 #!/usr/bin/env bash
-# 표준 입력에서 무언가 읽히면 실패한다 — 바깥의 입력을 물려받았다는 뜻이다
-if read -r _; then echo "read from the caller's stdin"; exit 1; fi
-exit 0
+# 감시 대상 본문. CASE 가 각 블록의 동작을 고른다
+touch "$WATCH_DIR/started"
+printf '%s\n' "UT-01 first"
+sleep 1.5
+printf '%s\n' "UT-02 second"
+case "$CASE" in
+  hang)  "$WATCH_DIR/script/test-hang.sh" ;;
+  slow)  sleep 1.5; exit 3 ;;
+  stdin) if read -r _; then echo "read from the caller's stdin"; exit 1; fi ;;
+esac
 SH
-chmod +x "$hang"/script/*.sh
-saved_pass=$pass saved_fail=$fail saved_limit=$subtest_limit
-subtest_limit=2
+chmod +x "$wd/script/test-hang.sh" "$wd/body.sh"
+watch() { # watch <사례> <제한> — 감시 아래에서 본문을 돌리고 종료 코드를 남긴다
+  rm -f "$wd/started"
+  WATCH_DIR="$wd" CASE=$1 RENDER_TEST_BLOCK_LIMIT=$2 python3 -c "$watch_py" bash "$wd/body.sh" \
+    >"$wd/$1.out" 2>"$wd/$1.err"
+}
 t0=$(date +%s)
-run_subtest "$hang" test-hang "$work/hang.log" HANG_PID_FILE="$work/hang.pid" 2>"$work/hang.err"; rc=$?
+watch hang 2; check "exit code of a stopped run" "$?" "124"
 elapsed=$(( $(date +%s) - t0 ))
-got="$((fail - saved_fail)) $((pass - saved_pass))"
-# 바깥 입력이 끝없이 들어와도 하위 테스트는 그것을 받지 않는다
-stdin_rc=$(yes | { run_subtest "$hang" test-stdin "$work/stdin.log" >/dev/null 2>&1; echo $?; })
-pass=$saved_pass fail=$saved_fail subtest_limit=$saved_limit
-check "exit code of a stopped sub-test" "$rc" "124"
-check "a stopped sub-test counts as one failure and no pass" "$got" "1 0"
-has "$work/hang.err" "test-hang did not finish within 2s" "the failure does not name the stopped script and its limit"
-[ "$elapsed" -lt 30 ] && ok || bad "stopping the sub-test took ${elapsed}s"
-pid=$(sed -n 's/^child //p' "$work/hang.pid" 2>/dev/null)
+has "$wd/hang.err" "render-test: UT-02 did not finish within 2s and was stopped" "the failure does not name the stuck block and the limit"
+has "$wd/hang.err" "test-hang.sh" "the failure does not name the command that was still running"
+has "$wd/hang.out" "UT-01 first" "the watched run's output did not pass through"
+[ "$elapsed" -lt 30 ] && ok || bad "stopping the run took ${elapsed}s"
+pid=$(sed -n 's/^child //p' "$wd/hang.pid" 2>/dev/null)
 [ -n "$pid" ] || bad "the hanging sub-test did not record its child"
-[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && bad "stopping the sub-test left its child running" || ok
-check "a sub-test does not read the caller's stdin" "$stdin_rc" "0"
-no_hangul "$work/hang.err" "the stopped sub-test report"
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && bad "stopping the run left a child running" || ok
+no_hangul "$wd/hang.err" "the stopped run report"
+# 제한은 블록마다 다시 센다 — 전체가 제한보다 길어도 블록마다 제때 넘어가면 본문의 종료 코드 그대로다
+watch slow 2; check "a run whose blocks each finish in time keeps its exit code" "$?" "3"
+hasnt "$wd/slow.err" "was stopped" "a run whose blocks each finish in time was stopped"
+# 바깥 입력이 끝없이 들어와도 본문은 그것을 받지 않는다
+rc=$(yes | { watch stdin 5; echo $?; }); check "the watched run does not read the caller's stdin" "$rc" "0"
+# 유한한 양수가 아닌 제한 시간은 아무것도 띄우지 않고 바로 거부한다
+for v in nan 0 -5 abc inf ""; do
+  watch bad "$v"; check "limit '$v' is refused" "$?" "2"
+  has "$wd/bad.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "limit '$v' is refused without saying why"
+  [ -e "$wd/started" ] && bad "limit '$v' still started the run" || ok
+done
+env -u RENDER_TEST_WATCHED RENDER_TEST_BLOCK_LIMIT=nan "$root/test/render-test.sh" >/dev/null 2>"$wd/top.err"
+check "render-test refuses a limit that is not a positive number" "$?" "2"
+has "$wd/top.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "render-test does not say why it refused the limit"
+unset -f watch
 
 echo
 if [ "$fail" -eq 0 ]; then
