@@ -3064,6 +3064,15 @@ for f in $(cd "$p/.harness/templates/managed/script" && ls *.sh | head -11); do 
 check "ten files are named" "$(grep -c '^  --> ' "$work/p89-6.err")" "10"
 has "$work/p89-6.err" "  ... and 1 more" "the eleventh file is not summed up"
 "$root/bin/harness" install --target "$p" >/dev/null 2>&1
+# 사본의 파일을 읽지 못하면 같다고 보지 않는다 — 대조하지 못했다고 알리고 넘긴다. root 는 권한을 무시하므로 만들 수 없다
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 "$p/.harness/templates/harness.toml"
+  "$root/bin/harness" schema --target "$p" > "$work/p89-10.out" 2> "$work/p89-10.err"
+  chmod 644 "$p/.harness/templates/harness.toml"
+  has "$work/p89-10.err" "warning: could not compare the pinned harness" "an unreadable pinned file passed as a match"
+  has "$work/p89-10.err" "  --> .harness/templates/harness.toml" "the warning does not name the unreadable file"
+  has "$work/p89-10.err" "harness install --target" "the warning does not say how to restore the copy"
+fi
 # 버전이 다르거나 없으면 비교하지 않는다
 echo "0.0.9" > "$p/.harness/VERSION"
 "$root/bin/harness" doctor --target "$p" > "$work/p89-7.out" 2> "$work/p89-7.err"

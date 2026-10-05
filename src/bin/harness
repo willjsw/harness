@@ -3572,8 +3572,18 @@ def verify_pinned(target: Path, mine: str, there: str):
         return
     try:
         diff = pinned_differences(target)
-    except OSError:
-        diff = []
+    except OSError as e:
+        # 읽지 못한 파일이 있으면 같다고 볼 수 없다 — 대조하지 못한 것으로 알리고 넘긴다
+        where = Path(e.filename) if e.filename else None
+        for base, pre in ((target / PINNED.rstrip("/"), PINNED), (HERE.parent, "")):
+            if where is not None and where.is_relative_to(base):
+                where = pre + where.relative_to(base).as_posix()
+                break
+        print("warning: could not compare the pinned harness with harness %s on this machine — a file could not be read\n"
+              "  --> %s\n\n"
+              "help: restore the pinned copy\n        harness install --target %s"
+              % (mine, where or "(unknown)", target), file=sys.stderr)
+        return
     if not diff:
         return
     lines = ["warning: the pinned harness differs from harness %s on this machine — %d file(s)" % (mine, len(diff))]
