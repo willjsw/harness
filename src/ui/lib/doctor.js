@@ -5,6 +5,7 @@ import { DOCS } from "./fields.js";
 export const SECTIONS = {
   config: "설정",
   "generated files": "생성 파일",
+  "managed files": "관리 파일",
   "project facts": "프로젝트 문서",
   verification: "검증",
   references: "문서 참조",
@@ -74,6 +75,35 @@ function explainRemote(i, base) {
   return null;
 }
 
+// 관리 파일 절의 줄. 고정 사본(.harness/)은 render 가 되돌리지 않으므로 다시 설치한다
+function explainManaged(i) {
+  const w = i.what, d = i.detail || "";
+  const render = { kind: "render", cmd: "harness render" };
+  let m;
+  if (w === "modified managed file" || w === "missing managed file") {
+    const gone = w === "missing managed file";
+    if (d.startsWith(".harness/"))
+      return { title: gone ? "고정된 하네스 사본의 파일이 없어졌습니다" : "고정된 하네스 사본이 설치 뒤 바뀌었습니다",
+        body: `${d} 는 이 프로젝트에 고정한 하네스의 일부입니다. 사본이 바뀌면 검사도 바뀐 기준으로 돕니다. 다시 설치해 되돌립니다.`,
+        cmd: "harness install" };
+    return gone
+      ? { title: "하네스 파일이 없어졌습니다", body: `${d} 가 설치 뒤 사라졌습니다. 다시 생성해 되돌립니다.`, run: render }
+      : { title: "하네스 파일이 설치 뒤 바뀌었습니다",
+        body: `${d} 는 하네스가 관리하는 파일이라 다음 render 가 덮습니다. 프로젝트 스크립트라면 script/project/ 로 옮깁니다.`,
+        run: render };
+  }
+  if ((m = w.match(/^(\d+) more modified or missing managed file\(s\)$/)))
+    return { title: `바뀌거나 없어진 하네스 파일이 ${m[1]}개 더 있습니다`, body: "다시 생성하면 하네스 파일이 설치한 내용으로 돌아옵니다.", run: render };
+  if ((m = w.match(/^(\d+) managed files have no recorded hash$/)))
+    return { title: "하네스 파일의 해시가 기록되어 있지 않습니다",
+      body: `옛 하네스가 쓴 매니페스트라 ${m[1]}개 파일이 바뀌었는지 가릴 수 없습니다. 다시 생성하면 해시가 기록됩니다.`, run: render };
+  if (w === "the pinned copy has no recorded hash")
+    return { title: "고정된 하네스 사본의 해시가 기록되어 있지 않습니다", body: "사본이 설치 뒤 바뀌었는지 가릴 수 없습니다. 다시 설치하면 해시가 기록됩니다.", cmd: "harness install" };
+  if (w === "no manifest of managed files")
+    return { title: "하네스 파일 목록(매니페스트)이 없습니다", body: "무엇이 하네스 파일인지 가릴 수 없습니다. 다시 생성하면 목록이 만들어집니다.", run: render };
+  return null;
+}
+
 // label 을 주면 상태 대신 그 글자를 보인다 — 아직 설정하지 않은 것(SETUP)은 고장(FAIL)과 다르게 읽혀야 한다.
 // 조치: run = ▷ 로 바로 실행(doctorFix 의 종류와 보일 명령), href = 고칠 화면, cmd = 직접 돌릴 명령(실행 버튼 없음)
 export function explain(i, base) {
@@ -119,6 +149,10 @@ export function explain(i, base) {
   if ((m = w.match(/^(\d+) files differ from the config$/)))
     return { title: "생성 파일이 설정과 다릅니다", body: `${m[1]}개 파일이 harness.toml 과 맞지 않습니다. 다시 생성하지 않으면 커밋이 막힙니다.`,
       run: { kind: "render", cmd: "harness render" } };
+  if (i.section === "managed files" && i.state !== "ok") {
+    const r = explainManaged(i);
+    if (r) return r;
+  }
   if ((m = w.match(/^no command guard for (.+)$/)))
     return { title: `${m[1]} 에는 명령 가드가 걸리지 않습니다`, body: "위험한 셸 명령을 막는 bash-guard.sh 가 이 오케스트레이터에는 연결되지 않습니다. git 훅 검사는 그대로 적용됩니다.", href: `${base}/settings` };
   if ((m = w.match(/^roles\.([\w-]+)\.model = (.+) is not used$/)))

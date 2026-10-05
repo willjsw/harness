@@ -2813,6 +2813,13 @@ hasnt "$u/script/review-mr.sh" "# edited by hand" "reinstall did not put the man
 printf '#!/bin/sh\necho deploy\n' > "$u/script/deploy.sh"
 "$root/bin/harness" render --target "$u" > "$work/u87-6.out" 2> "$work/u87-6.err"; check "render beside a project script" "$?" "0"
 check "the project script is untouched" "$(sed -n 2p "$u/script/deploy.sh")" "echo deploy"
+"$root/bin/harness" status --target "$u" > "$work/u87-6.json" 2>> "$work/u87-6.err"
+python3 - "$work/u87-6.json" > "$work/u87-6.items" <<'PY'
+import json, sys
+print(" ".join(i["state"] for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]
+               if i["section"] == "managed files"))
+PY
+check "a project script raises nothing in the managed files section" "$(cat "$work/u87-6.items")" "ok"
 # 설정을 바꾸는 명령 — render 가 사용자 파일로 멈추면 설정을 되돌린다
 cp "$u/harness.toml" "$work/u87-before.toml"
 mkdir -p "$u/.claude/commands"; printf 'my ship command\n' > "$u/.claude/commands/ship.md"
@@ -2949,6 +2956,48 @@ old_form "$c"
 "$root/bin/harness" check --target "$c" > "$work/c88-11.out" 2> "$work/c88-11.err"; check "check over an old manifest" "$?" "0"
 has "$work/c88-11.out" "check: 0 managed files match the manifest" "an old manifest was compared"
 cat "$work"/c88-*.out "$work"/c88-*.err > "$work/c88-all.log"; no_hangul "$work/c88-all.log" "managed file check output"
+
+# doctor 의 관리 파일 절 — harness status 의 doctor.items 로 본다
+mitems() { # mitems <리포> — 관리 파일 절의 항목을 한 줄에 하나 `state|what|detail` 로 찍는다
+  "$root/bin/harness" status --target "$1" > "$work/mi.json" 2>> "$work/mi-all.log"
+  python3 - "$work/mi.json" <<'PY'
+import json, sys
+for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]:
+    if i["section"] == "managed files":
+        print("%s|%s|%s" % (i["state"], i["what"], i["detail"]))
+PY
+}
+d="$work/doc88"; rm -rf "$d" "$work/mi-all.log"; mkdir -p "$d"; ( cd "$d" && git init -q . )
+"$root/bin/harness" install --target "$d" >/dev/null 2>&1 || bad "could not install the doctor repo"
+n_hashed=$(grep -c . "$d/.harness/managed")
+check "right after install the section is one ok item" "$(mitems "$d")" "ok|$n_hashed managed files match the manifest|"
+"$root/bin/harness" status --target "$d" > "$work/mi.json" 2>/dev/null
+python3 - "$work/mi.json" > "$work/mi-order" <<'PY'
+import json, sys
+secs = list(dict.fromkeys(i["section"] for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]))
+print(secs[secs.index("generated files") + 1])
+PY
+check "the section comes right after generated files" "$(cat "$work/mi-order")" "managed files"
+printf '\n# edited\n' >> "$d/script/review-mr.sh"
+check "an edited managed file is a bad item" "$(mitems "$d")" "bad|modified managed file|script/review-mr.sh"
+"$root/bin/harness" render --target "$d" >/dev/null 2>&1
+rm "$d/script/review-mr.sh"
+check "a missing managed file is a bad item" "$(mitems "$d")" "bad|missing managed file|script/review-mr.sh"
+"$root/bin/harness" render --target "$d" >/dev/null 2>&1
+for f in $(sed -E 's/^[0-9a-f]{64}  //' "$d/.harness/managed" | grep '^script/' | head -11); do printf '\n# edited\n' >> "$d/$f"; done
+mitems "$d" > "$work/mi-11"
+check "eleven edited files show ten paths" "$(grep -c '^bad|modified managed file|script/' "$work/mi-11")" "10"
+grep -qx 'bad|1 more modified or missing managed file(s)|' "$work/mi-11" && ok || bad "the eleventh file is not summed up: $(tail -1 "$work/mi-11")"
+"$root/bin/harness" render --target "$d" >/dev/null 2>&1
+old_form "$d"
+n_managed=$(grep -vc '^\.harness/' "$d/.harness/managed")
+mitems "$d" > "$work/mi-old"
+grep -qx "warn|$n_managed managed files have no recorded hash|run \`harness render\`" "$work/mi-old" && ok || bad "an old manifest is not reported: $(cat "$work/mi-old")"
+grep -qx "warn|the pinned copy has no recorded hash|run \`harness install\`" "$work/mi-old" && ok || bad "an old manifest's pinned copy is not reported"
+grep -q '^bad|' "$work/mi-old" && bad "an old manifest produced a bad item" || ok
+rm "$d/.harness/managed"
+check "without a manifest the section is one warn item" "$(mitems "$d")" "warn|no manifest of managed files|run \`harness render\`"
+no_hangul "$work/mi-all.log" "status output for managed files"
 
 echo
 if [ "$fail" -eq 0 ]; then

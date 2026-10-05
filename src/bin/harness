@@ -1965,6 +1965,9 @@ def doctor_items(cfg, target, remote=False):
     else:
         line("ok", "%d files match the config" % len(plan(cfg, target)))
 
+    section("managed files")
+    managed_items(target, line)
+
     section("project facts")
     for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
                       for p in (TEMPLATES / "owned").rglob("*") if p.is_file()):
@@ -2065,6 +2068,30 @@ def doctor_items(cfg, target, remote=False):
         section("remote")
         remote_items(cfg, target, line)
     return items
+
+
+MANAGED_SHOWN = 10
+
+
+def managed_items(target: Path, line):
+    """관리 파일과 고정 사본이 `.harness/managed` 와 맞는지. 바뀐 것은 경로 순으로 몇 개만 낸다."""
+    if not (target / MANIFEST_MANAGED).is_file():
+        line("warn", "no manifest of managed files", "run `harness render`")
+        return
+    entries = manifest_entries(target)
+    bad, n = managed_drift(target)
+    if n and not bad:
+        line("ok", "%d managed files match the manifest" % n)
+    for rel, why in sorted(bad)[:MANAGED_SHOWN]:
+        line("bad", why, rel)
+    if len(bad) > MANAGED_SHOWN:
+        line("bad", "%d more modified or missing managed file(s)" % (len(bad) - MANAGED_SHOWN))
+    unhashed = sum(h is None for rel, h in entries if not rel.startswith(PINNED))
+    if unhashed:
+        line("warn", "%d managed files have no recorded hash" % unhashed, "run `harness render`")
+    pinned = [h for rel, h in entries if rel.startswith(PINNED)]
+    if (target / PINNED / "bin" / "harness").is_file() and (not pinned or None in pinned):
+        line("warn", "the pinned copy has no recorded hash", "run `harness install`")
 
 
 REMOTE_UNCHECKED = "could not check"
@@ -3439,7 +3466,7 @@ COMMANDS = {
     "install":   (None, True,  "[--target DIR] [--adopt]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
     "render":    (None, True,  "[--target DIR] [--adopt]", "harness.toml + .ai/project/ -> generated files"),
     "check":     (None, True,  "[--staged]", "verify generated files match the config and managed files match the manifest"),
-    "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, tools, hooks (--remote: also the remote, read-only; "
+    "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, managed file changes, tools, hooks (--remote: also the remote, read-only; "
                   "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),

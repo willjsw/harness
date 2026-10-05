@@ -105,3 +105,34 @@ test("remote status waits longer than every remote call timing out in turn", () 
   }
   assert.equal(remoteStatusTimeoutMs({ branches: { protected: ["main", "develop"] } }), 60_000 + (7 + 2) * 30_000);
 });
+
+test("explain managed file lines", () => {
+  const b = "/demo";
+  const m = (what, detail = "", state = "bad") => ({ section: "managed files", state, what, detail });
+  assert.equal(SECTIONS["managed files"], "관리 파일");
+  const edited = explain(m("modified managed file", "script/review-mr.sh"), b);
+  assert.notEqual(edited.title, "modified managed file");
+  assert.match(edited.body, /script\/review-mr\.sh/);
+  assert.match(edited.body, /script\/project\//);
+  assert.equal(edited.run.kind, "render");
+  const gone = explain(m("missing managed file", "script/hooks/_guards.sh"), b);
+  assert.notEqual(gone.title, "missing managed file");
+  assert.match(gone.body, /script\/hooks\/_guards\.sh/);
+  assert.equal(gone.run.kind, "render");
+  for (const what of ["modified managed file", "missing managed file"]) {
+    const pinned = explain(m(what, ".harness/templates/harness.toml"), b);
+    assert.equal(pinned.cmd, "harness install");
+    assert.equal(pinned.run, undefined);
+    assert.match(pinned.body, /\.harness\/templates\/harness\.toml/);
+  }
+  const more = explain(m("3 more modified or missing managed file(s)"), b);
+  assert.match(more.title, /3개/);
+  assert.equal(more.run.kind, "render");
+  const unhashed = explain(m("12 managed files have no recorded hash", "run `harness render`", "warn"), b);
+  assert.match(unhashed.body, /12개/);
+  assert.equal(unhashed.run.kind, "render");
+  const copy = explain(m("the pinned copy has no recorded hash", "run `harness install`", "warn"), b);
+  assert.notEqual(copy.title, "the pinned copy has no recorded hash");
+  assert.equal(copy.cmd, "harness install");
+  assert.equal(explain(m("no manifest of managed files", "run `harness render`", "warn"), b).run.kind, "render");
+});
