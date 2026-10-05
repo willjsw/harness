@@ -2847,6 +2847,40 @@ rm -f "$u/docs/spec/README.md"; cp "$u/.harness/managed" "$work/u87-mf"
 has "$work/u87-9.err" "docs/decisions/README.md" "the render refusal does not name the user file"
 [ -e "$u/docs/spec/README.md" ] && bad "the refused render laid an owned file" || ok
 cmp -s "$u/.harness/managed" "$work/u87-mf" && ok || bad "the refused render rewrote the manifest"
+# .harness 가 심볼릭 링크면 사본을 갈아 끼우지 않는다 — 링크 너머의 파일을 지우게 된다
+ln87="$work/link87"; out87="$work/link87-outside"; rm -rf "$ln87" "$out87"; mkdir -p "$ln87" "$out87/keep-dir"
+( cd "$ln87" && git init -q . )
+printf 'outside\n' > "$out87/keep.txt"; printf 'nested\n' > "$out87/keep-dir/nested.txt"
+ln -s "$out87" "$ln87/.harness"
+"$root/bin/harness" install --target "$ln87" > "$work/u87-10.out" 2> "$work/u87-10.err"; check "install through a symlinked .harness" "$?" "2"
+has "$work/u87-10.err" "  --> .harness (a symbolic link)" "the refusal does not say .harness is a symbolic link"
+check "the link target's file is kept" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
+check "the link target's nested file is kept" "$(cat "$out87/keep-dir/nested.txt" 2>/dev/null)" "nested"
+[ -e "$out87/bin" ] && bad "the refused install wrote into the link target" || ok
+[ -e "$HARNESS_HOME/link87/project.json" ] && bad "the refused install registered the project" || ok
+"$root/bin/harness" install --target "$ln87" --adopt > "$work/u87-11.out" 2> "$work/u87-11.err"; check "install --adopt through a symlinked .harness" "$?" "2"
+check "the link target survives --adopt" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
+# 설치된 리포의 .harness 를 링크로 바꿔도 같다
+cp -R "$u/.harness" "$out87/pinned"; rm -rf "$u/.harness.bak"; mv "$u/.harness" "$u/.harness.bak"; ln -s "$out87/pinned" "$u/.harness"
+"$root/bin/harness" install --target "$u" > "$work/u87-12.out" 2> "$work/u87-12.err"; check "reinstall through a symlinked .harness" "$?" "2"
+[ -f "$out87/pinned/bin/harness" ] && [ -f "$out87/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
+rm "$u/.harness"; mv "$u/.harness.bak" "$u/.harness"
+# 쓸 경로의 부모가 파일이면 무엇이든 쓰기 전에 멈춘다 — 소유 파일의 부모도 본다
+pf87="$work/parent87"; rm -rf "$pf87"; mkdir -p "$pf87"; ( cd "$pf87" && git init -q . )
+printf 'not a dir\n' > "$pf87/script"
+"$root/bin/harness" install --target "$pf87" > "$work/u87-13.out" 2> "$work/u87-13.err"; check "install where script is a file" "$?" "2"
+has "$work/u87-13.err" "  --> script (not a directory)" "the refusal does not name the parent that is a file"
+check "the user file named script is untouched" "$(cat "$pf87/script")" "not a dir"
+for f in .harness .ai/AI_AGENT.md .ai/project/scope.md; do
+  [ -e "$pf87/$f" ] && bad "the refused install wrote $f" || ok
+done
+[ -e "$HARNESS_HOME/parent87/project.json" ] && bad "the refused install registered the project" || ok
+# 매니페스트에 있던 관리 파일 자리에 디렉터리가 생겨도 쓰기 전에 멈춘다
+rm "$u/script/review-mr.sh"; mkdir "$u/script/review-mr.sh"; cp "$u/.harness/managed" "$work/u87-mf2"
+"$root/bin/harness" render --target "$u" > "$work/u87-14.out" 2> "$work/u87-14.err"; check "render where a managed file became a directory" "$?" "2"
+has "$work/u87-14.err" "  --> script/review-mr.sh (a directory)" "the refusal does not say the managed path is a directory"
+cmp -s "$u/.harness/managed" "$work/u87-mf2" && ok || bad "the refused render rewrote the manifest"
+rmdir "$u/script/review-mr.sh"
 cat "$work"/u87-*.out "$work"/u87-*.err > "$work/u87-all.log"; no_hangul "$work/u87-all.log" "user file refusal output"
 
 echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
