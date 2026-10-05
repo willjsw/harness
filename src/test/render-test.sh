@@ -9,77 +9,126 @@
 set -uo pipefail
 # 블록 감시. 이 테스트 전체를 새 세션(프로세스 그룹)으로 띄우고 표준 출력의 블록 표지(`UT-<번호>` 로
 # 시작하는 줄)를 지켜본다. 한 블록이 RENDER_TEST_BLOCK_LIMIT 초(기본 900) 안에 다음 표지로 넘어가지 않으면
-# 그 블록 이름과 그때 돌던 명령을 찍고 그룹째 끝낸 뒤 124 로 끝난다 — 어느 블록의 어느 명령이 멈추든
-# 진행 없이 기다리지 않는다. 시간은 기기가 깨어 있는 동안만 센다(macOS CLOCK_UPTIME_RAW, 그 밖은
-# monotonic) — 잠자기로 얼어 있던 시간을 멈춤으로 세지 않는다. 표준 입력은 닫는다.
+# 그 블록 이름을 찍고 그룹째 끝낸 뒤 124 로 끝난다 — 어느 블록의 어느 명령이 멈추든 진행 없이 기다리지
+# 않는다. 그때 돌던 명령도 찍지만 그 진단이 실패하거나 멈춰도 종료 절차는 그대로 돈다.
+# 시간은 기기가 깨어 있는 동안만 센다(macOS CLOCK_UPTIME_RAW, 그 밖은 monotonic) — 잠자기로 얼어 있던
+# 시간을 멈춤으로 세지 않는다. 표준 입력은 닫는다.
 # 제한 시간이 유한한 양수가 아니면 아무것도 띄우지 않고 2 로 끝난다.
-# 테스트 안에서 감시 자체를 검사할 수 있게 본문을 변수에 둔다.
+# 테스트가 감시 자체를 검사할 수 있게 본문을 변수에 두고, 모듈로 불러 시계(now)를 바꿔 끼울 수 있게 한다.
 watch_py='
 import math, os, re, signal, subprocess, sys, threading, time
-raw = os.environ.get("RENDER_TEST_BLOCK_LIMIT", "900")
-try:
-    limit = float(raw)
-except ValueError:
-    limit = float("nan")
-if not (math.isfinite(limit) and limit > 0):
-    print("error: RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds, got %r" % raw, file=sys.stderr)
-    sys.exit(2)
-clock = getattr(time, "CLOCK_UPTIME_RAW", None)
-now = (lambda: time.clock_gettime(clock)) if clock is not None else time.monotonic
-marker = re.compile(rb"^UT-[0-9]+[a-z]*\b")
-state = {"block": "(before the first block)", "since": now()}
-p = subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                     env=dict(os.environ, RENDER_TEST_WATCHED="1"), start_new_session=True)
-def pump():
-    for line in iter(p.stdout.readline, b""):
-        if marker.match(line):
-            state["block"] = line.split(b" ", 1)[0].decode("ascii", "replace")
-            state["since"] = now()
-        sys.stdout.buffer.write(line)
-        sys.stdout.buffer.flush()
-reader = threading.Thread(target=pump, daemon=True)
-reader.start()
-def group():
-    """그룹에 남은 명령 — 멈춘 지점을 이름으로 보이려고 찍는다."""
-    r = subprocess.run(["ps", "-A", "-o", "pgid=,pid=,command="], capture_output=True, text=True)
+
+MARKER = re.compile(rb"^UT-[0-9]+[a-z]*\b")
+_clock = getattr(time, "CLOCK_UPTIME_RAW", None)
+now = (lambda: time.clock_gettime(_clock)) if _clock is not None else time.monotonic
+current = None   # 지금 감시 중인 Blocks — 바꿔 끼운 시계가 진행 상태를 볼 수 있게 둔다
+
+
+def parse_limit(raw):
+    """유한한 양수 초면 그 값, 아니면 None."""
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+class Blocks:
+    """마지막으로 시작한 블록과 그 시각. 시각은 부르는 쪽이 넘긴다."""
+
+    def __init__(self, limit, t):
+        self.limit, self.block, self.since = limit, "(before the first block)", t
+
+    def line(self, data, t):
+        if MARKER.match(data):
+            self.block = data.split(b" ", 1)[0].strip().decode("ascii", "replace")
+            self.since = t
+
+    def expired(self, t):
+        return t - self.since >= self.limit
+
+
+def group_commands(pgid):
+    """그룹에 남은 명령. ps 를 띄우지 못했거나 5초 안에 끝나지 않으면 None."""
+    try:
+        r = subprocess.run(["ps", "-A", "-o", "pgid=,pid=,command="], stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
     out = []
     for l in r.stdout.splitlines():
         f = l.split(None, 2)
-        if len(f) == 3 and f[0] == str(p.pid) and f[1] != str(p.pid):
+        if len(f) == 3 and f[0] == str(pgid) and f[1] != str(pgid):
             out.append("  %s %s" % (f[1], f[2][:200]))
     return out
-def stop(sig):
-    try:
-        os.killpg(p.pid, sig)
-    except OSError:
-        pass
-def finish(code):
-    stop(signal.SIGKILL)
-    p.wait()
-    reader.join(5)
-    sys.stdout.flush()
-    os._exit(code)
-def interrupted(signum, _frame):
-    stop(signal.SIGTERM)
-    finish(128 + signum)
-for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-    signal.signal(s, interrupted)
-while p.poll() is None:
-    if now() - state["since"] >= limit:
-        block = state["block"]
-        running = group()
-        print("render-test: %s did not finish within %gs and was stopped" % (block, limit), file=sys.stderr)
-        if running:
-            print("  still running:", file=sys.stderr)
-            print("\n".join(running), file=sys.stderr)
+
+
+def main(argv):
+    global current
+    raw = os.environ.get("RENDER_TEST_BLOCK_LIMIT", "900")
+    limit = parse_limit(raw)
+    if limit is None:
+        print("error: RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds, got %r" % raw, file=sys.stderr)
+        sys.exit(2)
+    current = Blocks(limit, now())
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                         env=dict(os.environ, RENDER_TEST_WATCHED="1"), start_new_session=True)
+
+    def pump():
+        for line in iter(p.stdout.readline, b""):
+            current.line(line, now())
+            sys.stdout.buffer.write(line)
+            sys.stdout.buffer.flush()
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+
+    def stop(sig):
+        try:
+            os.killpg(p.pid, sig)
+        except OSError:
+            pass
+
+    def finish(code):
+        stop(signal.SIGKILL)
+        p.wait()
+        reader.join(5)
+        for f in (sys.stdout, sys.stderr):
+            try:
+                f.flush()
+            except Exception:
+                pass
+        os._exit(code)
+
+    def interrupted(signum, _frame):
         stop(signal.SIGTERM)
-        grace = now() + 5
-        while p.poll() is None and now() < grace:
-            time.sleep(0.1)
-        finish(124)
-    time.sleep(0.2)
-# 본문이 끝나도 그룹에 남은 자식이 출력 통로를 쥔 채 다음 단계를 붙잡지 않게 정리한다
-finish(p.returncode if p.returncode >= 0 else 128 - p.returncode)
+        finish(128 + signum)
+    for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(s, interrupted)
+
+    while p.poll() is None:
+        if current.expired(now()):
+            # 진단은 덤이다 — 무엇이 실패하든 아래 finally 의 종료 절차와 124 는 반드시 돈다
+            try:
+                print("render-test: %s did not finish within %gs and was stopped" % (current.block, limit),
+                      file=sys.stderr, flush=True)
+                running = group_commands(p.pid)
+                if running is None:
+                    print("  could not list what was still running", file=sys.stderr)
+                elif running:
+                    print("  still running:\n" + "\n".join(running), file=sys.stderr)
+            finally:
+                stop(signal.SIGTERM)
+                grace = now() + 5
+                while p.poll() is None and now() < grace:
+                    time.sleep(0.1)
+                finish(124)
+        time.sleep(0.2)
+    # 본문이 끝나도 그룹에 남은 자식이 출력 통로를 쥔 채 다음 단계를 붙잡지 않게 정리한다
+    finish(p.returncode if p.returncode >= 0 else 128 - p.returncode)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
 '
 [ -n "${RENDER_TEST_WATCHED:-}" ] || exec python3 -c "$watch_py" bash "$0" "$@"
 # 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
@@ -2782,59 +2831,108 @@ unset -f at_plan at_run
 
 echo "UT-95 a block that never finishes is stopped and named with what was still running, instead of hanging the run"
 # 어느 블록의 어느 명령이 멈추든 이 테스트 전체가 진행 없이 기다린다. 블록 감시가 그것을 실패와 위치로 바꾼다.
-wd="$work/watch"; rm -rf "$wd"; mkdir -p "$wd/script"
-cat > "$wd/script/test-hang.sh" <<'SH'
-#!/usr/bin/env bash
-# 끝나지 않는 하위 테스트. 손자 프로세스도 하나 남긴다
-sleep 300 &
-echo "child $!" > "$WATCH_DIR/hang.pid"
-sleep 300
+# 실제 시각에 기대지 않는다 — 판정은 시각을 넘겨받는 Blocks 로, 종료 절차는 바꿔 끼운 시계로 본다.
+wd="$work/watch"; rm -rf "$wd"; mkdir -p "$wd/nops" "$wd/denyps" "$wd/failps" "$wd/hangps"
+: > "$wd/denyps/ps"                                   # 실행 권한이 없는 ps
+printf '#!/bin/sh\nexit 1\n' > "$wd/failps/ps"; chmod +x "$wd/failps/ps"
+printf '#!/bin/sh\nexec /bin/sleep 100000\n' > "$wd/hangps/ps"; chmod +x "$wd/hangps/ps"
+cat > "$wd/hang.sh" <<'SH'
+#!/bin/bash
+# 끝나지 않는 블록. 손자 프로세스를 남기고, 그 번호를 적은 뒤에 표지를 낸다
+export PATH=/usr/bin:/bin
+( while :; do sleep 1; done ) &
+echo "$!" > "$WATCH_DIR/$CASE.pid"
+printf '%s\n' "UT-01 stuck"
+while :; do sleep 1; done
 SH
-cat > "$wd/body.sh" <<'SH'
-#!/usr/bin/env bash
-# 감시 대상 본문. CASE 가 각 블록의 동작을 고른다
-touch "$WATCH_DIR/started"
-printf '%s\n' "UT-01 first"
-sleep 1.5
-printf '%s\n' "UT-02 second"
-case "$CASE" in
-  hang)  "$WATCH_DIR/script/test-hang.sh" ;;
-  slow)  sleep 1.5; exit 3 ;;
-  stdin) if read -r _; then echo "read from the caller's stdin"; exit 1; fi ;;
-esac
+cat > "$wd/done.sh" <<'SH'
+#!/bin/bash
+# 제때 끝나는 본문. 표준 입력에서 무언가 읽히면 바깥 입력을 물려받은 것이다
+touch "$WATCH_DIR/$CASE.started"
+printf '%s\n' "UT-01 first" "UT-02 second"
+if read -r _; then echo "read from the caller's stdin"; exit 1; fi
+exit 3
 SH
-chmod +x "$wd/script/test-hang.sh" "$wd/body.sh"
-watch() { # watch <사례> <제한> — 감시 아래에서 본문을 돌리고 종료 코드를 남긴다
-  rm -f "$wd/started"
-  WATCH_DIR="$wd" CASE=$1 RENDER_TEST_BLOCK_LIMIT=$2 python3 -c "$watch_py" bash "$wd/body.sh" \
-    >"$wd/$1.out" 2>"$wd/$1.err"
+# 감시를 모듈로 불러 시계를 바꿔 끼우고 main 을 부른다.
+#   jump   — 첫 표지를 읽은 뒤로 부를 때마다 1000초씩 간다: 그 블록은 반드시 제한을 넘긴다
+#   frozen — 시계가 서 있다: 어느 블록도 제한을 넘기지 않는다
+cat > "$wd/drive.py" <<'PY'
+import os
+ns = {"__name__": "watch"}
+exec(os.environ["WATCH_PY"], ns)
+t = [0]
+def jump():
+    if ns["current"] is not None and ns["current"].block == "UT-01":
+        t[0] += 1000
+    return t[0]
+ns["now"] = jump if os.environ["CLOCK"] == "jump" else (lambda: 0)
+if os.environ.get("WATCH_PATH") is not None:
+    os.environ["PATH"] = os.environ["WATCH_PATH"]
+ns["main"](["/bin/bash", os.path.join(os.environ["WATCH_DIR"], os.environ["BODY"])])
+PY
+drive() { # drive <사례> <시계> <본문> [<ps 를 찾을 PATH>] — 종료 코드를 돌려준다
+  local py; py=$(command -v python3)
+  WATCH_PY="$watch_py" WATCH_DIR="$wd" CASE=$1 CLOCK=$2 BODY=$3 RENDER_TEST_BLOCK_LIMIT=${LIMIT-60} \
+    env ${4+"WATCH_PATH=$4"} "$py" "$wd/drive.py" >"$wd/$1.out" 2>"$wd/$1.err"
 }
-t0=$(date +%s)
-watch hang 2; check "exit code of a stopped run" "$?" "124"
-elapsed=$(( $(date +%s) - t0 ))
-has "$wd/hang.err" "render-test: UT-02 did not finish within 2s and was stopped" "the failure does not name the stuck block and the limit"
-has "$wd/hang.err" "test-hang.sh" "the failure does not name the command that was still running"
-has "$wd/hang.out" "UT-01 first" "the watched run's output did not pass through"
-[ "$elapsed" -lt 30 ] && ok || bad "stopping the run took ${elapsed}s"
-pid=$(sed -n 's/^child //p' "$wd/hang.pid" 2>/dev/null)
-[ -n "$pid" ] || bad "the hanging sub-test did not record its child"
-[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && bad "stopping the run left a child running" || ok
-no_hangul "$wd/hang.err" "the stopped run report"
-# 제한은 블록마다 다시 센다 — 전체가 제한보다 길어도 블록마다 제때 넘어가면 본문의 종료 코드 그대로다
-watch slow 2; check "a run whose blocks each finish in time keeps its exit code" "$?" "3"
-hasnt "$wd/slow.err" "was stopped" "a run whose blocks each finish in time was stopped"
-# 바깥 입력이 끝없이 들어와도 본문은 그것을 받지 않는다
-rc=$(yes | { watch stdin 5; echo $?; }); check "the watched run does not read the caller's stdin" "$rc" "0"
+gone() { # gone <pid> — 그 프로세스가 끝났는가(좀비 포함). 끝내기 신호가 닿을 때까지 잠깐 기다린다
+  local i st
+  for i in $(seq 1 100); do
+    st=$(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ')
+    case "$st" in ""|Z*) return 0 ;; esac
+    sleep 0.1
+  done
+  return 1
+}
+# 제한 판정 — 시각을 넘겨 본다
+WATCH_PY="$watch_py" python3 - > "$wd/unit.out" <<'PY'
+import os
+ns = {"__name__": "watch"}
+exec(os.environ["WATCH_PY"], ns)
+B, parse = ns["Blocks"], ns["parse_limit"]
+b = B(2, 0)
+print(b.block, b.expired(1.9), b.expired(2))
+b.line(b"UT-01 first\n", 1.5)
+print(b.block, b.expired(3.4), b.expired(3.5))
+b.line(b"  FAIL: UT-02 not a marker\n", 3.0)
+print(b.block, b.expired(3.5))
+b.line(b"UT-07c with a suffix\n", 10)
+print(b.block, b.expired(11.9), b.expired(12))
+print([parse(v) for v in ("900", "0.5", "nan", "0", "-5", "abc", "inf", "-inf", "")])
+PY
+check "the limit is judged per block, from the time its marker was read" "$(cat "$wd/unit.out")" \
+"(before the first block) False True
+UT-01 False True
+UT-01 True
+UT-07c False True
+[900.0, 0.5, None, None, None, None, None, None, None]"
+# 멈춘 블록 — 이름과 남은 명령을 보고하고, 진단이 어떻게 되든 그룹째 끝내고 124
+for c in normal:"$PATH" nops:"$wd/nops" denyps:"$wd/denyps" failps:"$wd/failps" hangps:"$wd/hangps"; do
+  name=${c%%:*}; drive "$name" jump hang.sh "${c#*:}"; check "$name: exit code of a stopped run" "$?" "124"
+  has "$wd/$name.err" "render-test: UT-01 did not finish within 60s and was stopped" "$name: the failure does not name the stuck block and the limit"
+  has "$wd/$name.out" "UT-01 stuck" "$name: the watched run's output did not pass through"
+  pid=$(cat "$wd/$name.pid" 2>/dev/null)
+  if [ -z "$pid" ]; then bad "$name: the stuck block did not record its child"
+  elif gone "$pid"; then ok; else bad "$name: stopping the run left a child running"; kill "$pid" 2>/dev/null; fi
+  no_hangul "$wd/$name.err" "$name: the stopped run report"
+done
+has "$wd/normal.err" "hang.sh" "the failure does not name the command that was still running"
+for name in nops denyps hangps; do
+  has "$wd/$name.err" "could not list what was still running" "$name: a failed diagnosis is not reported as such"
+done
+# 제때 끝나는 본문 — 종료 코드 그대로, 멈춤 보고 없음, 바깥 입력을 받지 않는다
+rc=$(yes | { drive done frozen done.sh; echo $?; }); check "a run that finishes keeps its exit code, and does not read the caller's stdin" "$rc" "3"
+hasnt "$wd/done.err" "was stopped" "a run that finished was stopped"
 # 유한한 양수가 아닌 제한 시간은 아무것도 띄우지 않고 바로 거부한다
 for v in nan 0 -5 abc inf ""; do
-  watch bad "$v"; check "limit '$v' is refused" "$?" "2"
+  LIMIT=$v drive bad frozen done.sh; check "limit '$v' is refused" "$?" "2"
   has "$wd/bad.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "limit '$v' is refused without saying why"
-  [ -e "$wd/started" ] && bad "limit '$v' still started the run" || ok
+  [ -e "$wd/bad.started" ] && bad "limit '$v' still started the run" || ok
 done
 env -u RENDER_TEST_WATCHED RENDER_TEST_BLOCK_LIMIT=nan "$root/test/render-test.sh" >/dev/null 2>"$wd/top.err"
 check "render-test refuses a limit that is not a positive number" "$?" "2"
 has "$wd/top.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "render-test does not say why it refused the limit"
-unset -f watch
+unset -f drive gone
 
 echo
 if [ "$fail" -eq 0 ]; then
