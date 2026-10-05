@@ -1643,8 +1643,11 @@ fi
 
 # 같은 이름의 두 설치가 동시에 돌면 하나만 등록되고 다른 하나는 거부된다.
 fresh
+# 판에서 하네스 파일을 남긴 채 매니페스트만 지우면 그 파일이 사용자 파일로 보인다 — 판마다 빈 리포에서 시작한다
+cp "$A/harness.toml" "$dup/twin.toml"
 race=0; for i in 1 2 3 4 5; do
-  rm -rf "$HARNESS_HOME"/twin* "$A/.harness" "$B/.harness"
+  rm -rf "$HARNESS_HOME"/twin*
+  mkrepo "$A"; mkrepo "$B"; cp "$dup/twin.toml" "$A/harness.toml"; cp "$dup/twin.toml" "$B/harness.toml"
   "$root/bin/harness" install --target "$A" >"$work/race-a.out" 2>&1 & pa=$!
   "$root/bin/harness" install --target "$B" >"$work/race-b.out" 2>&1 & pb=$!
   wait "$pa"; ca=$?; wait "$pb"; cb=$?
@@ -2758,6 +2761,79 @@ print("9", "| `script/project/README.md` |" in chapter(9))
 print("10", re.search(r"^\| `script/project/` \| \*\*소유\*\*", chapter(10), re.M) is not None)
 PY
 check "the rule canon names script/project/ in chapters 3, 9 and 10" "$(cat "$work/own87-canon" | tr '\n' ' ')" "3 True 9 True 10 True "
+
+# 첫 설치의 겹침 — 사용자 파일이 있으면 아무것도 쓰지 않고 멈춘다
+u="$work/user87"; rm -rf "$u"; mkdir -p "$u/script"
+( cd "$u" && git init -q . )
+printf 'my own agent notes\n' > "$u/CLAUDE.md"; printf '#!/bin/sh\necho mine\n' > "$u/script/review-mr.sh"; chmod 755 "$u/script/review-mr.sh"
+"$root/bin/harness" install --target "$u" > "$work/u87-1.out" 2> "$work/u87-1.err"; check "install over user files" "$?" "2"
+for s in "CLAUDE.md" "script/review-mr.sh" "nothing was written" "harness install --adopt" "script/project/"; do
+  has "$work/u87-1.err" "$s" "the refusal does not name: $s"
+done
+check "the user CLAUDE.md is untouched" "$(cat "$u/CLAUDE.md")" "my own agent notes"
+check "the user script is untouched" "$(sed -n 2p "$u/script/review-mr.sh")" "echo mine"
+for f in .harness .ai/AI_AGENT.md script/project/README.md; do
+  [ -e "$u/$f" ] && bad "the refused install wrote $f" || ok
+done
+[ -e "$HARNESS_HOME/user87/project.json" ] && bad "the refused install registered the project" || ok
+# 넘겨받기 — 원래 파일은 <경로>.orig 로 남고 매니페스트에는 들지 않는다
+"$root/bin/harness" install --target "$u" --adopt > "$work/u87-2.out" 2> "$work/u87-2.err"; check "install --adopt" "$?" "0"
+check "CLAUDE.md.orig keeps the user's content" "$(cat "$u/CLAUDE.md.orig")" "my own agent notes"
+check "script/review-mr.sh.orig keeps the user's content" "$(sed -n 2p "$u/script/review-mr.sh.orig")" "echo mine"
+[ -x "$u/script/review-mr.sh.orig" ] && ok || bad "the moved user script lost its mode"
+grep -qx 'CLAUDE.md' "$u/.harness/generated" && ok || bad "the adopted CLAUDE.md is not in the manifest"
+grep -q '  script/review-mr.sh$' "$u/.harness/managed" && ok || bad "the adopted script is not in the manifest"
+cat "$u/.harness/generated" "$u/.harness/managed" | grep -q '\.orig$' && bad "an .orig file landed in a manifest" || ok
+check "one adopted line per file" "$(grep -c '^render: adopted ' "$work/u87-2.out")" "2"
+has "$work/u87-2.out" "render: adopted script/review-mr.sh — yours is at script/review-mr.sh.orig" "the adopted line does not say where the user's file went"
+# 넘겨받을 수 없음 — .orig 가 이미 있거나 경로에 디렉터리가 있으면 --adopt 여도 멈춘다
+u2="$work/user87b"; rm -rf "$u2"; mkdir -p "$u2"; ( cd "$u2" && git init -q . )
+printf 'mine\n' > "$u2/CLAUDE.md"; printf 'older\n' > "$u2/CLAUDE.md.orig"
+"$root/bin/harness" install --target "$u2" --adopt > "$work/u87-3.out" 2> "$work/u87-3.err"; check "adopt where .orig already exists" "$?" "2"
+has "$work/u87-3.err" "(CLAUDE.md.orig already exists)" "the refusal does not say the .orig already exists"
+check "CLAUDE.md is untouched" "$(cat "$u2/CLAUDE.md")" "mine"
+check "CLAUDE.md.orig is untouched" "$(cat "$u2/CLAUDE.md.orig")" "older"
+[ -e "$u2/.harness" ] && bad "the refused adopt wrote .harness/" || ok
+u3="$work/user87c"; rm -rf "$u3"; mkdir -p "$u3/CLAUDE.md"; ( cd "$u3" && git init -q . )
+"$root/bin/harness" install --target "$u3" --adopt > "$work/u87-4.out" 2> "$work/u87-4.err"; check "adopt where a directory sits" "$?" "2"
+has "$work/u87-4.err" "CLAUDE.md (a directory)" "the refusal does not say the path is a directory"
+[ -d "$u3/CLAUDE.md" ] && [ ! -e "$u3/CLAUDE.md.orig" ] && [ ! -e "$u3/.harness" ] && ok || bad "the refused adopt changed something"
+# 재설치 — 매니페스트가 남아 하네스 파일은 사용자 파일이 아니다. 고친 관리 파일은 덮인다
+printf '\n# edited by hand\n' >> "$u/script/review-mr.sh"
+"$root/bin/harness" install --target "$u" > "$work/u87-5.out" 2> "$work/u87-5.err"; check "reinstall" "$?" "0"
+hasnt "$u/script/review-mr.sh" "# edited by hand" "reinstall did not put the managed file back"
+# 하네스가 쓰지 않는 이름의 프로젝트 스크립트는 그대로다
+printf '#!/bin/sh\necho deploy\n' > "$u/script/deploy.sh"
+"$root/bin/harness" render --target "$u" > "$work/u87-6.out" 2> "$work/u87-6.err"; check "render beside a project script" "$?" "0"
+check "the project script is untouched" "$(sed -n 2p "$u/script/deploy.sh")" "echo deploy"
+# 설정을 바꾸는 명령 — render 가 사용자 파일로 멈추면 설정을 되돌린다
+cp "$u/harness.toml" "$work/u87-before.toml"
+mkdir -p "$u/.claude/commands"; printf 'my ship command\n' > "$u/.claude/commands/ship.md"
+"$root/bin/harness" steps --target "$u" ship '{"title":"ship it","steps":[{"id":"a","type":"gate","title":"t"}]}' \
+  > "$work/u87-7.out" 2> "$work/u87-7.err"; check "steps over a user command" "$?" "2"
+has "$work/u87-7.err" "reverted — the config is unchanged" "steps did not say it reverted"
+has "$work/u87-7.err" "harness steps --adopt" "the refusal does not name the command that was run"
+cmp -s "$u/harness.toml" "$work/u87-before.toml" && ok || bad "steps left the config changed"
+check "the user command is untouched" "$(cat "$u/.claude/commands/ship.md")" "my ship command"
+mkdir -p "$u/docs/decisions"; printf 'my decisions\n' > "$u/docs/decisions/README.md"
+"$root/bin/harness" set --target "$u" adr.dir docs/decisions > "$work/u87-8.out" 2> "$work/u87-8.err"; check "set over a user file" "$?" "2"
+has "$work/u87-8.err" "reverted — the config is unchanged" "set did not say it reverted"
+has "$work/u87-8.err" "docs/decisions/README.md" "the set refusal does not name the user file"
+cmp -s "$u/harness.toml" "$work/u87-before.toml" && ok || bad "set left the config changed"
+# render 도 무엇이든 쓰기 전에 멈춘다 — 지운 소유 파일을 다시 깔지 않고 매니페스트도 그대로다
+python3 - "$u/harness.toml" <<'PY'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+m = re.search(r"^\[adr\]\s*$", s, re.M); n = re.search(r"^\[", s[m.end():], re.M)
+end = m.end() + (n.start() if n else len(s) - m.end())
+p.write_text(s[:m.end()] + re.sub(r"^dir = .*$", 'dir = "docs/decisions"', s[m.end():end], count=1, flags=re.M) + s[end:], encoding="utf-8")
+PY
+rm -f "$u/docs/spec/README.md"; cp "$u/.harness/managed" "$work/u87-mf"
+"$root/bin/harness" render --target "$u" > "$work/u87-9.out" 2> "$work/u87-9.err"; check "render over a user file" "$?" "2"
+has "$work/u87-9.err" "docs/decisions/README.md" "the render refusal does not name the user file"
+[ -e "$u/docs/spec/README.md" ] && bad "the refused render laid an owned file" || ok
+cmp -s "$u/.harness/managed" "$work/u87-mf" && ok || bad "the refused render rewrote the manifest"
+cat "$work"/u87-*.out "$work"/u87-*.err > "$work/u87-all.log"; no_hangul "$work/u87-all.log" "user file refusal output"
 
 echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
 # 경로만 적힌 매니페스트로는 관리 파일과 고정 사본이 설치 뒤 바뀌었는지 알 수 없다.

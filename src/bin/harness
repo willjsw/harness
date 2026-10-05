@@ -1274,22 +1274,87 @@ def ci_dir(cfg: dict) -> Path:
     return TEMPLATES / "ci" / cfg["forge"]["review_host"]
 
 
-def cmd_render(cfg, target, _args):
-    # 소유 파일을 먼저 깐다 — 생성물이 그 본문을 포함할 수 있다.
-    owned, _ = copy_tree(TEMPLATES / "owned", target, only_if_absent=True)
-    # CI 설정은 **있으면 손대지 않는다.** 프로젝트가 이미 갖고 있던 파이프라인을 덮으면
-    # 하네스 설치 한 번으로 빌드가 통째로 바뀐다. 없을 때만 최소 골격을 깐다.
-    owned += copy_tree(ci_dir(cfg), target, only_if_absent=True, subst=derive(cfg))[0]
-    # 쓰지 않는 역할의 계약은 깔지 않는다. 깔아 두면 설정에 없는 역할을 가리키는 문서가 남는다.
+def role_file_skip(cfg: dict):
+    """쓰지 않는 역할의 계약과 그 역할만 부르는 커맨드를 가르는 함수. 깔아 두면 설정에 없는 역할을 가리키는 문서가 남는다."""
     known = {f.stem for f in (TEMPLATES / "agents").glob("*.md")}
     unused = known - set(cfg["roles"])
+
     def role_file_unused(rel):
-        """쓰지 않는 역할의 계약과 그 역할만 부르는 커맨드는 깔지 않는다."""
         for pre in (".ai/templates/", ".claude/commands/"):
             if rel.startswith(pre) and rel.endswith(".md") \
                and rel[len(pre):-len(".md")] in unused:
                 return True
         return False
+    return role_file_unused
+
+
+def harness_paths(cfg: dict) -> set:
+    """이번 render 가 쓸 관리 파일과 생성 파일의 경로. 소유 파일과 CI 골격은 없을 때만 까므로 들지 않는다."""
+    skip = role_file_skip(cfg)
+    src = TEMPLATES / "managed"
+    out = {f.relative_to(src).as_posix() for f in src.rglob("*") if f.is_file()}
+    out = {rel for rel in out if not skip(rel)}
+    return out | {rel for rel, _c, _m in plan(cfg)}
+
+
+def user_files(cfg: dict, target: Path) -> list:
+    """하네스가 쓸 경로에 이미 있으나 이전 매니페스트에 없는 것 — (경로, 넘겨받을 수 없는 사유 또는 None).
+
+    내용은 보지 않는다. 디렉터리도 사용자 파일이다.
+    """
+    ours = set(previous(target, MANIFEST)) | set(previous(target, MANIFEST_MANAGED))
+    out = []
+    for rel in sorted(harness_paths(cfg)):
+        p = target / rel
+        if rel in ours or not os.path.lexists(p):
+            continue
+        if p.is_dir() and not p.is_symlink():
+            why = "a directory"
+        elif os.path.lexists(str(p) + ".orig"):
+            why = "%s.orig already exists" % rel
+        else:
+            why = None
+        out.append((rel, why))
+    return out
+
+
+def refuse_user_files(cfg, target: Path, args) -> bool:
+    """사용자 파일이 있어 멈춰야 하면 안내문을 표준 오류로 내고 True. `--adopt` 로 모두 넘겨받을 수 있으면 False."""
+    found = user_files(cfg, target)
+    if not found or (getattr(args, "adopt", False) and all(why is None for _r, why in found)):
+        return False
+    cmd = getattr(args, "command", None) or "render"
+    print("error: %d file(s) the harness would write already exist and are not the harness's" % len(found),
+          file=sys.stderr)
+    for rel, why in found:
+        print("  --> %s%s" % (rel, " (%s)" % why if why else ""), file=sys.stderr)
+    print("nothing was written\n\n"
+          "help: move them aside, or let the harness take them over (each is kept as <path>.orig)\n"
+          "        harness %s --adopt" % cmd, file=sys.stderr)
+    if any(rel.startswith("script/") for rel, _w in found):
+        print("      project scripts belong in script/project/, which the harness never writes", file=sys.stderr)
+    return True
+
+
+def adopt_user_files(cfg, target: Path):
+    """사용자 파일을 `<경로>.orig` 로 옮긴다. 이름만 바꾸므로 권한 비트가 그대로다."""
+    for rel, _why in user_files(cfg, target):
+        os.rename(target / rel, target / (rel + ".orig"))
+        print("render: adopted %s — yours is at %s.orig" % (rel, rel))
+
+
+def cmd_render(cfg, target, args):
+    # 무엇이든 쓰기 전에 가른다 — 하네스가 쓸 자리에 프로젝트 파일이 있으면 덮지 않고 멈춘다.
+    if refuse_user_files(cfg, target, args):
+        return 2
+    if getattr(args, "adopt", False):
+        adopt_user_files(cfg, target)
+    # 소유 파일을 먼저 깐다 — 생성물이 그 본문을 포함할 수 있다.
+    owned, _ = copy_tree(TEMPLATES / "owned", target, only_if_absent=True)
+    # CI 설정은 **있으면 손대지 않는다.** 프로젝트가 이미 갖고 있던 파이프라인을 덮으면
+    # 하네스 설치 한 번으로 빌드가 통째로 바뀐다. 없을 때만 최소 골격을 깐다.
+    owned += copy_tree(ci_dir(cfg), target, only_if_absent=True, subst=derive(cfg))[0]
+    role_file_unused = role_file_skip(cfg)
 
     managed, managed_paths = copy_tree(
         TEMPLATES / "managed", target, only_if_absent=False, skip=role_file_unused)
@@ -1493,20 +1558,23 @@ def source_tree(p: Path) -> bool:
     return (p / "src" / "bin" / "harness").is_file() and (p / "src" / "templates" / "harness.toml").is_file()
 
 
-def cmd_install(cfg, target, _args):
+def cmd_install(cfg, target, args):
     # 같은 이름의 설치가 동시에 돌면 둘 다 빈 등록을 보고 통과한다. 판정부터 등록까지 잠근다.
     with registry_lock():
-        if not install_registered(cfg, target):
+        if not install_registered(cfg, target, args):
             return 2
-    return cmd_render(cfg, target, _args)
+    return cmd_render(cfg, target, args)
 
 
-def install_registered(cfg, target: Path) -> bool:
+def install_registered(cfg, target: Path, args=None) -> bool:
     """고정 사본을 깔고 등록한다. 등록이 거부되면 아무것도 바꾸지 않고 False."""
     dst = target / ".harness"
     # 아무것도 바꾸기 전에 등록을 가른다 — 거부되면 대상 리포와 등록부가 그대로여야 한다.
     claim = refuse_taken(cfg, target)
     if claim is None:
+        return False
+    # 사본을 바꾸기 전에 가른다. 판정은 설치하려는 이 CLI 의 템플릿과 설정으로 한다.
+    if refuse_user_files(cfg, target, args):
         return False
     if source_tree(target):
         # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
@@ -2294,6 +2362,15 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
     return before, lines[hit].strip()
 
 
+def revert_for_user_files(cfg, target: Path, args, conf: Path, original: str) -> bool:
+    """바꾼 설정의 render 가 사용자 파일로 멈출 것이면 설정을 되돌리고 True."""
+    if not refuse_user_files(cfg, target, args):
+        return False
+    conf.write_text(original, encoding="utf-8")
+    print("\nreverted — the config is unchanged", file=sys.stderr)
+    return True
+
+
 def cmd_set(_cfg, target, args):
     """`harness set <절.키> <값> [<절.키> <값> ...]` — 설정을 바꾸고 다시 렌더한다.
 
@@ -2321,6 +2398,8 @@ def cmd_set(_cfg, target, args):
     except SystemExit:
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    if revert_for_user_files(cfg, target, args, p, original):
         return 2
 
     for before, after in changes:
@@ -2615,6 +2694,8 @@ def rename_or_delete_workflow(cfg, target, args):
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
         return 2
+    if revert_for_user_files(cfg, target, args, p, original):
+        return 2
     notes = target / WORKFLOW_NOTES / ("%s.md" % wf)
     if new and notes.is_file():
         notes.rename(notes.with_name("%s.md" % new))
@@ -2683,6 +2764,8 @@ def cmd_steps(cfg, target, args):
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
         return 2
+    if revert_for_user_files(cfg, target, args, p, original):
+        return 2
     print("steps: workflows.%s — %d steps" % (wf, len(steps)))
     return cmd_render(cfg, target, args)
 
@@ -2717,6 +2800,8 @@ def cmd_checks(cfg, target, args):
     except SystemExit:
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    if revert_for_user_files(cfg, target, args, p, original):
         return 2
     print("checks: verify.checks — %d" % len(checks))
     return cmd_render(cfg, target, args)
@@ -3310,8 +3395,8 @@ def cmd_start_server(_cfg, _target, args):
 
 COMMANDS = {
     # 이름          (함수, 설정이 필요한가, 인수, 설명)
-    "install":   (None, True,  "[--target DIR]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
-    "render":    (None, True,  "[--target DIR]", "harness.toml + .ai/project/ -> generated files"),
+    "install":   (None, True,  "[--target DIR] [--adopt]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
+    "render":    (None, True,  "[--target DIR] [--adopt]", "harness.toml + .ai/project/ -> generated files"),
     "check":     (None, True,  "[--staged]", "verify generated files match the config"),
     "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, tools, hooks (--remote: also the remote, read-only; "
                   "--json: the items as JSON)"),
@@ -3417,6 +3502,8 @@ def main():
     ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
     ap.add_argument("--json", action="store_true", help="doctor: print the items as one JSON object")
     ap.add_argument("--remote", action="store_true", help="doctor, status: also check the remote, read-only")
+    ap.add_argument("--adopt", action="store_true",
+                    help="install, render, set, steps, checks: take over files the harness would write, keeping each as <path>.orig")
     ap.add_argument("-h", "--help", action="store_true")
     # 옵션 뒤에 오는 위치 인자도 args 에 모은다. 3.11 의 parse_args 는 `set --target X a.b v` 의
     # `a.b v` 를 받지 못하고 unrecognized arguments 로 멈춘다.
