@@ -1139,8 +1139,45 @@ def workflow_doc(cfg: dict, wf: str, target: Path = None) -> str:
     return substitute(STEP_REF.sub(ref, text), derive(cfg), "workflows.%s" % wf)
 
 
-def plan(cfg: dict, target: Path = None) -> list:
-    """생성되는 파일 전부. (경로, 내용, 권한)"""
+# forge 별 이슈 템플릿 — (설정의 라벨 키, 양식, GitHub 머리의 name, about)
+ISSUE_FORMS = (("requirement", "issue-requirement.md", "Requirement", "요구사항 이슈 — 브랜치 하나·리뷰 요청 하나의 단위"),
+               ("task", "issue-task.md", "Task", "단독 task 이슈. 분해의 task 는 sync-task-issues.sh 가 만든다"))
+
+
+def forge_templates(cfg: dict, at: Path = None) -> list:
+    """forge 가 읽는 이슈·리뷰 요청 템플릿. 본문은 `.ai/templates/` 양식 그대로이고 forge 가 읽는 머리·꼬리만 더한다.
+
+    forge 는 리포 루트의 템플릿만 읽으므로, 하네스 루트가 작업 트리 최상위가 아닌 서브프로젝트면 만들지 않는다.
+    """
+    if at is not None and repo_prefix(at):
+        return []
+    forms = TEMPLATES / "managed" / ".ai" / "templates"
+    labels = cfg["issues"]["labels"]
+    tracker, host = cfg["forge"]["tracker"], cfg["forge"]["review_host"]
+    out = []
+    for key, src, name, about in ISSUE_FORMS:
+        body = (forms / src).read_text(encoding="utf-8")
+        label = labels.get(key, "")
+        if tracker == "github":
+            head = "---\nname: %s\nabout: %s\ntitle: \"\"\nlabels: [%s]\n---\n\n" % (
+                name, about, json.dumps(label, ensure_ascii=False) if label else "")
+            out.append((".github/ISSUE_TEMPLATE/%s.md" % key, head + body, 0o644))
+        elif tracker == "gitlab":
+            tail = ("" if body.endswith("\n") else "\n") + "\n/label ~\"%s\"\n" % label if label else ""
+            out.append((".gitlab/issue_templates/%s.md" % name, body + tail, 0o644))
+    mr = (forms / "mr.md").read_text(encoding="utf-8")
+    if host == "github":
+        out.append((".github/pull_request_template.md", mr, 0o644))
+    elif host == "gitlab":
+        out.append((".gitlab/merge_request_templates/Default.md", mr, 0o644))
+    return out
+
+
+def plan(cfg: dict, target: Path = None, at: Path = None) -> list:
+    """생성되는 파일 전부. (경로, 내용, 권한)
+
+    at 은 본문 없이 경로만 셀 때의 하네스 루트다 — 리포 안의 위치에 따라 생기는 파일이 있다.
+    """
     v = derive(cfg)
     out = []
 
@@ -1163,6 +1200,7 @@ def plan(cfg: dict, target: Path = None) -> list:
     out += [(".claude/commands/%s.md" % wf, custom_command(wf, body.get("title") or wf), 0o644)
             for wf, body in sorted(cfg["workflows"].items()) if fragment(wf, "_head") is None]
     out += [(".ai/workflows/%s.md" % wf, workflow_doc(cfg, wf, target), 0o644) for wf in sorted(cfg["workflows"])]
+    out += forge_templates(cfg, target if target is not None else at)
     return sorted(out)
 
 
@@ -1312,13 +1350,13 @@ def role_file_skip(cfg: dict):
     return role_file_unused
 
 
-def harness_paths(cfg: dict) -> set:
+def harness_paths(cfg: dict, at: Path = None) -> set:
     """이번 render 가 쓸 관리 파일과 생성 파일의 경로. 소유 파일과 CI 골격은 없을 때만 까므로 들지 않는다."""
     skip = role_file_skip(cfg)
     src = TEMPLATES / "managed"
     out = {f.relative_to(src).as_posix() for f in src.rglob("*") if f.is_file()}
     out = {rel for rel in out if not skip(rel)}
-    return out | {rel for rel, _c, _m in plan(cfg)}
+    return out | {rel for rel, _c, _m in plan(cfg, at=at)}
 
 
 def seeded_paths(cfg: dict) -> set:
@@ -1343,8 +1381,8 @@ def user_files(cfg: dict, target: Path) -> list:
     """
     prev_gen, prev_man = set(previous(target, MANIFEST)), set(previous(target, MANIFEST_MANAGED))
     ours = prev_gen | prev_man
-    writes = harness_paths(cfg)
-    made = {rel for rel, _c, _m in plan(cfg)}
+    writes = harness_paths(cfg, target)
+    made = {rel for rel, _c, _m in plan(cfg, at=target)}
     found = {}
     seeded = seeded_paths(cfg)
     # 정리가 지울 옛 경로 — 지우기 전에 같은 방식으로 링크를 본다. 고정 사본은 정리하지 않는다

@@ -3466,6 +3466,93 @@ check "uninstall keeps another tool's value" "$(hp96 "$hk/other")" ".husky"
 cat "$work"/hk-*.out > "$work/hk-all.log"; no_hangul "$work/hk-all.log" "install hooks output"
 unset -f h96 hp96 hk_item
 
+echo "UT-97 render makes the forge's issue and review request templates from the .ai/templates forms and the issue labels"
+# 양식을 손으로 옮겨 두면 양식이 바뀔 때 템플릿만 옛 내용으로 남는다. 라벨이 설정과 다르면 사람이 만든 이슈가 라벨 없이 생긴다.
+labels97() { # labels97 <대상> <requirement> <task> <invalid> — 이슈 라벨 줄을 그 값으로 바꾼다
+  sedi "s|^labels = {.*}\$|labels = { requirement = \"$2\", task = \"$3\", invalid = \"$4\" }|" "$1/harness.toml"
+}
+t="$work/ftpl"; setup "$t"
+labels97 "$t" Req-pinned Task-pinned invalid-pinned
+"$root/bin/harness" set --target "$t" forge.tracker github forge.review_host github >/dev/null 2>&1; check "render with GitHub exits 0" "$?" "0"
+for f in .github/ISSUE_TEMPLATE/requirement.md .github/ISSUE_TEMPLATE/task.md .github/pull_request_template.md; do
+  [ -f "$t/$f" ] && ok || bad "GitHub template missing: $f"
+  grep -qxF "$f" "$t/.harness/generated" && ok || bad "GitHub template not in the manifest: $f"
+done
+check "the requirement template head" "$(sed -n 1,6p "$t/.github/ISSUE_TEMPLATE/requirement.md")" '---
+name: Requirement
+about: 요구사항 이슈 — 브랜치 하나·리뷰 요청 하나의 단위
+title: ""
+labels: ["Req-pinned"]
+---'
+check "the task template labels" "$(sed -n 5p "$t/.github/ISSUE_TEMPLATE/task.md")" 'labels: ["Task-pinned"]'
+check "a blank line follows the head" "$(sed -n 7p "$t/.github/ISSUE_TEMPLATE/task.md")" ""
+tail -n +8 "$t/.github/ISSUE_TEMPLATE/requirement.md" | cmp -s - "$t/.ai/templates/issue-requirement.md" && ok || bad "the requirement template body is not the form"
+tail -n +8 "$t/.github/ISSUE_TEMPLATE/task.md" | cmp -s - "$t/.ai/templates/issue-task.md" && ok || bad "the task template body is not the form"
+cmp -s "$t/.github/pull_request_template.md" "$t/.ai/templates/mr.md" && ok || bad "the pull request template is not mr.md"
+# 라벨을 바꾸면 따라 바뀐다. 빈 라벨은 빈 배열이다
+labels97 "$t" Req-pinned Work-changed invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render after a label change exits 0" "$?" "0"
+check "the task template follows the label" "$(sed -n 5p "$t/.github/ISSUE_TEMPLATE/task.md")" 'labels: ["Work-changed"]'
+labels97 "$t" "" Work-changed invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+check "an empty label is an empty list" "$(sed -n 5p "$t/.github/ISSUE_TEMPLATE/requirement.md")" 'labels: []'
+labels97 "$t" Req-pinned Work-changed invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+# 손대면 check 가 잡는다
+echo "hand edit" >> "$t/.github/pull_request_template.md"
+"$root/bin/harness" check --target "$t" > "$work/ftpl-check.log" 2>&1; check "check over an edited template exits 1" "$?" "1"
+has "$work/ftpl-check.log" ".github/pull_request_template.md" "check does not name the edited template"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+# 트래커와 리뷰 호스트는 따로 적용된다 — Jira 트래커는 이슈 템플릿이 없다
+"$root/bin/harness" set --target "$t" forge.tracker jira > "$work/ftpl-jira.log" 2>&1; check "render with a Jira tracker exits 0" "$?" "0"
+[ -f "$t/.github/pull_request_template.md" ] && ok || bad "the pull request template is gone with a Jira tracker"
+[ -e "$t/.github/ISSUE_TEMPLATE" ] && bad "issue templates are left with a Jira tracker" || ok
+# GitLab — 템플릿이 옮겨 가고 GitHub 의 것은 지워진다
+"$root/bin/harness" set --target "$t" forge.tracker gitlab forge.review_host gitlab >/dev/null 2>&1; check "render with GitLab exits 0" "$?" "0"
+for f in .gitlab/issue_templates/Requirement.md .gitlab/issue_templates/Task.md .gitlab/merge_request_templates/Default.md; do
+  [ -f "$t/$f" ] && ok || bad "GitLab template missing: $f"
+done
+[ -e "$t/.github/pull_request_template.md" ] && bad "the GitHub pull request template is left after moving to GitLab" || ok
+check "the GitLab requirement template ends with the label action" "$(tail -1 "$t/.gitlab/issue_templates/Requirement.md")" '/label ~"Req-pinned"'
+check "the GitLab task template ends with the label action" "$(tail -1 "$t/.gitlab/issue_templates/Task.md")" '/label ~"Work-changed"'
+python3 - "$t/.gitlab/issue_templates/Task.md" "$t/.ai/templates/issue-task.md" <<'PY' && ok || bad "the GitLab task template is not the form with one blank line and the label action"
+import sys
+a, b = (open(p, encoding="utf-8").read() for p in sys.argv[1:])
+sys.exit(0 if a == b + "\n" + '/label ~"Work-changed"\n' else 1)
+PY
+cmp -s "$t/.gitlab/merge_request_templates/Default.md" "$t/.ai/templates/mr.md" && ok || bad "the merge request template is not mr.md"
+labels97 "$t" Req-pinned "" invalid-pinned
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+cmp -s "$t/.gitlab/issue_templates/Task.md" "$t/.ai/templates/issue-task.md" && ok || bad "an empty label still added the label action"
+# 서브프로젝트는 만들지 않는다 — forge 는 리포 루트의 템플릿만 읽는다
+m="$work/ftpl-mono"; rm -rf "$m"; mkdir -p "$m/packages/tpl"; ( cd "$m" && git init -q . )
+HARNESS_HOME="$work/home97" "$root/bin/harness" install --target "$m/packages/tpl" >/dev/null 2>&1; check "install into a subproject exits 0" "$?" "0"
+[ -e "$m/packages/tpl/.github/ISSUE_TEMPLATE" ] || [ -e "$m/packages/tpl/.github/pull_request_template.md" ] \
+  && bad "a subproject made forge templates" || ok
+[ -e "$m/.github/ISSUE_TEMPLATE" ] && bad "a subproject wrote templates at the repository root" || ok
+"$root/bin/harness" check --target "$m/packages/tpl" >/dev/null 2>&1; check "a subproject's check passes without templates" "$?" "0"
+# 손으로 둔 템플릿은 덮지 않고 멈춘다. --adopt 면 옆으로 옮기고 넘겨받는다
+a="$work/ftpl-adopt"; rm -rf "$a"; mkdir -p "$a/.github"; cp "$root/templates/harness.toml" "$a/harness.toml"
+printf 'my own template\n' > "$a/.github/pull_request_template.md"
+"$root/bin/harness" render --target "$a" > "$work/ftpl-adopt.log" 2>&1; check "render over a hand-made template exits 2" "$?" "2"
+check "the hand-made template is untouched" "$(cat "$a/.github/pull_request_template.md")" "my own template"
+has "$work/ftpl-adopt.log" ".github/pull_request_template.md" "the refusal does not name the template"
+has "$work/ftpl-adopt.log" "--adopt" "the refusal does not mention --adopt"
+"$root/bin/harness" render --target "$a" --adopt > "$work/ftpl-adopt2.log" 2>&1; check "render --adopt exits 0" "$?" "0"
+check "the hand-made template moved aside" "$(cat "$a/.github/pull_request_template.md.orig")" "my own template"
+cmp -s "$a/.github/pull_request_template.md" "$a/.ai/templates/mr.md" && ok || bad "the adopted path is not the generated template"
+grep -qxF ".github/pull_request_template.md" "$a/.harness/generated" && ok || bad "the adopted template is not in the manifest"
+grep -qF ".orig" "$a/.harness/generated" "$a/.harness/managed" && bad "the .orig file is in a manifest" || ok
+has "$work/ftpl-adopt2.log" "render: adopted .github/pull_request_template.md — yours is at .github/pull_request_template.md.orig" "render --adopt does not say what it took over"
+# 제거 — 템플릿은 지우고 CI 골격은 남긴다
+[ -d "$a/.github/workflows" ] && ok || bad "the GitHub CI skeleton was not seeded"
+"$root/bin/harness" uninstall --target "$a" >/dev/null 2>&1; check "uninstall exits 0" "$?" "0"
+[ -e "$a/.github/pull_request_template.md" ] || [ -e "$a/.github/ISSUE_TEMPLATE" ] && bad "uninstall left a template" || ok
+[ -d "$a/.github/workflows" ] && ok || bad "uninstall removed the CI skeleton"
+[ -f "$a/.github/pull_request_template.md.orig" ] && ok || bad "uninstall removed the .orig file"
+cat "$work"/ftpl-*.log > "$work/ftpl-all.log"; no_hangul "$work/ftpl-all.log" "forge template output"
+unset -f labels97
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
