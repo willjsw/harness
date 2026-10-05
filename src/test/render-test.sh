@@ -664,6 +664,13 @@ check "check through the link" "$?" "0"
 echo "UT-26 a version pinned in the project wins over the global one"
 # 전역을 올릴 때마다 모든 프로젝트의 생성물이 바뀌면 그 리포의 검사가 한꺼번에 깨진다.
 echo "0.0.9" > "$t/.harness/VERSION"
+# 그 버전의 install 이 기록했을 해시로 맞춘다 — 사본을 손으로 고친 것이 아니라 옛 버전을 고정한 리포다
+python3 - "$t" <<'PY'
+import hashlib, pathlib, re, sys
+t = pathlib.Path(sys.argv[1]); m = t / ".harness/managed"
+h = hashlib.sha256((t / ".harness/VERSION").read_bytes()).hexdigest()
+m.write_text(re.sub(r"^[0-9a-f]{64}(  \.harness/VERSION)$", h + r"\1", m.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+PY
 out=$("$keg/bin/harness" check --target "$t" 2>&1)
 case "$out" in *0.0.9*) ok ;; *) bad "did not report that it defers to the pinned version" ;; esac
 # 넘긴 뒤에도 실제로 돌아야 한다
@@ -1771,8 +1778,11 @@ fi
 
 # 같은 이름의 두 설치가 동시에 돌면 하나만 등록되고 다른 하나는 거부된다.
 fresh
+# 판에서 하네스 파일을 남긴 채 매니페스트만 지우면 그 파일이 사용자 파일로 보인다 — 판마다 빈 리포에서 시작한다
+cp "$A/harness.toml" "$dup/twin.toml"
 race=0; for i in 1 2 3 4 5; do
-  rm -rf "$HARNESS_HOME"/twin* "$A/.harness" "$B/.harness"
+  rm -rf "$HARNESS_HOME"/twin*
+  mkrepo "$A"; mkrepo "$B"; cp "$dup/twin.toml" "$A/harness.toml"; cp "$dup/twin.toml" "$B/harness.toml"
   "$root/bin/harness" install --target "$A" >"$work/race-a.out" 2>&1 & pa=$!
   "$root/bin/harness" install --target "$B" >"$work/race-b.out" 2>&1 & pb=$!
   wait "$pa"; ca=$?; wait "$pb"; cb=$?
@@ -2832,6 +2842,450 @@ read-EIO fds closed once
 doctor-emfile remote warn reviewer runner \`codex\` could not check"
 cat "$work"/at-*.out "$work"/at-*.err > "$work/at-all.log"; no_hangul "$work/at-all.log" "run-agent.py --check output with a time limit"
 unset -f at_plan at_run
+
+echo "UT-87 user files and the project's own place: script/project/ is the project's, and a file the harness would write is not taken over silently"
+# 프로젝트 스크립트를 하네스 자리에 두면 갱신이 알림 없이 덮는다. 자리를 나누고, 겹치면 쓰기 전에 멈춘다.
+t="$work/own87"; rm -rf "$t"; mkdir -p "$t"
+( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1; check "install on a new repo" "$?" "0"
+cmp -s "$t/script/project/README.md" "$root/templates/owned/script/project/README.md" && ok \
+  || bad "install did not lay the project scripts README as its template"
+printf '| `deploy.sh` | the project deploys | by hand |\n' >> "$t/script/project/README.md"
+"$root/bin/harness" render --target "$t" >/dev/null
+has "$t/script/project/README.md" '`deploy.sh`' "render overwrote the project scripts README"
+"$root/bin/harness" status --target "$t" > "$work/own87-status.json" 2>&1
+python3 - "$work/own87-status.json" > "$work/own87-facts" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+print(" ".join(i["state"] for i in d["doctor"]["items"]
+               if i["section"] == "project facts" and i["what"] == "script/project/README.md"))
+PY
+check "doctor sees the project scripts README as filled in" "$(cat "$work/own87-facts")" "ok"
+"$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1; check "uninstall exit code" "$?" "0"
+[ -f "$t/script/project/README.md" ] && ok || bad "uninstall removed the project scripts README"
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1
+"$root/bin/harness" uninstall --target "$t" --purge --yes >/dev/null 2>&1; check "purge exit code" "$?" "0"
+[ -e "$t/script/project/README.md" ] && bad "--purge left the project scripts README" || ok
+# 하네스는 script/project/ 에 쓰지 않는다 — 관리 템플릿, 생성 템플릿, plan() 어느 쪽도
+( cd "$root/templates/managed" && find . -type f | sed 's|^\./||' ) > "$work/own87-paths"
+( cd "$root/templates/generated" && find . -type f | sed 's|^\./||' ) >> "$work/own87-paths"
+python3 - "$root/bin/harness" "$work/base" >> "$work/own87-paths" <<'PY'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+target = Path(sys.argv[2]).resolve()
+cfg = h.load(target); h.normalize(cfg); h.validate(cfg)
+for rel, _c, _m in h.plan(cfg, target):
+    print(rel)
+PY
+grep -q '^script/harness.env$' "$work/own87-paths" && ok || bad "the path list does not carry plan() paths"
+grep -q '^script/project/' "$work/own87-paths" && bad "the harness writes under script/project/: $(grep '^script/project/' "$work/own87-paths" | head -1)" || ok
+# 규칙 문서가 프로젝트 스크립트를 새 자리로 보낸다
+t="$work/base"
+python3 - "$t/.ai/AI_AGENT.md" > "$work/own87-canon" <<'PY'
+import re, sys
+s = open(sys.argv[1], encoding="utf-8").read()
+def chapter(n):
+    m = re.search(r"^## %d\. .*?(?=^## \d+\. |\Z)" % n, s, re.S | re.M)
+    return m.group(0) if m else ""
+print("3", "`script/project/README.md`" in chapter(3) and "`script/project/`" in chapter(3))
+print("9", "| `script/project/README.md` |" in chapter(9))
+print("10", re.search(r"^\| `script/project/` \| \*\*소유\*\*", chapter(10), re.M) is not None)
+PY
+check "the rule canon names script/project/ in chapters 3, 9 and 10" "$(cat "$work/own87-canon" | tr '\n' ' ')" "3 True 9 True 10 True "
+
+# 첫 설치의 겹침 — 사용자 파일이 있으면 아무것도 쓰지 않고 멈춘다
+u="$work/user87"; rm -rf "$u"; mkdir -p "$u/script"
+( cd "$u" && git init -q . )
+printf 'my own agent notes\n' > "$u/CLAUDE.md"; printf '#!/bin/sh\necho mine\n' > "$u/script/review-mr.sh"; chmod 755 "$u/script/review-mr.sh"
+"$root/bin/harness" install --target "$u" > "$work/u87-1.out" 2> "$work/u87-1.err"; check "install over user files" "$?" "2"
+for s in "CLAUDE.md" "script/review-mr.sh" "nothing was written" "harness install --adopt" "script/project/"; do
+  has "$work/u87-1.err" "$s" "the refusal does not name: $s"
+done
+check "the user CLAUDE.md is untouched" "$(cat "$u/CLAUDE.md")" "my own agent notes"
+check "the user script is untouched" "$(sed -n 2p "$u/script/review-mr.sh")" "echo mine"
+for f in .harness .ai/AI_AGENT.md script/project/README.md; do
+  [ -e "$u/$f" ] && bad "the refused install wrote $f" || ok
+done
+[ -e "$HARNESS_HOME/user87/project.json" ] && bad "the refused install registered the project" || ok
+# 넘겨받기 — 원래 파일은 <경로>.orig 로 남고 매니페스트에는 들지 않는다
+"$root/bin/harness" install --target "$u" --adopt > "$work/u87-2.out" 2> "$work/u87-2.err"; check "install --adopt" "$?" "0"
+check "CLAUDE.md.orig keeps the user's content" "$(cat "$u/CLAUDE.md.orig")" "my own agent notes"
+check "script/review-mr.sh.orig keeps the user's content" "$(sed -n 2p "$u/script/review-mr.sh.orig")" "echo mine"
+[ -x "$u/script/review-mr.sh.orig" ] && ok || bad "the moved user script lost its mode"
+grep -qx 'CLAUDE.md' "$u/.harness/generated" && ok || bad "the adopted CLAUDE.md is not in the manifest"
+grep -q '  script/review-mr.sh$' "$u/.harness/managed" && ok || bad "the adopted script is not in the manifest"
+cat "$u/.harness/generated" "$u/.harness/managed" | grep -q '\.orig$' && bad "an .orig file landed in a manifest" || ok
+check "one adopted line per file" "$(grep -c '^render: adopted ' "$work/u87-2.out")" "2"
+has "$work/u87-2.out" "render: adopted script/review-mr.sh — yours is at script/review-mr.sh.orig" "the adopted line does not say where the user's file went"
+# 넘겨받을 수 없음 — .orig 가 이미 있거나 경로에 디렉터리가 있으면 --adopt 여도 멈춘다
+u2="$work/user87b"; rm -rf "$u2"; mkdir -p "$u2"; ( cd "$u2" && git init -q . )
+printf 'mine\n' > "$u2/CLAUDE.md"; printf 'older\n' > "$u2/CLAUDE.md.orig"
+"$root/bin/harness" install --target "$u2" --adopt > "$work/u87-3.out" 2> "$work/u87-3.err"; check "adopt where .orig already exists" "$?" "2"
+has "$work/u87-3.err" "(CLAUDE.md.orig already exists)" "the refusal does not say the .orig already exists"
+check "CLAUDE.md is untouched" "$(cat "$u2/CLAUDE.md")" "mine"
+check "CLAUDE.md.orig is untouched" "$(cat "$u2/CLAUDE.md.orig")" "older"
+[ -e "$u2/.harness" ] && bad "the refused adopt wrote .harness/" || ok
+u3="$work/user87c"; rm -rf "$u3"; mkdir -p "$u3/CLAUDE.md"; ( cd "$u3" && git init -q . )
+"$root/bin/harness" install --target "$u3" --adopt > "$work/u87-4.out" 2> "$work/u87-4.err"; check "adopt where a directory sits" "$?" "2"
+has "$work/u87-4.err" "CLAUDE.md (a directory)" "the refusal does not say the path is a directory"
+[ -d "$u3/CLAUDE.md" ] && [ ! -e "$u3/CLAUDE.md.orig" ] && [ ! -e "$u3/.harness" ] && ok || bad "the refused adopt changed something"
+# 재설치 — 매니페스트가 남아 하네스 파일은 사용자 파일이 아니다. 고친 관리 파일은 덮인다
+printf '\n# edited by hand\n' >> "$u/script/review-mr.sh"
+"$root/bin/harness" install --target "$u" > "$work/u87-5.out" 2> "$work/u87-5.err"; check "reinstall" "$?" "0"
+hasnt "$u/script/review-mr.sh" "# edited by hand" "reinstall did not put the managed file back"
+# 하네스가 쓰지 않는 이름의 프로젝트 스크립트는 그대로다
+printf '#!/bin/sh\necho deploy\n' > "$u/script/deploy.sh"
+"$root/bin/harness" render --target "$u" > "$work/u87-6.out" 2> "$work/u87-6.err"; check "render beside a project script" "$?" "0"
+check "the project script is untouched" "$(sed -n 2p "$u/script/deploy.sh")" "echo deploy"
+"$root/bin/harness" status --target "$u" > "$work/u87-6.json" 2>> "$work/u87-6.err"
+python3 - "$work/u87-6.json" > "$work/u87-6.items" <<'PY'
+import json, sys
+print(" ".join(i["state"] for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]
+               if i["section"] == "managed files"))
+PY
+check "a project script raises nothing in the managed files section" "$(cat "$work/u87-6.items")" "ok"
+# 설정을 바꾸는 명령 — render 가 사용자 파일로 멈추면 설정을 되돌린다
+cp "$u/harness.toml" "$work/u87-before.toml"
+mkdir -p "$u/.claude/commands"; printf 'my ship command\n' > "$u/.claude/commands/ship.md"
+"$root/bin/harness" steps --target "$u" ship '{"title":"ship it","steps":[{"id":"a","type":"gate","title":"t"}]}' \
+  > "$work/u87-7.out" 2> "$work/u87-7.err"; check "steps over a user command" "$?" "2"
+has "$work/u87-7.err" "reverted — the config is unchanged" "steps did not say it reverted"
+has "$work/u87-7.err" "harness steps --adopt" "the refusal does not name the command that was run"
+cmp -s "$u/harness.toml" "$work/u87-before.toml" && ok || bad "steps left the config changed"
+check "the user command is untouched" "$(cat "$u/.claude/commands/ship.md")" "my ship command"
+mkdir -p "$u/docs/decisions"; printf 'my decisions\n' > "$u/docs/decisions/README.md"
+"$root/bin/harness" set --target "$u" adr.dir docs/decisions > "$work/u87-8.out" 2> "$work/u87-8.err"; check "set over a user file" "$?" "2"
+has "$work/u87-8.err" "reverted — the config is unchanged" "set did not say it reverted"
+has "$work/u87-8.err" "docs/decisions/README.md" "the set refusal does not name the user file"
+cmp -s "$u/harness.toml" "$work/u87-before.toml" && ok || bad "set left the config changed"
+# render 도 무엇이든 쓰기 전에 멈춘다 — 지운 소유 파일을 다시 깔지 않고 매니페스트도 그대로다
+python3 - "$u/harness.toml" <<'PY'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
+m = re.search(r"^\[adr\]\s*$", s, re.M); n = re.search(r"^\[", s[m.end():], re.M)
+end = m.end() + (n.start() if n else len(s) - m.end())
+p.write_text(s[:m.end()] + re.sub(r"^dir = .*$", 'dir = "docs/decisions"', s[m.end():end], count=1, flags=re.M) + s[end:], encoding="utf-8")
+PY
+rm -f "$u/docs/spec/README.md"; cp "$u/.harness/managed" "$work/u87-mf"
+"$root/bin/harness" render --target "$u" > "$work/u87-9.out" 2> "$work/u87-9.err"; check "render over a user file" "$?" "2"
+has "$work/u87-9.err" "docs/decisions/README.md" "the render refusal does not name the user file"
+[ -e "$u/docs/spec/README.md" ] && bad "the refused render laid an owned file" || ok
+cmp -s "$u/.harness/managed" "$work/u87-mf" && ok || bad "the refused render rewrote the manifest"
+# .harness 가 심볼릭 링크면 사본을 갈아 끼우지 않는다 — 링크 너머의 파일을 지우게 된다
+ln87="$work/link87"; out87="$work/link87-outside"; rm -rf "$ln87" "$out87"; mkdir -p "$ln87" "$out87/keep-dir"
+( cd "$ln87" && git init -q . )
+printf 'outside\n' > "$out87/keep.txt"; printf 'nested\n' > "$out87/keep-dir/nested.txt"
+ln -s "$out87" "$ln87/.harness"
+"$root/bin/harness" install --target "$ln87" > "$work/u87-10.out" 2> "$work/u87-10.err"; check "install through a symlinked .harness" "$?" "2"
+has "$work/u87-10.err" "  --> .harness (a symbolic link)" "the refusal does not say .harness is a symbolic link"
+check "the link target's file is kept" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
+check "the link target's nested file is kept" "$(cat "$out87/keep-dir/nested.txt" 2>/dev/null)" "nested"
+[ -e "$out87/bin" ] && bad "the refused install wrote into the link target" || ok
+[ -e "$HARNESS_HOME/link87/project.json" ] && bad "the refused install registered the project" || ok
+"$root/bin/harness" install --target "$ln87" --adopt > "$work/u87-11.out" 2> "$work/u87-11.err"; check "install --adopt through a symlinked .harness" "$?" "2"
+check "the link target survives --adopt" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
+# 설치된 리포의 .harness 를 링크로 바꿔도 같다
+cp -R "$u/.harness" "$out87/pinned"; rm -rf "$u/.harness.bak"; mv "$u/.harness" "$u/.harness.bak"; ln -s "$out87/pinned" "$u/.harness"
+"$root/bin/harness" install --target "$u" > "$work/u87-12.out" 2> "$work/u87-12.err"; check "reinstall through a symlinked .harness" "$?" "2"
+[ -f "$out87/pinned/bin/harness" ] && [ -f "$out87/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
+rm "$u/.harness"; mv "$u/.harness.bak" "$u/.harness"
+# 쓸 경로의 부모가 파일이면 무엇이든 쓰기 전에 멈춘다 — 소유 파일의 부모도 본다
+pf87="$work/parent87"; rm -rf "$pf87"; mkdir -p "$pf87"; ( cd "$pf87" && git init -q . )
+printf 'not a dir\n' > "$pf87/script"
+"$root/bin/harness" install --target "$pf87" > "$work/u87-13.out" 2> "$work/u87-13.err"; check "install where script is a file" "$?" "2"
+has "$work/u87-13.err" "  --> script (not a directory)" "the refusal does not name the parent that is a file"
+check "the user file named script is untouched" "$(cat "$pf87/script")" "not a dir"
+for f in .harness .ai/AI_AGENT.md .ai/project/scope.md; do
+  [ -e "$pf87/$f" ] && bad "the refused install wrote $f" || ok
+done
+[ -e "$HARNESS_HOME/parent87/project.json" ] && bad "the refused install registered the project" || ok
+# 매니페스트에 있던 관리 파일 자리에 디렉터리가 생겨도 쓰기 전에 멈춘다
+rm "$u/script/review-mr.sh"; mkdir "$u/script/review-mr.sh"; cp "$u/.harness/managed" "$work/u87-mf2"
+"$root/bin/harness" render --target "$u" > "$work/u87-14.out" 2> "$work/u87-14.err"; check "render where a managed file became a directory" "$?" "2"
+has "$work/u87-14.err" "  --> script/review-mr.sh (a directory)" "the refusal does not say the managed path is a directory"
+cmp -s "$u/.harness/managed" "$work/u87-mf2" && ok || bad "the refused render rewrote the manifest"
+rmdir "$u/script/review-mr.sh"
+# 링크를 따라 쓰지 않는다 — 매니페스트에 있는 관리 파일이 바깥 파일 링크로 바뀌어도, 부모가 바깥 디렉터리 링크여도
+sl87="$work/symlink87"; so87="$work/symlink87-outside"; rm -rf "$sl87" "$so87"; mkdir -p "$sl87" "$so87/dir"
+( cd "$sl87" && git init -q . )
+"$root/bin/harness" install --target "$sl87" >/dev/null 2>&1 || bad "could not install the symlink repo"
+printf 'outside file\n' > "$so87/file.sh"
+rm "$sl87/script/review-mr.sh"; ln -s "$so87/file.sh" "$sl87/script/review-mr.sh"; cp "$sl87/.harness/managed" "$work/u87-mf3"
+"$root/bin/harness" render --target "$sl87" > "$work/u87-15.out" 2> "$work/u87-15.err"; check "render where a managed file became a link outside" "$?" "2"
+has "$work/u87-15.err" "  --> script/review-mr.sh (a symbolic link)" "the refusal does not say the managed path is a symbolic link"
+check "the file behind the link is untouched" "$(cat "$so87/file.sh")" "outside file"
+cmp -s "$sl87/.harness/managed" "$work/u87-mf3" && ok || bad "the refused render rewrote the manifest"
+"$root/bin/harness" install --target "$sl87" --adopt > "$work/u87-16.out" 2> "$work/u87-16.err"; check "reinstall --adopt over the link" "$?" "2"
+check "the file behind the link survives the reinstall" "$(cat "$so87/file.sh")" "outside file"
+rm "$sl87/script/review-mr.sh"; "$root/bin/harness" render --target "$sl87" >/dev/null 2>&1 || bad "could not restore the symlink repo"
+printf 'outside nested\n' > "$so87/dir/keep.txt"
+mv "$sl87/script" "$sl87/script.real"; ln -s "$so87/dir" "$sl87/script"
+"$root/bin/harness" render --target "$sl87" > "$work/u87-17.out" 2> "$work/u87-17.err"; check "render where script is a link to a directory outside" "$?" "2"
+has "$work/u87-17.err" "  --> script (a symbolic link)" "the refusal does not say the parent is a symbolic link"
+check "the directory behind the link keeps its file" "$(cat "$so87/dir/keep.txt")" "outside nested"
+check "nothing was written behind the link" "$(ls "$so87/dir" | tr '\n' ' ')" "keep.txt "
+# 정리·제거·넘겨받기·설정 씨앗·사본 걷기도 링크를 따라가지 않는다 — 무엇이든 쓰거나 지우기 전에 멈춘다
+lk87="$work/linkall87"; lo87="$work/linkall87-outside"; rm -rf "$lk87" "$lo87"; mkdir -p "$lk87" "$lo87"
+( cd "$lk87" && git init -q . )
+"$root/bin/harness" install --target "$lk87" >/dev/null 2>&1 || bad "could not install the link repo"
+[ -f "$lk87/docs/adr/README.md" ] && ok || bad "the decision-record README was not installed"
+mv "$lk87/docs/adr" "$lo87/adr"; ln -s "$lo87/adr" "$lk87/docs/adr"
+cp "$lk87/harness.toml" "$work/u87-lk.toml"; cp "$lk87/.harness/managed" "$work/u87-lk.mf"; cp "$lk87/.harness/generated" "$work/u87-lk.gen"
+# 정리가 지울 옛 경로의 부모가 링크
+"$root/bin/harness" set --target "$lk87" adr.dir docs/decisions > "$work/u87-18.out" 2> "$work/u87-18.err"; check "set whose prune would go through a link" "$?" "2"
+has "$work/u87-18.err" "  --> docs/adr (a symbolic link)" "the refusal does not name the linked directory prune would remove from"
+has "$work/u87-18.err" "reverted — the config is unchanged" "set did not revert"
+[ -f "$lo87/adr/README.md" ] && ok || bad "prune removed the README behind the link"
+cmp -s "$lk87/harness.toml" "$work/u87-lk.toml" && ok || bad "set left the config changed"
+cmp -s "$lk87/.harness/managed" "$work/u87-lk.mf" && cmp -s "$lk87/.harness/generated" "$work/u87-lk.gen" && ok || bad "the refused set rewrote a manifest"
+[ -e "$lk87/docs/decisions" ] && bad "the refused set wrote the new decision-record directory" || ok
+# 제거가 지울 경로의 부모가 링크
+"$root/bin/harness" uninstall --target "$lk87" > "$work/u87-19.out" 2> "$work/u87-19.err"; check "uninstall through a link" "$?" "2"
+has "$work/u87-19.err" "  --> docs/adr" "the uninstall refusal does not name the link"
+has "$work/u87-19.err" "nothing was removed" "the uninstall refusal does not say nothing was removed"
+[ -f "$lo87/adr/README.md" ] && ok || bad "uninstall removed the README behind the link"
+[ -f "$lk87/CLAUDE.md" ] && [ -d "$lk87/.harness" ] && ok || bad "the refused uninstall removed harness files"
+rm "$lk87/docs/adr"; mv "$lo87/adr" "$lk87/docs/adr"
+# --purge 가 지울 소유 파일의 부모가 링크
+mv "$lk87/.ai/project" "$lo87/project"; ln -s "$lo87/project" "$lk87/.ai/project"
+"$root/bin/harness" uninstall --target "$lk87" --purge --yes > "$work/u87-20.out" 2> "$work/u87-20.err"; check "uninstall --purge through a linked owned directory" "$?" "2"
+[ -f "$lo87/project/scope.md" ] && ok || bad "--purge removed an owned file behind the link"
+rm "$lk87/.ai/project"; mv "$lo87/project" "$lk87/.ai/project"
+# 넘겨받을 사용자 파일이 링크면 옮기지 않는다
+ad87="$work/adoptlink87"; rm -rf "$ad87"; mkdir -p "$ad87"; ( cd "$ad87" && git init -q . )
+printf 'my notes outside\n' > "$lo87/notes.md"; ln -s "$lo87/notes.md" "$ad87/CLAUDE.md"
+"$root/bin/harness" install --target "$ad87" --adopt > "$work/u87-21.out" 2> "$work/u87-21.err"; check "install --adopt over a linked user file" "$?" "2"
+has "$work/u87-21.err" "  --> CLAUDE.md (a symbolic link)" "the refusal does not say the user file is a link"
+check "the file behind the link is untouched" "$(cat "$lo87/notes.md")" "my notes outside"
+[ -L "$ad87/CLAUDE.md" ] && [ ! -e "$ad87/CLAUDE.md.orig" ] && ok || bad "the refused adopt moved the link"
+# 대상이 없는 harness.toml 링크를 따라 기본 설정을 쓰지 않는다
+sd87="$work/seedlink87"; rm -rf "$sd87"; mkdir -p "$sd87"; ( cd "$sd87" && git init -q . )
+ln -s "$lo87/seeded.toml" "$sd87/harness.toml"
+"$root/bin/harness" install --target "$sd87" > "$work/u87-22.out" 2> "$work/u87-22.err"; check "install over a dangling harness.toml link" "$?" "2"
+has "$work/u87-22.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
+[ -e "$lo87/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
+# 소스 리포가 옛 사본을 걷을 때 .harness/ 아래 링크는 링크만 걷는다
+src87="$work/source87"; rm -rf "$src87"; mkdir -p "$src87/src/bin" "$lo87/oldbin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src87/src/bin/"; cp -R "$root/templates" "$src87/src/templates"
+( cd "$src87" && git init -q . )
+printf 'outside bin\n' > "$lo87/oldbin/keep"; mkdir -p "$src87/.harness"; ln -s "$lo87/oldbin" "$src87/.harness/bin"
+"$src87/src/bin/harness" install --target "$src87" > "$work/u87-23.out" 2> "$work/u87-23.err"; check "install on a source tree with a linked .harness/bin" "$?" "0"
+check "the directory behind the old copy's link keeps its file" "$(cat "$lo87/oldbin/keep" 2>/dev/null)" "outside bin"
+[ -e "$src87/.harness/bin" ] && bad "the old copy's link was not cleared" || ok
+cat "$work"/u87-*.out "$work"/u87-*.err > "$work/u87-all.log"; no_hangul "$work/u87-all.log" "user file refusal output"
+
+echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
+# 경로만 적힌 매니페스트로는 관리 파일과 고정 사본이 설치 뒤 바뀌었는지 알 수 없다.
+t="$work/mf88"; rm -rf "$t"; mkdir -p "$t"
+( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1; check "install on a new repo" "$?" "0"
+python3 - "$t/.harness/managed" > "$work/mf88-form" <<'PY'
+import re, sys
+lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
+assert lines[-1] == "", "the manifest does not end with a newline"
+lines = lines[:-1]
+paths = [ln[66:] for ln in lines]
+print(all(re.fullmatch(r"[0-9a-f]{64}  .+", ln) for ln in lines), paths == sorted(paths))
+print(" ".join(p for p in ("script/review-mr.sh", ".harness/bin/harness", ".harness/VERSION",
+                           ".harness/templates/harness.toml") if p in paths))
+print(sum("__pycache__" in p for p in paths))
+PY
+check "every line is a sha256 and a path, in path order" "$(sed -n 1p "$work/mf88-form")" "True True"
+check "managed files and the pinned copy are listed" "$(sed -n 2p "$work/mf88-form")" \
+  "script/review-mr.sh .harness/bin/harness .harness/VERSION .harness/templates/harness.toml"
+check "no bytecode is listed" "$(sed -n 3p "$work/mf88-form")" "0"
+( cd "$t" && shasum -a 256 -c .harness/managed >/dev/null 2>&1 ); check "shasum -a 256 -c reads the manifest" "$?" "0"
+line_of() { grep -F "  $2" "$1/.harness/managed" | cut -c1-64; }
+old_form() { # old_form <리포> — 매니페스트를 해시 없는 경로 목록(옛 형식)으로 바꾼다
+  python3 - "$1/.harness/managed" <<'PY'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+p.write_text(re.sub(r"^[0-9a-f]{64}  ", "", p.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+PY
+  grep -qE '^[0-9a-f]{64}  ' "$1/.harness/managed" && bad "$1: the manifest still has hashes" || ok
+}
+pin_before=$(line_of "$t" ".harness/templates/harness.toml")
+printf '\n# edited by hand\n' >> "$t/.harness/templates/harness.toml"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+check "render does not hash the pinned copy again" "$(line_of "$t" ".harness/templates/harness.toml")" "$pin_before"
+# 설정을 바꿔 정리가 돌아도 고정 사본은 남는다
+"$root/bin/harness" set --target "$t" branches.base trunk >/dev/null 2>&1; check "set exit code" "$?" "0"
+[ -f "$t/.harness/bin/harness" ] && ok || bad "pruning removed the pinned copy"
+# 재설치는 매니페스트를 남기고 사본 줄만 새 사본의 것으로 바꾼다
+review_before=$(line_of "$t" "script/review-mr.sh")
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1; check "reinstall exit code" "$?" "0"
+[ -f "$t/.harness/generated" ] && [ -f "$t/.harness/managed" ] && ok || bad "reinstall dropped a manifest"
+check "a managed file line survives the reinstall" "$(line_of "$t" "script/review-mr.sh")" "$review_before"
+( cd "$t" && shasum -a 256 -c .harness/managed >/dev/null 2>&1 ); check "the pinned lines are the new copy's" "$?" "0"
+# 옛 형식(경로 목록)을 읽어 정리하고, 다음 render 가 새 형식으로 쓴다
+old_form "$t"
+[ -f "$t/.ai/templates/security-guard.md" ] && ok || bad "the role's contract was not installed"
+python3 - "$t/harness.toml" <<'DROP'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+p.write_text(re.sub(r"\n\[roles\.security-guard\][^\[]*", "\n", p.read_text(encoding="utf-8")), encoding="utf-8")
+DROP
+"$root/bin/harness" render --target "$t" > "$work/mf88-old.out" 2>&1; check "render over an old manifest" "$?" "0"
+[ -e "$t/.ai/templates/security-guard.md" ] && bad "an old manifest did not prune the dropped contract" || ok
+grep -qvE '^[0-9a-f]{64}  .+$' "$t/.harness/managed" && bad "render left the manifest in the old form" || ok
+# 소스 리포는 사본이 없다 — 사본 줄을 쓰지 않는다
+src="$work/source88"; rm -rf "$src"; mkdir -p "$src/src/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
+( cd "$src" && git init -q . )
+"$src/src/bin/harness" install --target "$src" >/dev/null 2>&1; check "install on the source tree" "$?" "0"
+grep -q '  \.harness/' "$src/.harness/managed" && bad "the source tree's manifest lists a pinned copy" || ok
+grep -q '  script/review-mr.sh$' "$src/.harness/managed" && ok || bad "the source tree's manifest lacks the managed files"
+
+# check 가 관리 파일과 고정 사본을 매니페스트와 대조한다
+c="$work/chk88"; rm -rf "$c"; mkdir -p "$c"; ( cd "$c" && git init -q . )
+"$root/bin/harness" install --target "$c" >/dev/null 2>&1 || bad "could not install the check repo"
+"$root/bin/harness" check --target "$c" > "$work/c88-0.out" 2> "$work/c88-0.err"; check "check right after install" "$?" "0"
+has "$work/c88-0.out" "managed files match the manifest" "a passing check does not report the managed files"
+printf '\n# edited by hand\n' >> "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-1.out" 2> "$work/c88-1.err"; check "check with an edited managed file" "$?" "1"
+grep -qE '^  script/review-mr.sh +modified managed file$' "$work/c88-1.err" && ok || bad "check does not name the edited managed file"
+has "$work/c88-1.err" "project scripts belong in script/project/" "the help does not point at script/project/"
+hasnt "$work/c88-1.err" "comes back with \`harness install\`" "only managed files changed, yet the help names harness install"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+"$root/bin/harness" check --target "$c" > "$work/c88-2.out" 2> "$work/c88-2.err"; check "check after render puts it back" "$?" "0"
+rm "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-3.out" 2> "$work/c88-3.err"; check "check with a missing managed file" "$?" "1"
+grep -qE '^  script/review-mr.sh +missing managed file$' "$work/c88-3.err" && ok || bad "check does not name the missing managed file"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+# 생성 파일과 관리 파일이 함께 어긋나면 둘 다 보고한다
+printf '\nedited\n' >> "$c/AGENTS.md"; printf '\n# edited\n' >> "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-4.out" 2> "$work/c88-4.err"; check "check with both kinds of drift" "$?" "1"
+has "$work/c88-4.err" "generated files do not match the config" "the generated drift is not reported beside the managed one"
+has "$work/c88-4.err" "managed files differ from what the harness installed" "the managed drift is not reported beside the generated one"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+# staged — 인덱스의 내용과 비교한다
+( cd "$c" && git add -A ) || bad "could not stage the check repo"
+"$root/bin/harness" check --target "$c" --staged > "$work/c88-5.out" 2> "$work/c88-5.err"; check "check --staged on a clean index" "$?" "0"
+printf '\n# edited\n' >> "$c/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" --staged > "$work/c88-6.out" 2> "$work/c88-6.err"; check "check --staged with an unstaged edit" "$?" "0"
+( cd "$c" && git add script/review-mr.sh )
+"$root/bin/harness" check --target "$c" --staged > "$work/c88-7.out" 2> "$work/c88-7.err"; check "check --staged with a staged edit" "$?" "1"
+has "$work/c88-7.err" "script/review-mr.sh" "check --staged does not name the staged managed file"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1; ( cd "$c" && git add -A )
+# 고정 사본 — render 는 되돌리지 않는다. install 이 되돌린다
+printf '\n# edited by hand\n' >> "$c/.harness/templates/managed/script/review-mr.sh"
+"$root/bin/harness" check --target "$c" > "$work/c88-8.out" 2> "$work/c88-8.err"; check "check with an edited pinned copy" "$?" "1"
+has "$work/c88-8.err" ".harness/templates/managed/script/review-mr.sh" "check does not name the edited pinned file"
+has "$work/c88-8.err" "comes back with \`harness install\`" "the help does not name harness install for the pinned copy"
+"$root/bin/harness" render --target "$c" >/dev/null 2>&1
+"$root/bin/harness" check --target "$c" > "$work/c88-9.out" 2> "$work/c88-9.err"; check "check after render, pinned copy still edited" "$?" "1"
+"$root/bin/harness" install --target "$c" >/dev/null 2>&1
+"$root/bin/harness" check --target "$c" > "$work/c88-10.out" 2> "$work/c88-10.err"; check "check after install restores the copy" "$?" "0"
+# 옛 형식 매니페스트는 비교할 해시가 없다
+old_form "$c"
+"$root/bin/harness" check --target "$c" > "$work/c88-11.out" 2> "$work/c88-11.err"; check "check over an old manifest" "$?" "0"
+has "$work/c88-11.out" "check: 0 managed files match the manifest" "an old manifest was compared"
+cat "$work"/c88-*.out "$work"/c88-*.err > "$work/c88-all.log"; no_hangul "$work/c88-all.log" "managed file check output"
+
+# doctor 의 관리 파일 절 — harness status 의 doctor.items 로 본다
+mitems() { # mitems <리포> — 관리 파일 절의 항목을 한 줄에 하나 `state|what|detail` 로 찍는다
+  "$root/bin/harness" status --target "$1" > "$work/mi.json" 2>> "$work/mi-all.log"
+  python3 - "$work/mi.json" <<'PY'
+import json, sys
+for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]:
+    if i["section"] == "managed files":
+        print("%s|%s|%s" % (i["state"], i["what"], i["detail"]))
+PY
+}
+d="$work/doc88"; rm -rf "$d" "$work/mi-all.log"; mkdir -p "$d"; ( cd "$d" && git init -q . )
+"$root/bin/harness" install --target "$d" >/dev/null 2>&1 || bad "could not install the doctor repo"
+n_hashed=$(grep -c . "$d/.harness/managed")
+check "right after install the section is one ok item" "$(mitems "$d")" "ok|$n_hashed managed files match the manifest|"
+"$root/bin/harness" status --target "$d" > "$work/mi.json" 2>/dev/null
+python3 - "$work/mi.json" > "$work/mi-order" <<'PY'
+import json, sys
+secs = list(dict.fromkeys(i["section"] for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]))
+print(secs[secs.index("generated files") + 1])
+PY
+check "the section comes right after generated files" "$(cat "$work/mi-order")" "managed files"
+printf '\n# edited\n' >> "$d/script/review-mr.sh"
+check "an edited managed file is a bad item" "$(mitems "$d")" "bad|modified managed file|script/review-mr.sh"
+"$root/bin/harness" render --target "$d" >/dev/null 2>&1
+rm "$d/script/review-mr.sh"
+check "a missing managed file is a bad item" "$(mitems "$d")" "bad|missing managed file|script/review-mr.sh"
+"$root/bin/harness" render --target "$d" >/dev/null 2>&1
+for f in $(sed -E 's/^[0-9a-f]{64}  //' "$d/.harness/managed" | grep '^script/' | head -11); do printf '\n# edited\n' >> "$d/$f"; done
+mitems "$d" > "$work/mi-11"
+check "eleven edited files show ten paths" "$(grep -c '^bad|modified managed file|script/' "$work/mi-11")" "10"
+grep -qx 'bad|1 more modified or missing managed file(s)|' "$work/mi-11" && ok || bad "the eleventh file is not summed up: $(tail -1 "$work/mi-11")"
+"$root/bin/harness" render --target "$d" >/dev/null 2>&1
+old_form "$d"
+n_managed=$(grep -vc '^\.harness/' "$d/.harness/managed")
+mitems "$d" > "$work/mi-old"
+grep -qx "warn|$n_managed managed files have no recorded hash|run \`harness render\`" "$work/mi-old" && ok || bad "an old manifest is not reported: $(cat "$work/mi-old")"
+grep -qx "warn|the pinned copy has no recorded hash|run \`harness install\`" "$work/mi-old" && ok || bad "an old manifest's pinned copy is not reported"
+grep -q '^bad|' "$work/mi-old" && bad "an old manifest produced a bad item" || ok
+rm "$d/.harness/managed"
+check "without a manifest the section is one warn item" "$(mitems "$d")" "warn|no manifest of managed files|run \`harness render\`"
+no_hangul "$work/mi-all.log" "status output for managed files"
+
+echo "UT-89 the global CLI compares the pinned copy with its own files before it delegates, when the versions match"
+# 사본을 고치면 그 사본이 도는 검사가 모두 고친 기준으로 돈다. 리포 밖의 기준은 같은 버전의 전역 CLI 뿐이다.
+p="$work/pin89"; rm -rf "$p"; mkdir -p "$p"; ( cd "$p" && git init -q . )
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1 || bad "could not install the pinned repo"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-1.out" 2> "$work/p89-1.err"
+hasnt "$work/p89-1.err" "warning:" "an untouched copy raised a warning"
+hasnt "$work/p89-1.err" "cannot verify" "an untouched copy of the same version could not be verified"
+printf '\n# edited by hand\n' >> "$p/.harness/templates/managed/script/review-mr.sh"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-2.out" 2> "$work/p89-2.err"; rc_edit=$?
+has "$work/p89-2.err" "warning: the pinned harness differs" "an edited template raised no warning"
+has "$work/p89-2.err" "  --> .harness/templates/managed/script/review-mr.sh" "the warning does not name the edited template"
+has "$work/p89-2.err" "harness install --target" "the warning does not say how to restore the copy"
+# 경고는 넘기기를 막지 않는다. doctor 는 그 사본이 돈다 — 관리 파일 절이 그 변경을 실패로 센다
+check "doctor still runs through the pinned copy" "$( [ "$rc_edit" -le 1 ] && grep -q 'managed files' "$work/p89-2.out" && echo yes)" "yes"
+"$root/bin/harness" status --target "$p" > "$work/p89-3.out" 2> "$work/p89-3.err"; check "status exit code" "$?" "0"
+python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$work/p89-3.out"; check "status output is still JSON" "$?" "0"
+has "$work/p89-3.err" "warning: the pinned harness differs" "status raised no warning on stderr"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+printf '\n# edited\n' >> "$p/.harness/bin/harness"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-4.out" 2> "$work/p89-4.err"
+has "$work/p89-4.err" "  --> .harness/bin/harness" "an edited pinned CLI is not named"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+printf 'extra\n' > "$p/.harness/bin/extra.py"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-5.out" 2> "$work/p89-5.err"
+has "$work/p89-5.err" "  --> .harness/bin/extra.py" "a file only the copy has is not named"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+for f in $(cd "$p/.harness/templates/managed/script" && ls *.sh | head -11); do printf '\n# edited\n' >> "$p/.harness/templates/managed/script/$f"; done
+"$root/bin/harness" doctor --target "$p" > "$work/p89-6.out" 2> "$work/p89-6.err"
+check "ten files are named" "$(grep -c '^  --> ' "$work/p89-6.err")" "10"
+has "$work/p89-6.err" "  ... and 1 more" "the eleventh file is not summed up"
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1
+# 사본의 파일을 읽지 못하면 같다고 보지 않는다 — 대조하지 못했다고 알리고 넘긴다. root 는 권한을 무시하므로 만들 수 없다
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 "$p/.harness/templates/harness.toml"
+  "$root/bin/harness" schema --target "$p" > "$work/p89-10.out" 2> "$work/p89-10.err"
+  chmod 644 "$p/.harness/templates/harness.toml"
+  has "$work/p89-10.err" "warning: could not compare the pinned harness" "an unreadable pinned file passed as a match"
+  has "$work/p89-10.err" "  --> .harness/templates/harness.toml" "the warning does not name the unreadable file"
+  has "$work/p89-10.err" "harness install --target" "the warning does not say how to restore the copy"
+fi
+# 버전이 다르거나 없으면 비교하지 않는다
+echo "0.0.9" > "$p/.harness/VERSION"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-7.out" 2> "$work/p89-7.err"
+check "one cannot-verify line for another version" "$(grep -c 'cannot verify the pinned harness' "$work/p89-7.err")" "1"
+has "$work/p89-7.err" "the project pins 0.0.9" "the cannot-verify line does not name the pinned version"
+hasnt "$work/p89-7.err" "warning: the pinned harness differs" "another version was compared"
+rm "$p/.harness/VERSION"
+"$root/bin/harness" doctor --target "$p" > "$work/p89-8.out" 2> "$work/p89-8.err"
+has "$work/p89-8.err" "the project pins no version" "the cannot-verify line does not say there is no version"
+# 소스 리포는 사본이 없다 — 대조도 줄도 없다
+src="$work/source89"; rm -rf "$src"; mkdir -p "$src/src/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
+( cd "$src" && git init -q . )
+"$src/src/bin/harness" install --target "$src" >/dev/null 2>&1 || bad "could not install the source tree"
+"$root/bin/harness" doctor --target "$src" > "$work/p89-9.out" 2> "$work/p89-9.err"
+hasnt "$work/p89-9.err" "warning:" "the source tree raised a warning"
+hasnt "$work/p89-9.err" "cannot verify" "the source tree printed a cannot-verify line"
+cat "$work"/p89-*.out "$work"/p89-*.err > "$work/p89-all.log"; no_hangul "$work/p89-all.log" "pinned copy comparison output"
 
 echo "UT-95 a block that never finishes is stopped and named with what was still running, instead of hanging the run"
 # 어느 블록의 어느 명령이 멈추든 이 테스트 전체가 진행 없이 기다린다. 블록 감시가 그것을 실패와 위치로 바꾼다.

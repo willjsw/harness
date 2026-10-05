@@ -1166,6 +1166,27 @@ def plan(cfg: dict, target: Path = None) -> list:
     return sorted(out)
 
 
+def linked_component(root: Path, rel: str, last: bool = True):
+    """root 아래 rel 의 경로 성분 가운데 심볼릭 링크인 첫 것(root 기준 경로). 없으면 None.
+
+    root 자신과 그 위는 보지 않는다. last 가 거짓이면 마지막 성분(파일 자체)은 빼고 부모만 본다.
+    """
+    parts = rel.split("/")
+    for i in range(1, len(parts) + (1 if last else 0)):
+        head = "/".join(parts[:i])
+        if (root / head).is_symlink():
+            return head
+    return None
+
+
+def refuse_link(root: Path, rel: str, verb: str = "write"):
+    """쓰기·지우기·옮기기 직전의 방어 — 링크를 따라 리포 밖을 바꾸지 않는다. 사전 판정이 먼저 막고, 이것은 그 뒤에 바뀐 경우다."""
+    hit = linked_component(root, rel)
+    if hit:
+        die("error: refusing to %s through a symbolic link\n  --> %s\n\n"
+            "help: replace the link with a regular file or directory, then run the command again" % (verb, hit))
+
+
 def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None):
     """관리 파일은 덮어쓰고, 소유 파일은 없을 때만 깐다. (바뀐 수, 깐 경로 전부)"""
     n, paths = 0, []
@@ -1181,6 +1202,7 @@ def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None)
         out = dst / rel
         if only_if_absent and out.exists():
             continue
+        refuse_link(dst, rel)
         out.parent.mkdir(parents=True, exist_ok=True)
         text = f.read_text(encoding="utf-8")
         if subst is not None:
@@ -1203,19 +1225,66 @@ MANIFEST = ".harness/generated"
 MANIFEST_MANAGED = ".harness/managed"
 
 
-def previous(target: Path, name: str = MANIFEST) -> list:
+# `.harness/managed` 의 한 줄 — `sha256sum` 출력과 같은 `<sha256>  <경로>`. 맞지 않는 줄은 경로만 적던 옛 형식이다.
+MANIFEST_LINE = re.compile(r"([0-9a-f]{64})  (.+)")
+PINNED = ".harness/"
+
+
+def manifest_entries(target: Path, name: str = MANIFEST_MANAGED) -> list:
+    """매니페스트의 (경로, sha256) 짝. 옛 형식 줄의 해시는 None 이다. 매니페스트가 없으면 빈 목록."""
     p = target / name
-    return p.read_text(encoding="utf-8").split() if p.is_file() else []
+    if not p.is_file():
+        return []
+    out = []
+    for ln in p.read_text(encoding="utf-8").splitlines():
+        m = MANIFEST_LINE.fullmatch(ln)
+        if m:
+            out.append((m.group(2), m.group(1)))
+        elif ln.strip():
+            out.append((ln.strip(), None))
+    return out
+
+
+def previous(target: Path, name: str = MANIFEST) -> list:
+    return [rel for rel, _h in manifest_entries(target, name)]
+
+
+def sha256_of(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def write_manifest_hashes(target: Path, entries: dict):
+    """`.harness/managed` 를 경로 순의 `<sha256>  <경로>` 줄로 쓴다. 해시가 None 인 경로는 옛 형식 그대로 경로만 쓴다."""
+    refuse_link(target, MANIFEST_MANAGED)
+    (target / MANIFEST_MANAGED).write_text(
+        "".join(("%s  %s\n" % (entries[rel], rel)) if entries[rel] else rel + "\n" for rel in sorted(entries)),
+        encoding="utf-8")
+
+
+def pinned_files(root: Path) -> list:
+    """고정 사본의 파일 — `bin/` · `templates/` 아래 전부와 `VERSION`. `__pycache__/` 는 뺀다. root 기준 경로."""
+    out = []
+    for d in ("bin", "templates"):
+        for f in sorted((root / d).rglob("*")):
+            if f.is_file() and "__pycache__" not in f.relative_to(root).parts:
+                out.append(f.relative_to(root).as_posix())
+    if (root / "VERSION").is_file():
+        out.append("VERSION")
+    return out
 
 
 def prune(target: Path, keep: set, manifest: str) -> int:
-    """직전에 깔았으나 이번에는 만들지 않는 파일을 지운다. 빈 디렉터리도 함께 걷는다."""
+    """직전에 깔았으나 이번에는 만들지 않는 파일을 지운다. 빈 디렉터리도 함께 걷는다.
+
+    고정 사본(`.harness/`)은 install 의 것이라 지우지 않는다.
+    """
     n = 0
     for rel in previous(target, manifest):
-        if rel in keep:
+        if rel in keep or rel.startswith(PINNED):
             continue
         stale = target / rel
-        if stale.is_file():
+        if stale.is_file() or stale.is_symlink():
+            refuse_link(target, rel, "remove")
             stale.unlink()
             n += 1
             for d in stale.parents:
@@ -1229,22 +1298,135 @@ def ci_dir(cfg: dict) -> Path:
     return TEMPLATES / "ci" / cfg["forge"]["review_host"]
 
 
-def cmd_render(cfg, target, _args):
-    # 소유 파일을 먼저 깐다 — 생성물이 그 본문을 포함할 수 있다.
-    owned, _ = copy_tree(TEMPLATES / "owned", target, only_if_absent=True)
-    # CI 설정은 **있으면 손대지 않는다.** 프로젝트가 이미 갖고 있던 파이프라인을 덮으면
-    # 하네스 설치 한 번으로 빌드가 통째로 바뀐다. 없을 때만 최소 골격을 깐다.
-    owned += copy_tree(ci_dir(cfg), target, only_if_absent=True, subst=derive(cfg))[0]
-    # 쓰지 않는 역할의 계약은 깔지 않는다. 깔아 두면 설정에 없는 역할을 가리키는 문서가 남는다.
+def role_file_skip(cfg: dict):
+    """쓰지 않는 역할의 계약과 그 역할만 부르는 커맨드를 가르는 함수. 깔아 두면 설정에 없는 역할을 가리키는 문서가 남는다."""
     known = {f.stem for f in (TEMPLATES / "agents").glob("*.md")}
     unused = known - set(cfg["roles"])
+
     def role_file_unused(rel):
-        """쓰지 않는 역할의 계약과 그 역할만 부르는 커맨드는 깔지 않는다."""
         for pre in (".ai/templates/", ".claude/commands/"):
             if rel.startswith(pre) and rel.endswith(".md") \
                and rel[len(pre):-len(".md")] in unused:
                 return True
         return False
+    return role_file_unused
+
+
+def harness_paths(cfg: dict) -> set:
+    """이번 render 가 쓸 관리 파일과 생성 파일의 경로. 소유 파일과 CI 골격은 없을 때만 까므로 들지 않는다."""
+    skip = role_file_skip(cfg)
+    src = TEMPLATES / "managed"
+    out = {f.relative_to(src).as_posix() for f in src.rglob("*") if f.is_file()}
+    out = {rel for rel in out if not skip(rel)}
+    return out | {rel for rel, _c, _m in plan(cfg)}
+
+
+def seeded_paths(cfg: dict) -> set:
+    """없을 때만 까는 소유 파일과 CI 골격의 경로. 그 자체는 판정 대상이 아니지만 부모 디렉터리는 만들어야 한다."""
+    out = set()
+    for src in (TEMPLATES / "owned", ci_dir(cfg)):
+        if src.is_dir():
+            out |= {f.relative_to(src).as_posix() for f in src.rglob("*") if f.is_file()}
+    return out
+
+
+def user_files(cfg: dict, target: Path) -> list:
+    """하네스가 쓰지 못하거나 덮어선 안 되는 경로 — (경로, 넘겨받을 수 없는 사유 또는 None).
+
+    - 하네스가 쓸 경로에 이미 있으나 이전 매니페스트에 없는 것. 내용은 보지 않는다
+    - 쓸 경로에 디렉터리가 있는 것. 매니페스트에 있어도 덮을 수 없다
+    - 쓸 경로의 부모 가운데 디렉터리가 아닌 것. 소유 파일·CI 골격·매니페스트의 부모도 본다
+    - 쓸 경로와 그 부모 가운데 심볼릭 링크인 것 — 링크를 따라 쓰면 리포 밖의 파일이 바뀐다. 매니페스트에 있어도 같다.
+      `.harness` 가 링크면 사본을 갈아 끼울 때 링크 너머의 파일을 지운다. 하네스 루트 자신과 그 위는 보지 않는다
+    - 없을 때만 까는 경로가 대상이 없는 링크면 그 링크를 따라 새 파일을 만들게 되므로 같게 본다
+    - 정리(`prune`)가 지울 옛 경로와 그 부모 가운데 심볼릭 링크인 것 — 지우면 리포 밖의 파일이 사라진다
+    """
+    prev_gen, prev_man = set(previous(target, MANIFEST)), set(previous(target, MANIFEST_MANAGED))
+    ours = prev_gen | prev_man
+    writes = harness_paths(cfg)
+    made = {rel for rel, _c, _m in plan(cfg)}
+    found = {}
+    seeded = seeded_paths(cfg)
+    # 정리가 지울 옛 경로 — 지우기 전에 같은 방식으로 링크를 본다. 고정 사본은 정리하지 않는다
+    stale = {rel for rel in (prev_gen - made) | (prev_man - writes) if not rel.startswith(PINNED)}
+    for rel in sorted(stale):
+        hit = linked_component(target, rel)
+        if hit is not None and not any(hit == h or hit.startswith(h + "/") for h in found):
+            found[hit] = "a symbolic link"
+    if (target / PINNED.rstrip("/")).is_symlink():
+        found[PINNED.rstrip("/")] = "a symbolic link"
+    for rel in sorted(writes | seeded | {MANIFEST, MANIFEST_MANAGED}):
+        own = rel in writes or rel in (MANIFEST, MANIFEST_MANAGED)
+        hit = linked_component(target, rel, last=own)
+        if hit is None and not own and (target / rel).is_symlink() and not (target / rel).exists():
+            hit = rel
+        if hit is not None:
+            if not any(hit == h or hit.startswith(h + "/") for h in found):
+                found[hit] = "a symbolic link"
+            continue
+        parts = rel.split("/")
+        for i in range(1, len(parts)):
+            head = "/".join(parts[:i])
+            if head in found:
+                break
+            q = target / head
+            if os.path.lexists(q) and not q.is_dir():
+                found[head] = "not a directory"
+                break
+    for rel in sorted(writes):
+        p = target / rel
+        if rel in found or any(rel.startswith(h + "/") for h in found) or not os.path.lexists(p):
+            continue
+        if p.is_dir() and not p.is_symlink():
+            found[rel] = "a directory"
+        elif rel in ours:
+            continue
+        elif os.path.lexists(str(p) + ".orig"):
+            found[rel] = "%s.orig already exists" % rel
+        else:
+            found[rel] = None
+    return sorted(found.items())
+
+
+def refuse_user_files(cfg, target: Path, args) -> bool:
+    """사용자 파일이 있어 멈춰야 하면 안내문을 표준 오류로 내고 True. `--adopt` 로 모두 넘겨받을 수 있으면 False."""
+    found = user_files(cfg, target)
+    if not found or (getattr(args, "adopt", False) and all(why is None for _r, why in found)):
+        return False
+    cmd = getattr(args, "command", None) or "render"
+    print("error: %d file(s) the harness would write already exist and are not the harness's" % len(found),
+          file=sys.stderr)
+    for rel, why in found:
+        print("  --> %s%s" % (rel, " (%s)" % why if why else ""), file=sys.stderr)
+    print("nothing was written\n\n"
+          "help: move them aside, or let the harness take them over (each is kept as <path>.orig)\n"
+          "        harness %s --adopt" % cmd, file=sys.stderr)
+    if any(rel.startswith("script/") for rel, _w in found):
+        print("      project scripts belong in script/project/, which the harness never writes", file=sys.stderr)
+    return True
+
+
+def adopt_user_files(cfg, target: Path):
+    """사용자 파일을 `<경로>.orig` 로 옮긴다. 이름만 바꾸므로 권한 비트가 그대로다."""
+    for rel, _why in user_files(cfg, target):
+        refuse_link(target, rel, "move")
+        refuse_link(target, rel + ".orig", "move")
+        os.rename(target / rel, target / (rel + ".orig"))
+        print("render: adopted %s — yours is at %s.orig" % (rel, rel))
+
+
+def cmd_render(cfg, target, args):
+    # 무엇이든 쓰기 전에 가른다 — 하네스가 쓸 자리에 프로젝트 파일이 있으면 덮지 않고 멈춘다.
+    if refuse_user_files(cfg, target, args):
+        return 2
+    if getattr(args, "adopt", False):
+        adopt_user_files(cfg, target)
+    # 소유 파일을 먼저 깐다 — 생성물이 그 본문을 포함할 수 있다.
+    owned, _ = copy_tree(TEMPLATES / "owned", target, only_if_absent=True)
+    # CI 설정은 **있으면 손대지 않는다.** 프로젝트가 이미 갖고 있던 파이프라인을 덮으면
+    # 하네스 설치 한 번으로 빌드가 통째로 바뀐다. 없을 때만 최소 골격을 깐다.
+    owned += copy_tree(ci_dir(cfg), target, only_if_absent=True, subst=derive(cfg))[0]
+    role_file_unused = role_file_skip(cfg)
 
     managed, managed_paths = copy_tree(
         TEMPLATES / "managed", target, only_if_absent=False, skip=role_file_unused)
@@ -1253,6 +1435,7 @@ def cmd_render(cfg, target, _args):
     written = 0
     for rel, content, mode in items:
         p = target / rel
+        refuse_link(target, rel)
         p.parent.mkdir(parents=True, exist_ok=True)
         old = p.read_text(encoding="utf-8") if p.is_file() else None
         if old != content:
@@ -1265,11 +1448,18 @@ def cmd_render(cfg, target, _args):
     made = {rel for rel, _c, _m in items}
     removed = prune(target, made, MANIFEST) + prune(target, set(managed_paths) | made, MANIFEST_MANAGED)
 
+    # 관리 파일의 해시는 이번에 깐 내용으로 계산한다. 고정 사본의 해시는 install 이 기록한 것을 옮긴다 —
+    # 여기서 다시 계산하면 고친 사본의 해시가 기록된다. 사본이 없는 루트(소스 리포)는 사본 줄을 쓰지 않는다.
+    hashes = {rel: sha256_of(target / rel) for rel in managed_paths}
+    if (target / PINNED / "bin" / "harness").is_file():
+        hashes.update((rel, h) for rel, h in manifest_entries(target)
+                      if rel.startswith(PINNED) and h is not None)
+    refuse_link(target, MANIFEST)
+    refuse_link(target, MANIFEST_MANAGED)
     mf = target / MANIFEST
     mf.parent.mkdir(parents=True, exist_ok=True)
     mf.write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
-    (target / MANIFEST_MANAGED).write_text(
-        "".join(rel + "\n" for rel in sorted(managed_paths)), encoding="utf-8")
+    write_manifest_hashes(target, hashes)
 
     print("render: %d generated (%d updated, %d removed) · %d managed updated · %d owned created"
           % (len(items), written, removed, managed, owned))
@@ -1303,8 +1493,37 @@ def drift(cfg, target, staged=False):
     return bad
 
 
+def staged_bytes(target: Path, rel: str):
+    r = subprocess.run(["git", "-C", str(target), "show", ":%s" % rel], capture_output=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def managed_drift(target: Path, staged=False):
+    """관리 파일·고정 사본과 `.harness/managed` 의 대조 — ((경로, 사유) 목록, 비교한 줄 수).
+
+    staged 면 작업 트리 대신 인덱스의 내용과 비교한다. 매니페스트 자신은 작업 트리에서 읽는다.
+    해시가 없는 옛 형식 줄은 비교하지 않는다.
+    """
+    bad, n = [], 0
+    for rel, h in manifest_entries(target):
+        if h is None:
+            continue
+        n += 1
+        if staged:
+            data = staged_bytes(target, rel)
+        else:
+            p = target / rel
+            data = p.read_bytes() if p.is_file() else None
+        if data is None:
+            bad.append((rel, "missing managed file"))
+        elif hashlib.sha256(data).hexdigest() != h:
+            bad.append((rel, "modified managed file"))
+    return bad, n
+
+
 def cmd_check(cfg, target, args):
     bad = drift(cfg, target, staged=args.staged)
+    mbad, compared = managed_drift(target, staged=args.staged)
     if bad:
         print("error: generated files do not match the config%s"
               % (" (staged contents)" if args.staged else ""), file=sys.stderr)
@@ -1312,8 +1531,20 @@ def cmd_check(cfg, target, args):
             print("  %-52s %s" % (rel, why), file=sys.stderr)
         print("\nhelp: regenerate them — never edit generated files by hand\n"
               "        harness render", file=sys.stderr)
+    if mbad:
+        print("%serror: managed files differ from what the harness installed%s"
+              % ("\n" if bad else "", " (staged contents)" if args.staged else ""), file=sys.stderr)
+        for rel, why in mbad:
+            print("  %-52s %s" % (rel, why), file=sys.stderr)
+        print("\nhelp: managed files are the harness's — render puts them back\n"
+              "        harness render\n"
+              "      project scripts belong in script/project/", file=sys.stderr)
+        if any(rel.startswith(PINNED) for rel, _w in mbad):
+            print("      the pinned copy under .harness/ comes back with `harness install`", file=sys.stderr)
+    if bad or mbad:
         return 1
     print("check: %d generated files match the config" % len(plan(cfg, target)))
+    print("check: %d managed files match the manifest" % compared)
     return 0
 
 
@@ -1328,6 +1559,7 @@ def seed_config(target: Path):
     dst = target / "harness.toml"
     if dst.exists():
         return
+    refuse_link(target, "harness.toml")   # 대상이 없는 링크 — 따라 쓰면 링크가 가리키는 곳에 설정이 생긴다
     text = DEFAULT_CONFIG.read_text(encoding="utf-8")
     dst.write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
                    encoding="utf-8")
@@ -1443,40 +1675,59 @@ def source_tree(p: Path) -> bool:
     return (p / "src" / "bin" / "harness").is_file() and (p / "src" / "templates" / "harness.toml").is_file()
 
 
-def cmd_install(cfg, target, _args):
+def cmd_install(cfg, target, args):
     # 같은 이름의 설치가 동시에 돌면 둘 다 빈 등록을 보고 통과한다. 판정부터 등록까지 잠근다.
     with registry_lock():
-        if not install_registered(cfg, target):
+        if not install_registered(cfg, target, args):
             return 2
-    return cmd_render(cfg, target, _args)
+    return cmd_render(cfg, target, args)
 
 
-def install_registered(cfg, target: Path) -> bool:
+def install_registered(cfg, target: Path, args=None) -> bool:
     """고정 사본을 깔고 등록한다. 등록이 거부되면 아무것도 바꾸지 않고 False."""
     dst = target / ".harness"
     # 아무것도 바꾸기 전에 등록을 가른다 — 거부되면 대상 리포와 등록부가 그대로여야 한다.
     claim = refuse_taken(cfg, target)
     if claim is None:
         return False
+    # 사본을 바꾸기 전에 가른다. 판정은 설치하려는 이 CLI 의 템플릿과 설정으로 한다.
+    if refuse_user_files(cfg, target, args):
+        return False
     if source_tree(target):
         # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
         # 생성물이 작업 트리가 아니라 지난 사본을 따라간다. 훅과 검증 스크립트는 `.harness/bin/harness`
         # 가 없으면 `src/bin/harness` 를 쓴다. 옛 방식으로 깔린 사본이 있으면 걷어낸다(매니페스트는 남긴다).
+        refuse_link(target, PINNED.rstrip("/"), "remove")
         for stale in (dst / "bin", dst / "templates", dst / "VERSION"):
-            if stale.is_dir():
+            if stale.is_symlink():
+                stale.unlink()   # 링크 자체만 걷는다 — 따라가 지우지 않는다
+            elif stale.is_dir():
                 shutil.rmtree(stale)
             elif stale.is_file():
                 stale.unlink()
         print("install: %s is the harness source tree — it runs its own src/bin/harness, nothing to vendor" % target)
         register(cfg, target, claim)
         return True
-    if dst.exists():
-        shutil.rmtree(dst)
+    # 사본만 갈아 끼운다. 매니페스트가 사라지면 이전에 깐 하네스 파일이 전부 프로젝트 것으로 보인다.
+    keep = {Path(MANIFEST).name, Path(MANIFEST_MANAGED).name}
+    refuse_link(target, PINNED.rstrip("/"), "remove")
+    if dst.is_dir():
+        for old in dst.iterdir():
+            if old.name in keep and old.is_file():
+                continue
+            if old.is_dir() and not old.is_symlink():
+                shutil.rmtree(old)
+            else:
+                old.unlink()
     (dst / "bin").mkdir(parents=True)
     shutil.copy2(HERE / "harness", dst / "bin" / "harness")
     shutil.copy2(HERE / "harness_metrics.py", dst / "bin" / "harness_metrics.py")
-    shutil.copytree(TEMPLATES, dst / "templates")
+    shutil.copytree(TEMPLATES, dst / "templates", ignore=shutil.ignore_patterns("__pycache__"))
     (dst / "VERSION").write_text(cfg["harness"]["version"] + "\n", encoding="utf-8")
+    # 사본을 깐 직후의 해시를 기록한다. 관리 파일 줄은 지난 render 의 것을 그대로 둔다.
+    hashes = {rel: h for rel, h in manifest_entries(target) if not rel.startswith(PINNED)}
+    hashes.update((PINNED + rel, sha256_of(dst / rel)) for rel in pinned_files(dst))
+    write_manifest_hashes(target, hashes)
     print("install: %s (harness %s)" % (dst, cfg["harness"]["version"]))
     register(cfg, target, claim)
     return True
@@ -1562,13 +1813,28 @@ def cmd_uninstall(_cfg, target, args):
         die("error: no harness manifest at %s\n\n  Nothing was installed here, or it has already been removed." % MANIFEST)
 
     owned = owned_files(target)
+    # 지우기 전에 링크를 본다 — 링크를 따라 지우면 리포 밖의 파일이 사라진다. 하나라도 있으면 아무것도 지우지 않는다
+    doomed = [r for r in set(gen) | set(man) if not r.startswith(PINNED)] + (owned if args.purge else [])
+    links = sorted({h for h in (linked_component(target, r) for r in doomed) if h})
+    if (target / PINNED.rstrip("/")).is_symlink():
+        links.append(PINNED.rstrip("/"))
+    if links:
+        print("error: %d path(s) the harness would remove are symbolic links or lie under one" % len(links), file=sys.stderr)
+        for h in links:
+            print("  --> %s" % h, file=sys.stderr)
+        print("nothing was removed\n\n"
+              "help: replace the links with regular files or directories, then run `harness uninstall` again",
+              file=sys.stderr)
+        return 2
     if args.purge:
-        rc = confirm_purge(target, sorted(set(gen) | set(man)), owned, args)
+        rc = confirm_purge(target, sorted(r for r in set(gen) | set(man) if not r.startswith(PINNED)), owned, args)
         if rc:
             return rc
 
     removed, kept = [], []
     for rel in sorted(set(gen) | set(man)):
+        if rel.startswith(PINNED):
+            continue   # 고정 사본은 아래에서 `.harness/` 째로 걷는다
         f = target / rel
         if f.is_file():
             f.unlink()
@@ -1792,6 +2058,9 @@ def doctor_items(cfg, target, remote=False):
     else:
         line("ok", "%d files match the config" % len(plan(cfg, target)))
 
+    section("managed files")
+    managed_items(target, line)
+
     section("project facts")
     for rel in sorted(p.relative_to(TEMPLATES / "owned").as_posix()
                       for p in (TEMPLATES / "owned").rglob("*") if p.is_file()):
@@ -1892,6 +2161,30 @@ def doctor_items(cfg, target, remote=False):
         section("remote")
         remote_items(cfg, target, line)
     return items
+
+
+MANAGED_SHOWN = 10
+
+
+def managed_items(target: Path, line):
+    """관리 파일과 고정 사본이 `.harness/managed` 와 맞는지. 바뀐 것은 경로 순으로 몇 개만 낸다."""
+    if not (target / MANIFEST_MANAGED).is_file():
+        line("warn", "no manifest of managed files", "run `harness render`")
+        return
+    entries = manifest_entries(target)
+    bad, n = managed_drift(target)
+    if n and not bad:
+        line("ok", "%d managed files match the manifest" % n)
+    for rel, why in sorted(bad)[:MANAGED_SHOWN]:
+        line("bad", why, rel)
+    if len(bad) > MANAGED_SHOWN:
+        line("bad", "%d more modified or missing managed file(s)" % (len(bad) - MANAGED_SHOWN))
+    unhashed = sum(h is None for rel, h in entries if not rel.startswith(PINNED))
+    if unhashed:
+        line("warn", "%d managed files have no recorded hash" % unhashed, "run `harness render`")
+    pinned = [h for rel, h in entries if rel.startswith(PINNED)]
+    if (target / PINNED / "bin" / "harness").is_file() and (not pinned or None in pinned):
+        line("warn", "the pinned copy has no recorded hash", "run `harness install`")
 
 
 REMOTE_UNCHECKED = "could not check"
@@ -2230,6 +2523,15 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
     return before, lines[hit].strip()
 
 
+def revert_for_user_files(cfg, target: Path, args, conf: Path, original: str) -> bool:
+    """바꾼 설정의 render 가 사용자 파일로 멈출 것이면 설정을 되돌리고 True."""
+    if not refuse_user_files(cfg, target, args):
+        return False
+    conf.write_text(original, encoding="utf-8")
+    print("\nreverted — the config is unchanged", file=sys.stderr)
+    return True
+
+
 def cmd_set(_cfg, target, args):
     """`harness set <절.키> <값> [<절.키> <값> ...]` — 설정을 바꾸고 다시 렌더한다.
 
@@ -2257,6 +2559,8 @@ def cmd_set(_cfg, target, args):
     except SystemExit:
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    if revert_for_user_files(cfg, target, args, p, original):
         return 2
 
     for before, after in changes:
@@ -2551,6 +2855,8 @@ def rename_or_delete_workflow(cfg, target, args):
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
         return 2
+    if revert_for_user_files(cfg, target, args, p, original):
+        return 2
     notes = target / WORKFLOW_NOTES / ("%s.md" % wf)
     if new and notes.is_file():
         notes.rename(notes.with_name("%s.md" % new))
@@ -2619,6 +2925,8 @@ def cmd_steps(cfg, target, args):
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
         return 2
+    if revert_for_user_files(cfg, target, args, p, original):
+        return 2
     print("steps: workflows.%s — %d steps" % (wf, len(steps)))
     return cmd_render(cfg, target, args)
 
@@ -2653,6 +2961,8 @@ def cmd_checks(cfg, target, args):
     except SystemExit:
         p.write_text(original, encoding="utf-8")
         print("\nreverted — the config is unchanged", file=sys.stderr)
+        return 2
+    if revert_for_user_files(cfg, target, args, p, original):
         return 2
     print("checks: verify.checks — %d" % len(checks))
     return cmd_render(cfg, target, args)
@@ -3246,10 +3556,10 @@ def cmd_start_server(_cfg, _target, args):
 
 COMMANDS = {
     # 이름          (함수, 설정이 필요한가, 인수, 설명)
-    "install":   (None, True,  "[--target DIR]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
-    "render":    (None, True,  "[--target DIR]", "harness.toml + .ai/project/ -> generated files"),
-    "check":     (None, True,  "[--staged]", "verify generated files match the config"),
-    "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, tools, hooks (--remote: also the remote, read-only; "
+    "install":   (None, True,  "[--target DIR] [--adopt]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
+    "render":    (None, True,  "[--target DIR] [--adopt]", "harness.toml + .ai/project/ -> generated files"),
+    "check":     (None, True,  "[--staged]", "verify generated files match the config and managed files match the manifest"),
+    "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, managed file changes, tools, hooks (--remote: also the remote, read-only; "
                   "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
@@ -3298,6 +3608,58 @@ def cmd_help(_cfg, _target, _args):
 DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall"}
 
 
+PINNED_SHOWN = 10
+
+
+def pinned_differences(target: Path) -> list:
+    """이 CLI 의 파일과 고정 사본을 바이트 단위로 비교해 다른 파일의 사본 쪽 경로를 낸다. 매니페스트는 읽지 않는다.
+
+    해시가 다른 파일, 한쪽에만 있는 파일, 사본의 `bin/` 에 실행 파일 둘 말고 있는 파일을 센다. `__pycache__/` 는 뺀다.
+    """
+    pin = target / ".harness"
+    pairs = {"bin/harness": HERE / "harness", "bin/harness_metrics.py": HERE / "harness_metrics.py"}
+    for f in TEMPLATES.rglob("*"):
+        if f.is_file() and "__pycache__" not in f.relative_to(TEMPLATES).parts:
+            pairs["templates/" + f.relative_to(TEMPLATES).as_posix()] = f
+    theirs = {rel for rel in pinned_files(pin) if rel != "VERSION"}
+    out = []
+    for rel in sorted(set(pairs) | theirs):
+        mine = pairs.get(rel)
+        if rel not in theirs or mine is None or not mine.is_file() or sha256_of(mine) != sha256_of(pin / rel):
+            out.append(PINNED + rel)
+    return out
+
+
+def verify_pinned(target: Path, mine: str, there: str):
+    """고정 버전이 이 CLI 와 같을 때만 사본을 대조해 다르면 표준 오류에 경고한다. 넘기기는 막지 않는다."""
+    if not mine or not there or mine != there:
+        print("note: cannot verify the pinned harness — this machine has harness %s, the project pins %s"
+              % (mine or "no version", there or "no version"), file=sys.stderr)
+        return
+    try:
+        diff = pinned_differences(target)
+    except OSError as e:
+        # 읽지 못한 파일이 있으면 같다고 볼 수 없다 — 대조하지 못한 것으로 알리고 넘긴다
+        where = Path(e.filename) if e.filename else None
+        for base, pre in ((target / PINNED.rstrip("/"), PINNED), (HERE.parent, "")):
+            if where is not None and where.is_relative_to(base):
+                where = pre + where.relative_to(base).as_posix()
+                break
+        print("warning: could not compare the pinned harness with harness %s on this machine — a file could not be read\n"
+              "  --> %s\n\n"
+              "help: restore the pinned copy\n        harness install --target %s"
+              % (mine, where or "(unknown)", target), file=sys.stderr)
+        return
+    if not diff:
+        return
+    lines = ["warning: the pinned harness differs from harness %s on this machine — %d file(s)" % (mine, len(diff))]
+    lines += ["  --> %s" % rel for rel in diff[:PINNED_SHOWN]]
+    if len(diff) > PINNED_SHOWN:
+        lines.append("  ... and %d more" % (len(diff) - PINNED_SHOWN))
+    lines.append("\nhelp: restore the pinned copy\n        harness install --target %s" % target)
+    print("\n".join(lines), file=sys.stderr)
+
+
 def delegate(target: Path, command: str):
     """대상 리포에 고정된 하네스가 있으면 그쪽으로 넘긴다.
 
@@ -3320,6 +3682,8 @@ def delegate(target: Path, command: str):
         there = (target / ".harness" / "VERSION").read_text(encoding="utf-8").strip()
     except Exception:
         pass
+    if not source_tree(target):
+        verify_pinned(target, mine, there)
     if mine and there and mine != there:
         print("note: this project is pinned to harness %s (global is %s) — delegating to it\n"
               "      to upgrade the project, run: harness install --target %s"
@@ -3353,6 +3717,8 @@ def main():
     ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
     ap.add_argument("--json", action="store_true", help="doctor: print the items as one JSON object")
     ap.add_argument("--remote", action="store_true", help="doctor, status: also check the remote, read-only")
+    ap.add_argument("--adopt", action="store_true",
+                    help="install, render, set, steps, checks: take over files the harness would write, keeping each as <path>.orig")
     ap.add_argument("-h", "--help", action="store_true")
     # 옵션 뒤에 오는 위치 인자도 args 에 모은다. 3.11 의 parse_args 는 `set --target X a.b v` 의
     # `a.b v` 를 받지 못하고 unrecognized arguments 로 멈춘다.

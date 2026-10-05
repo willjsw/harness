@@ -51,6 +51,7 @@ vim harness.toml
 | 접속 정보 취득 경로 | `.ai/project/environment.md` |
 | 이 리포 고유의 리뷰 점검 | `.ai/project/review-checks.md` |
 | 추가 검증(계층 의존 규칙 등) | `harness.toml` 의 `[verify]` |
+| 프로젝트 자동화 스크립트 | `script/project/` 와 `script/project/README.md` |
 
 **`.ai/project/` 를 고치면 `harness render` 를 돌린다.** 규칙 문서가 그 본문을 담아 생성되므로,
 돌리지 않으면 `harness check` 가 커밋을 막는다.

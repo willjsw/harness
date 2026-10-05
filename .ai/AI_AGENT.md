@@ -59,9 +59,10 @@
 | 고정(pin) | 대상 리포가 `.harness/` 에 설치 시점의 하네스 사본을 두고 그 버전으로만 도는 것 |
 | 생성 파일 | `harness.toml` 에서 나오는 파일. 고치지 않고 `render` 로 다시 만든다 |
 | 관리 파일 | 하네스가 그대로 복사해 두는 파일. 갱신이 덮는다 |
-| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · CI 설정) |
+| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · `script/project/README.md` · CI 설정) |
 | 보호 문서 | 에이전트가 근거로 읽는 소유 파일(scope · architecture · glossary · testing · `roles/` · `workflows/`). 권한과 가드가 쓰기를 막고, 사람이 지시한 턴에만 고친다 |
-| 매니페스트 | 지난 렌더가 무엇을 깔았는지 적은 목록(`.harness/generated` · `.harness/managed`). 정리와 제거의 근거 |
+| 매니페스트 | 지난 설치·렌더가 무엇을 깔았는지 적은 목록. `.harness/generated` 는 생성 파일 경로, `.harness/managed` 는 관리 파일과 고정 사본의 sha256 과 경로. 정리·제거·변조 감지의 근거 |
+| 사용자 파일 | 하네스가 쓸 경로에 있으나 매니페스트에 없는 파일. render · install 이 덮지 않고 멈추며, `--adopt` 면 `<경로>.orig` 로 옮기고 넘겨받는다 |
 | 정본 | 어떤 값·규칙을 고칠 때 손대는 유일한 자리. 규칙 값은 `harness.toml`, 프로젝트 사실은 `.ai/project/` |
 | 렌더 | 설정과 프로젝트 사실에서 생성 파일을 만드는 일 (`harness render`) |
 | 역할 | 절차의 한 단계를 맡는 에이전트 (requirement-analyzer · spec-writer · planner · developer · code-reviewer · docs-writer · security-guard) |
@@ -116,7 +117,8 @@
 
 검증(`script/harness-verify.sh`)은 이 순서로 돈다: CLI 가 컴파일된다 → UI 단위 테스트 → 테스트.
 
-자동화 스크립트는 `script/` 에 둔다. 새 스크립트는 `script/README.md` 표에 한 줄 추가한다.
+프로젝트 자동화 스크립트는 `script/project/` 에 두고 `script/project/README.md` 표에 한 줄 추가한다.
+`script/` 바로 아래는 하네스 것이라 갱신이 덮는다.
 
 ## 4. 스택
 
@@ -139,12 +141,12 @@
 - `src/templates/` — 대상 리포로 가는 것 전부. `harness.toml`(기본 설정) · `generated/`({{VAR}} 치환) · `managed/`(그대로 복사) · `owned/`(없을 때만 복사) · `agents/`(역할 어댑터 본문과 선언) · `workflows/<절차>/`(절차 조각) · `forge/<kind>/`(forge 명령 사전 조각) · `adr/<style>/`(결정 기록 문서 세트) · `ci/<host>/`(CI 골격) · `vendors.toml`(에이전트 CLI 등록부)
 - `src/ui/` — Next.js 앱. `harness start-server` 가 필요할 때 빌드하고 루프백에 백그라운드로 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
-- 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다
+- 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다. `script/project/` 는 프로젝트 것이다 — 하네스는 그 안의 `README.md` 만 없을 때 깐다
 - 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치), 등록부 최상위의 `ui.pid`(백그라운드 UI 서버 기록) · `ui.log`(그 기동의 설치·빌드·서버 출력). 설치 등록부는 프로젝트 이름 하나에 경로 하나다 — `install` 은 같은 이름이 아직 쓰이는 다른 경로에 등록돼 있으면 거부한다
 
 ### 데이터 흐름
 
-- 렌더: `harness.toml` + `.ai/project/` → `src/bin/harness render` → 생성 파일(`.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `CLAUDE.md` · `AGENTS.md`) → 에이전트·훅·가드·CI 가 읽는다
+- 렌더: `harness.toml` + `.ai/project/` → `src/bin/harness render` → 생성 파일(`.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `CLAUDE.md` · `AGENTS.md`) → 에이전트·훅·가드·CI 가 읽는다. render 는 쓰기 전에 사용자 파일을 판정하고, 관리 파일의 sha256 을 `.harness/managed` 에 기록한다. `check` · `doctor` 가 그것과 대조한다. 전역 CLI 는 고정 사본으로 넘기기 전에 같은 버전의 자기 파일과 대조한다
 - UI: `harness start-server` → (UI 소스 해시가 `.next` 스탬프와 다르면) `next build` → 새 세션의 `next start`(루프백) → `ui.pid` · `ui.log`. 브라우저 → 루프백 HTTP → Next.js 서버 액션 → `src/bin/harness <명령>` 서브프로세스 → 파일 → 다시 UI. 저장 전 검사는 정적 검사와 저렴한 모델(오케스트레이터 CLI, 쓰기 도구 없이)로 한다
 - 절차 실행: `harness run` → 오케스트레이터 CLI → 절차 문서를 따라 역할(서브에이전트, 또는 `script/run-agent.py` 가 실행 계획대로 띄운 CLI)과 스크립트를 부른다. 리뷰 루프는 `work-preflight.sh` → 구현자 → `review-mr.sh`(diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → 리뷰어의 판정 데이터(JSON 블록) → `post-review.sh`(스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약·인라인 댓글 렌더링) → 종료 코드로 분기. `harness run --worktree` 는 원격 통합 브랜치에서 이슈별 worktree 를 만들고 그 안에서 오케스트레이터를 띄운 뒤, 끝나면 미커밋 변경·미push 커밋이 없을 때 제거한다
 - forge: 스크립트 → `script/forge.sh` 어댑터 함수(tracker 군 · review 군) → `gh` · `glab` · `jira`. 호출부는 forge 를 모르고 정규화된 JSON 을 받는다
@@ -165,7 +167,8 @@
 - 새 역할 → `src/templates/agents/<역할>.md`(어댑터 본문과 frontmatter 선언) + `src/templates/managed/.ai/templates/<역할>.md`(계약) + `src/templates/harness.toml` 의 `[roles.<역할>]`. 부를 수 있는 경로(커맨드나 절차 단계)를 함께 만든다
 - 새 에이전트 CLI → `src/templates/vendors.toml` 한 항목. 실행 명령은 여기만 갖고, 사용량 파서가 필요하면 `run-agent.py` 의 `PARSERS`
 - 새 forge → `src/templates/managed/script/forge/<kind>.sh`(계약 함수 전부) + `src/templates/forge/<kind>/`(명령 사전 조각) + `validate()` 의 허용 목록. 실제 forge 로 `forge-selftest.sh` 를 통과하기 전까지 머리글에 미검증 표기
-- 새 관리 스크립트 → `src/templates/managed/script/` + `script/README.md` 표 한 줄. 회귀 테스트는 같은 곳의 `test-<이름>.sh`
+- 새 관리 스크립트 → `src/templates/managed/script/` + `src/templates/managed/script/README.md` 표 한 줄. 회귀 테스트는 같은 곳의 `test-<이름>.sh`
+- 대상 리포의 프로젝트 스크립트 → `script/project/` + `script/project/README.md` 표 한 줄
 - 지표 집계·세션 가져오기 코드 → `src/bin/harness_metrics.py`. 리뷰 루프의 파이썬 → `script/_review.py`(정본 `src/templates/managed/script/_review.py`) — `review-mr.sh` · `post-review.sh` 본문에 파이썬을 넣지 않는다
 - 새 가드 → `src/templates/managed/script/hooks/_guards.sh` 의 함수 + `bash-guard.sh` 의 호출 + `test-bash-guard.sh` 케이스. 판정에 쓰는 값은 `script/harness.env` 로 받는다
 - 새 절차 단계 본문 → `src/templates/workflows/<절차>/<id>.md`. 다른 단계는 `{{step:<id>}}` 로 가리킨다
@@ -195,6 +198,7 @@
 - UI 의 화면과 서버 액션은 자동 테스트가 없다. 순수 함수만 단위 테스트한다
 - README 와 `.ai/project/` 가 같은 사실(구조·명령·부류)을 두 곳에 적는다. README 는 사람용이고 여기는 에이전트용이라 둔 것이지만, 한쪽이 낡을 수 있다
 - GitLab · Jira 어댑터는 실제 forge 로 검증하지 않았다. 머리글의 미검증 표기가 그 사실이다
+- 고정 사본(`.harness/bin` · `.harness/templates`)을 고치면 pre-commit · `run-lint-test.sh` · CI 의 검사도 고친 사본이 돈다. 사본과 매니페스트를 함께 고치면 그 검사들은 알아채지 못한다. 사본 변조를 잡는 것은 같은 버전의 전역 CLI 가 넘기기 전에 하는 대조뿐이고, 그것도 경고만 한다
 
 ### 코드 주석
 
@@ -340,7 +344,8 @@ relates to <상위 이슈>
 | `docs/spec/` | 특정 기능을 구현할 때 |
 | `docs/plan/<이슈번호>/` | 구현에 착수할 때 |
 | `docs/workflow/` | 하네스가 어떻게 도는지, 무엇을 고쳐야 하는지 (사람용) |
-| `script/README.md` | 자동화 스크립트를 추가·실행할 때 |
+| `script/README.md` | 하네스 스크립트를 실행할 때 |
+| `script/project/README.md` | 프로젝트 스크립트를 추가·실행할 때 |
 | `harness.toml` | 하네스 설정을 바꿀 때. **규칙 값의 정본** |
 
 **근거 우선순위: `.ai/adr.md` 가 가리키는 결정 기록 > `.ai/project/` > `docs/spec/` > 대화.**
@@ -358,7 +363,8 @@ relates to <상위 이슈>
 |---|---|
 | `harness.toml` | 설정 정본. 규칙 값은 전부 여기 |
 | `.ai/project/` | **소유** — 프로젝트가 쓰고 하네스 갱신이 건드리지 않는다 |
-| `.ai/templates/`, `script/` | **관리** — 하네스 것. 갱신이 덮는다 |
+| `script/project/` | **소유** — 프로젝트가 쓰고 하네스 갱신이 건드리지 않는다 |
+| `.ai/templates/`, `script/` (`script/project/` 를 뺀 나머지) | **관리** — 하네스 것. 갱신이 덮는다 |
 | `.ai/AI_AGENT.md`, `.ai/workflows/`, `.ai/forge.md`, `.ai/adr.md`, `.claude/`, `.codex/`, `script/githooks/`, `script/harness.env`, `script/forge.sh` | **생성** — 설정에서 나온다 |
 | `AGENTS.md`, `CLAUDE.md` | 정본으로 보내는 관문 |
 

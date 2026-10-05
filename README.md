@@ -105,8 +105,8 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 |---|---|
 | `harness install` | 하네스를 `.harness/` 에 넣고 렌더까지 |
 | `harness render` | 설정과 프로젝트 사실 → 생성 파일 |
-| `harness check` | 생성 파일이 설정과 일치하는지. pre-commit 이 `--staged` 로 부른다 |
-| `harness doctor [--remote] [--json]` | 쓸 준비가 됐는지 — 설정·생성물·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅. `--remote` 면 origin·base 브랜치·원격 기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너까지 읽기 전용으로 점검한다. `--json` 이면 결과를 JSON 으로 낸다 |
+| `harness check` | 생성 파일이 설정과, 관리 파일이 매니페스트(`.harness/managed`)와 일치하는지. pre-commit 이 `--staged` 로 부른다 |
+| `harness doctor [--remote] [--json]` | 쓸 준비가 됐는지 — 설정·생성물·관리 파일 변조·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅. `--remote` 면 origin·base 브랜치·원격 기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너까지 읽기 전용으로 점검한다. `--json` 이면 결과를 JSON 으로 낸다 |
 | `harness set <절.키> <값> ...` | 설정 값을 (여러 쌍이면 함께) 바꾸고 렌더까지. 성립하지 않으면 되돌린다 |
 | `harness steps [<절차> <JSON>]` | 절차의 단계를 JSON 으로 보거나, 한 절차의 단계를 통째로 바꾸고 렌더까지. `--dry-run` 이면 검사만 |
 | `harness checks [<JSON>]` | 검증 검사(`[verify]`)를 JSON 으로 보거나 통째로 바꾸고 렌더까지 |
@@ -212,8 +212,14 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | 부류 | 어디 | 고치는 법 |
 |---|---|---|
 | **생성** | `.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `script/forge.sh` · `CLAUDE.md` · `AGENTS.md` | 고치지 않는다. `harness.toml` 을 고치고 `render` |
-| **관리** | `.ai/templates/` · `script/` 의 나머지 · `docs/workflow/` | 하네스 것이다. 갱신이 덮는다 |
-| **소유** | `.ai/project/`(역할·절차별 지시 `roles/`·`workflows/` 포함) · `docs/spec/README.md` · CI 설정 | 프로젝트 것이다. 갱신이 건드리지 않는다 |
+| **관리** | `.ai/templates/` · `script/` 의 나머지(`script/project/` 제외) · `docs/workflow/` | 하네스 것이다. 갱신이 덮는다 |
+| **소유** | `.ai/project/`(역할·절차별 지시 `roles/`·`workflows/` 포함) · `docs/spec/README.md` · `script/project/README.md` · CI 설정 | 프로젝트 것이다. 갱신이 건드리지 않는다 |
+
+**프로젝트 자동화 스크립트는 `script/project/` 에 둔다.** 하네스는 그 안에 `script/project/README.md` 하나만 없을 때 깔고
+나머지는 만들지도 덮지도 지우지도 않는다. 하네스가 쓸 경로에 이미 있는 파일(지난 설치·렌더가 깐 것이 아닌 것)은
+덮지 않고 아무것도 쓰지 않은 채 멈춘다. `--adopt` 를 주면 원래 파일을 `<경로>.orig` 로 옮기고 넘겨받는다.
+`.harness/managed` 는 관리 파일과 고정 사본의 sha256 을 담고, `check` · `doctor` 가 그것과 대조해 설치 뒤 바뀌거나
+없어진 관리 파일을 보고한다.
 
 **CI 설정은 첫 설치 때 한 번만 깔린다.** `forge.review_host` 에 따라
 `.github/workflows/harness-verify.yml` 또는 `.gitlab-ci.yml` 이 **없을 때만** 생기고,

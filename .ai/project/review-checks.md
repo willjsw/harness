@@ -21,4 +21,4 @@
 | 설정 하나를 바꾸면 따라 바뀌어야 하는 생성물 전부에 회귀 케이스가 있는가. 케이스가 바꿔 보는 값은 `setup()` 이 고정하는가 | major |
 | 되돌릴 수 없는 동작(purge·rollback·이슈 생성)이 지우거나 만들 것을 먼저 보이고 확인을 받는가 | major |
 | 터미널 출력은 영어, 파일과 forge 로 올라가는 본문·코드 주석은 한국어인가 | minor |
-| 관리 스크립트를 더했으면 `script/README.md` 표에 한 줄이 있는가 | minor |
+| 관리 스크립트를 더했으면 `src/templates/managed/script/README.md` 표에 한 줄이 있는가 | minor |
