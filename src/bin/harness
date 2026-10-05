@@ -1203,16 +1203,61 @@ MANIFEST = ".harness/generated"
 MANIFEST_MANAGED = ".harness/managed"
 
 
-def previous(target: Path, name: str = MANIFEST) -> list:
+# `.harness/managed` 의 한 줄 — `sha256sum` 출력과 같은 `<sha256>  <경로>`. 맞지 않는 줄은 경로만 적던 옛 형식이다.
+MANIFEST_LINE = re.compile(r"([0-9a-f]{64})  (.+)")
+PINNED = ".harness/"
+
+
+def manifest_entries(target: Path, name: str = MANIFEST_MANAGED) -> list:
+    """매니페스트의 (경로, sha256) 짝. 옛 형식 줄의 해시는 None 이다. 매니페스트가 없으면 빈 목록."""
     p = target / name
-    return p.read_text(encoding="utf-8").split() if p.is_file() else []
+    if not p.is_file():
+        return []
+    out = []
+    for ln in p.read_text(encoding="utf-8").splitlines():
+        m = MANIFEST_LINE.fullmatch(ln)
+        if m:
+            out.append((m.group(2), m.group(1)))
+        elif ln.strip():
+            out.append((ln.strip(), None))
+    return out
+
+
+def previous(target: Path, name: str = MANIFEST) -> list:
+    return [rel for rel, _h in manifest_entries(target, name)]
+
+
+def sha256_of(p: Path) -> str:
+    return hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def write_manifest_hashes(target: Path, entries: dict):
+    """`.harness/managed` 를 경로 순의 `<sha256>  <경로>` 줄로 쓴다. 해시가 None 인 경로는 옛 형식 그대로 경로만 쓴다."""
+    (target / MANIFEST_MANAGED).write_text(
+        "".join(("%s  %s\n" % (entries[rel], rel)) if entries[rel] else rel + "\n" for rel in sorted(entries)),
+        encoding="utf-8")
+
+
+def pinned_files(root: Path) -> list:
+    """고정 사본의 파일 — `bin/` · `templates/` 아래 전부와 `VERSION`. `__pycache__/` 는 뺀다. root 기준 경로."""
+    out = []
+    for d in ("bin", "templates"):
+        for f in sorted((root / d).rglob("*")):
+            if f.is_file() and "__pycache__" not in f.relative_to(root).parts:
+                out.append(f.relative_to(root).as_posix())
+    if (root / "VERSION").is_file():
+        out.append("VERSION")
+    return out
 
 
 def prune(target: Path, keep: set, manifest: str) -> int:
-    """직전에 깔았으나 이번에는 만들지 않는 파일을 지운다. 빈 디렉터리도 함께 걷는다."""
+    """직전에 깔았으나 이번에는 만들지 않는 파일을 지운다. 빈 디렉터리도 함께 걷는다.
+
+    고정 사본(`.harness/`)은 install 의 것이라 지우지 않는다.
+    """
     n = 0
     for rel in previous(target, manifest):
-        if rel in keep:
+        if rel in keep or rel.startswith(PINNED):
             continue
         stale = target / rel
         if stale.is_file():
@@ -1265,11 +1310,16 @@ def cmd_render(cfg, target, _args):
     made = {rel for rel, _c, _m in items}
     removed = prune(target, made, MANIFEST) + prune(target, set(managed_paths) | made, MANIFEST_MANAGED)
 
+    # 관리 파일의 해시는 이번에 깐 내용으로 계산한다. 고정 사본의 해시는 install 이 기록한 것을 옮긴다 —
+    # 여기서 다시 계산하면 고친 사본의 해시가 기록된다. 사본이 없는 루트(소스 리포)는 사본 줄을 쓰지 않는다.
+    hashes = {rel: sha256_of(target / rel) for rel in managed_paths}
+    if (target / PINNED / "bin" / "harness").is_file():
+        hashes.update((rel, h) for rel, h in manifest_entries(target)
+                      if rel.startswith(PINNED) and h is not None)
     mf = target / MANIFEST
     mf.parent.mkdir(parents=True, exist_ok=True)
     mf.write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
-    (target / MANIFEST_MANAGED).write_text(
-        "".join(rel + "\n" for rel in sorted(managed_paths)), encoding="utf-8")
+    write_manifest_hashes(target, hashes)
 
     print("render: %d generated (%d updated, %d removed) · %d managed updated · %d owned created"
           % (len(items), written, removed, managed, owned))
@@ -1470,13 +1520,25 @@ def install_registered(cfg, target: Path) -> bool:
         print("install: %s is the harness source tree — it runs its own src/bin/harness, nothing to vendor" % target)
         register(cfg, target, claim)
         return True
-    if dst.exists():
-        shutil.rmtree(dst)
+    # 사본만 갈아 끼운다. 매니페스트가 사라지면 이전에 깐 하네스 파일이 전부 프로젝트 것으로 보인다.
+    keep = {Path(MANIFEST).name, Path(MANIFEST_MANAGED).name}
+    if dst.is_dir():
+        for old in dst.iterdir():
+            if old.name in keep and old.is_file():
+                continue
+            if old.is_dir() and not old.is_symlink():
+                shutil.rmtree(old)
+            else:
+                old.unlink()
     (dst / "bin").mkdir(parents=True)
     shutil.copy2(HERE / "harness", dst / "bin" / "harness")
     shutil.copy2(HERE / "harness_metrics.py", dst / "bin" / "harness_metrics.py")
-    shutil.copytree(TEMPLATES, dst / "templates")
+    shutil.copytree(TEMPLATES, dst / "templates", ignore=shutil.ignore_patterns("__pycache__"))
     (dst / "VERSION").write_text(cfg["harness"]["version"] + "\n", encoding="utf-8")
+    # 사본을 깐 직후의 해시를 기록한다. 관리 파일 줄은 지난 render 의 것을 그대로 둔다.
+    hashes = {rel: h for rel, h in manifest_entries(target) if not rel.startswith(PINNED)}
+    hashes.update((PINNED + rel, sha256_of(dst / rel)) for rel in pinned_files(dst))
+    write_manifest_hashes(target, hashes)
     print("install: %s (harness %s)" % (dst, cfg["harness"]["version"]))
     register(cfg, target, claim)
     return True
@@ -1563,12 +1625,14 @@ def cmd_uninstall(_cfg, target, args):
 
     owned = owned_files(target)
     if args.purge:
-        rc = confirm_purge(target, sorted(set(gen) | set(man)), owned, args)
+        rc = confirm_purge(target, sorted(r for r in set(gen) | set(man) if not r.startswith(PINNED)), owned, args)
         if rc:
             return rc
 
     removed, kept = [], []
     for rel in sorted(set(gen) | set(man)):
+        if rel.startswith(PINNED):
+            continue   # 고정 사본은 아래에서 `.harness/` 째로 걷는다
         f = target / rel
         if f.is_file():
             f.unlink()

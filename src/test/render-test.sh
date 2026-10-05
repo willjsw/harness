@@ -2759,6 +2759,68 @@ print("10", re.search(r"^\| `script/project/` \| \*\*소유\*\*", chapter(10), r
 PY
 check "the rule canon names script/project/ in chapters 3, 9 and 10" "$(cat "$work/own87-canon" | tr '\n' ' ')" "3 True 9 True 10 True "
 
+echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
+# 경로만 적힌 매니페스트로는 관리 파일과 고정 사본이 설치 뒤 바뀌었는지 알 수 없다.
+t="$work/mf88"; rm -rf "$t"; mkdir -p "$t"
+( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1; check "install on a new repo" "$?" "0"
+python3 - "$t/.harness/managed" > "$work/mf88-form" <<'PY'
+import re, sys
+lines = open(sys.argv[1], encoding="utf-8").read().split("\n")
+assert lines[-1] == "", "the manifest does not end with a newline"
+lines = lines[:-1]
+paths = [ln[66:] for ln in lines]
+print(all(re.fullmatch(r"[0-9a-f]{64}  .+", ln) for ln in lines), paths == sorted(paths))
+print(" ".join(p for p in ("script/review-mr.sh", ".harness/bin/harness", ".harness/VERSION",
+                           ".harness/templates/harness.toml") if p in paths))
+print(sum("__pycache__" in p for p in paths))
+PY
+check "every line is a sha256 and a path, in path order" "$(sed -n 1p "$work/mf88-form")" "True True"
+check "managed files and the pinned copy are listed" "$(sed -n 2p "$work/mf88-form")" \
+  "script/review-mr.sh .harness/bin/harness .harness/VERSION .harness/templates/harness.toml"
+check "no bytecode is listed" "$(sed -n 3p "$work/mf88-form")" "0"
+( cd "$t" && shasum -a 256 -c .harness/managed >/dev/null 2>&1 ); check "shasum -a 256 -c reads the manifest" "$?" "0"
+line_of() { grep -F "  $2" "$1/.harness/managed" | cut -c1-64; }
+old_form() { # old_form <리포> — 매니페스트를 해시 없는 경로 목록(옛 형식)으로 바꾼다
+  python3 - "$1/.harness/managed" <<'PY'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+p.write_text(re.sub(r"^[0-9a-f]{64}  ", "", p.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+PY
+  grep -qE '^[0-9a-f]{64}  ' "$1/.harness/managed" && bad "$1: the manifest still has hashes" || ok
+}
+pin_before=$(line_of "$t" ".harness/templates/harness.toml")
+printf '\n# edited by hand\n' >> "$t/.harness/templates/harness.toml"
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1
+check "render does not hash the pinned copy again" "$(line_of "$t" ".harness/templates/harness.toml")" "$pin_before"
+# 설정을 바꿔 정리가 돌아도 고정 사본은 남는다
+"$root/bin/harness" set --target "$t" branches.base trunk >/dev/null 2>&1; check "set exit code" "$?" "0"
+[ -f "$t/.harness/bin/harness" ] && ok || bad "pruning removed the pinned copy"
+# 재설치는 매니페스트를 남기고 사본 줄만 새 사본의 것으로 바꾼다
+review_before=$(line_of "$t" "script/review-mr.sh")
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1; check "reinstall exit code" "$?" "0"
+[ -f "$t/.harness/generated" ] && [ -f "$t/.harness/managed" ] && ok || bad "reinstall dropped a manifest"
+check "a managed file line survives the reinstall" "$(line_of "$t" "script/review-mr.sh")" "$review_before"
+( cd "$t" && shasum -a 256 -c .harness/managed >/dev/null 2>&1 ); check "the pinned lines are the new copy's" "$?" "0"
+# 옛 형식(경로 목록)을 읽어 정리하고, 다음 render 가 새 형식으로 쓴다
+old_form "$t"
+[ -f "$t/.ai/templates/security-guard.md" ] && ok || bad "the role's contract was not installed"
+python3 - "$t/harness.toml" <<'DROP'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1])
+p.write_text(re.sub(r"\n\[roles\.security-guard\][^\[]*", "\n", p.read_text(encoding="utf-8")), encoding="utf-8")
+DROP
+"$root/bin/harness" render --target "$t" > "$work/mf88-old.out" 2>&1; check "render over an old manifest" "$?" "0"
+[ -e "$t/.ai/templates/security-guard.md" ] && bad "an old manifest did not prune the dropped contract" || ok
+grep -qvE '^[0-9a-f]{64}  .+$' "$t/.harness/managed" && bad "render left the manifest in the old form" || ok
+# 소스 리포는 사본이 없다 — 사본 줄을 쓰지 않는다
+src="$work/source88"; rm -rf "$src"; mkdir -p "$src/src/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
+( cd "$src" && git init -q . )
+"$src/src/bin/harness" install --target "$src" >/dev/null 2>&1; check "install on the source tree" "$?" "0"
+grep -q '  \.harness/' "$src/.harness/managed" && bad "the source tree's manifest lists a pinned copy" || ok
+grep -q '  script/review-mr.sh$' "$src/.harness/managed" && ok || bad "the source tree's manifest lacks the managed files"
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
