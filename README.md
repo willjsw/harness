@@ -51,7 +51,7 @@ harness doctor
 ```bash
 cd <내-프로젝트>
 harness install
-git config core.hooksPath script/githooks
+harness forge-setup
 harness doctor
 ```
 
@@ -66,7 +66,15 @@ harness doctor
 기록은 그대로 이어진다. 같은 리포에서 여러 작업을 나란히 하려면 두 번째 클론이 아니라
 `harness run --worktree` 로 이슈별 worktree 를 쓴다.
 
-훅 활성화는 클론마다 1회다. 하지 않으면 커밋·push 검사가 조용히 건너뛰어진다.
+**git 훅은 `install` 이 켠다.** `core.hooksPath` 가 비어 있으면 하네스의 `script/githooks` 로 설정하고
+그 사실을 출력한다. 이미 다른 값이 있거나 `.git/hooks/` 에 자기 훅(`.sample` 이 아닌 파일)이 있으면 건드리지 않고,
+켜는 명령(`git config core.hooksPath ...`)만 알려 준다. 훅이 꺼져 있으면 커밋·push 검사가 조용히 건너뛰어진다.
+이미 하네스가 깔린 리포를 새로 클론한 사람은 `install` 을 다시 돌지 않는 한 훅이 꺼진 채다 —
+`harness doctor` 가 켜는 명령을 알려 준다.
+
+**`harness forge-setup` 은 원격에 쓴다.** 설정의 이슈 라벨(`issues.labels`)을 트래커에 미리 만든다 — 이미 있는
+라벨은 그대로 둔다. 사람이 한 번 부르는 명령이고 절차·훅이 자동으로 부르지 않는다. 라벨을 미리 두지 않으면 권한
+문제가 처음 이슈를 만들거나 회차 라벨을 붙일 때에야 드러난다.
 
 ### 모노레포
 
@@ -76,14 +84,17 @@ harness doctor
 
 ```bash
 harness install --target packages/api
-git config core.hooksPath packages/api/script/githooks
 ```
 
-두 가지는 리포당 하나뿐이라 서브프로젝트가 나눠 갖지 못한다.
+`install` 은 그 서브프로젝트의 기대 값(`packages/api/script/githooks`)으로 훅을 켠다. 다른 서브프로젝트가 이미
+켜 둔 값은 두므로 먼저 설치한 서브프로젝트가 훅을 갖고, 나중 것은 켜는 명령만 출력한다.
+
+세 가지는 리포당 하나뿐이라 서브프로젝트가 나눠 갖지 못한다.
 
 | | 무엇이 걸리나 |
 |---|---|
 | `core.hooksPath` | 리포 설정이라 **한 서브프로젝트만 훅을 갖는다.** 나머지는 커밋·push 검사가 서지 않는다 |
+| forge 템플릿 | forge 는 리포 루트의 이슈·리뷰 요청 템플릿만 읽는다. **리포 루트에 설치한 하네스만** 템플릿을 만들고, 서브프로젝트는 만들지 않는다 |
 | `.claude/` | 도구가 여는 작업 디렉터리 기준이다. 그 서브프로젝트를 열어야 권한·훅 설정이 적용된다 |
 
 `docs/spec`·`docs/plan`·ADR 도 하네스 루트 아래에 선다 — 서브프로젝트의 명세는 그 서브프로젝트가 갖는다.
@@ -118,6 +129,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). UI 가 선택지를 그린다 |
 | `harness status [--remote]` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git. `--remote` 를 받아 doctor 에 넘긴다 |
 | `harness uninstall` | 하네스가 깐 것만 지운다. `--purge` 면 소유 파일과 설정도 (확인을 받는다) |
+| `harness forge-setup` | 설정의 이슈 라벨(`issues.labels`)을 트래커에 만든다. **원격 쓰기**이고 이미 있는 라벨은 그대로 둔다. 사람이 한 번 부른다 |
 | `harness metrics [import\|prune] [--since 7d] [--trace ID]` | 실행 지표 집계(JSON, Metrics 탭이 읽는다). `import` 는 새 대화 기록의 사용량을 먼저 가져오고, `prune` 은 보관 기간·용량 상한을 적용한다 |
 | `harness vars` | 템플릿 변수 출력(디버깅용) |
 | `harness version` · `help` | 버전, 도움말 |
@@ -211,7 +223,7 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 
 | 부류 | 어디 | 고치는 법 |
 |---|---|---|
-| **생성** | `.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `script/forge.sh` · `CLAUDE.md` · `AGENTS.md` | 고치지 않는다. `harness.toml` 을 고치고 `render` |
+| **생성** | `.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `script/forge.sh` · `CLAUDE.md` · `AGENTS.md` · forge 별 이슈·리뷰 요청 템플릿(`.github/ISSUE_TEMPLATE/` · `.github/pull_request_template.md` · `.gitlab/issue_templates/` · `.gitlab/merge_request_templates/`) | 고치지 않는다. `harness.toml` 을 고치고 `render` |
 | **관리** | `.ai/templates/` · `script/` 의 나머지(`script/project/` 제외) · `docs/workflow/` | 하네스 것이다. 갱신이 덮는다 |
 | **소유** | `.ai/project/`(역할·절차별 지시 `roles/`·`workflows/` 포함) · `docs/spec/README.md` · `script/project/README.md` · CI 설정 | 프로젝트 것이다. 갱신이 건드리지 않는다 |
 
@@ -243,8 +255,8 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `commit.tags` · `issue_ref` · `ticket_key` | commit-msg 의 **검사식과 안내문 예시**, task 이슈 제목 |
 | `review.max_rounds` · `repeat_file_max` · `round_label` | 리뷰·등록·집계 스크립트가 읽는 상수 |
 | `roles.<역할>.runner` · `model` · `access` | 역할마다 에이전트 정의(Claude·Codex 양쪽)와 그 역할 전용 커맨드, 리뷰 실행 명령 |
-| `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전, 권한 허용 목록의 forge 명령 |
-| `issues.labels` · `required_fields` · `deletion_forbidden` | 이슈 생성 스크립트, 삭제 가드, 규칙 문서 |
+| `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전, 권한 허용 목록의 forge 명령, 이슈·리뷰 요청 템플릿(`tracker` 가 이슈 템플릿, `review_host` 가 리뷰 요청 템플릿. Jira 트래커는 이슈 템플릿이 없다) |
+| `issues.labels` · `required_fields` · `deletion_forbidden` | 이슈 생성 스크립트, 삭제 가드, 규칙 문서, 이슈 템플릿의 라벨, `harness forge-setup` 이 만드는 라벨 |
 | `mr.default_assignee` · `default_reviewer` | forge 명령 사전, 작성 요령 |
 | `adr.style` · `tool` · `dir` | 결정 기록 사전·양식·디렉터리 |
 | `docs.protected` | 권한 deny, 명령 가드, 규칙 문서 |

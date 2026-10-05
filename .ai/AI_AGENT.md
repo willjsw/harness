@@ -326,7 +326,7 @@ relates to <상위 이슈>
 3. 통과 시에만 커밋. 실패 시 커밋하지 않고 실패 원인을 보고
 4. 커밋 시 pre-commit 훅이 생성물 일치를 다시 검사 — **어긋나면 커밋이 차단된다**
 
-훅 활성화는 클론 후 1회: `git config core.hooksPath script/githooks`
+훅은 `harness install` 이 `core.hooksPath` 가 비어 있을 때 켠다. 켜지지 않았으면 `harness doctor` 가 켜는 명령을 알려 준다
 
 ## 9. 문서 지도
 

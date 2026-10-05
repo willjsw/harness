@@ -45,13 +45,16 @@
 | `hooks/_guards.sh` | 가드 함수 — 보호 브랜치 push·commit, force push·원격 삭제, 훅 우회, 보호 문서의 셸 수정 | `bash-guard.sh` |
 | `test-*.sh` | 회귀 테스트. 원격을 부르지 않는다 | `run-lint-test.sh` |
 
-## 훅 활성화 (클론 후 1회)
+## 훅 활성화
+
+`harness install` 이 `core.hooksPath` 가 비어 있으면 켠다. 다른 값이나 `.git/hooks/` 의 자기 훅이 있으면 두고
+켜는 명령만 알린다. 이미 설치된 리포를 새로 클론했으면 `harness doctor` 가 알려 주는 명령으로 켠다.
 
 ```bash
-git config core.hooksPath script/githooks
+git config core.hooksPath script/githooks   # 모노레포면 packages/api/script/githooks 처럼 서브프로젝트 경로를 앞에 붙인다
 ```
 
-이 설정이 없으면 커밋·push 검사가 **조용히 건너뛰어진다.** 클론 직후 확인한다.
+이 설정이 없으면 커밋·push 검사가 **조용히 건너뛰어진다.**
 
 ## 가드레일 층위
 
