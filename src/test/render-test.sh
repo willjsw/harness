@@ -567,7 +567,7 @@ done
 echo "UT-19 uninstall removes only what the harness installed"
 # 프로젝트가 쓴 산문과 작업 산출물을 지우면 되돌릴 수 없다.
 t="$work/rm"; rm -rf "$t"; mkdir -p "$t"
-( cd "$t" && git init -q . && git config core.hooksPath script/githooks )
+( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
 printf '내가 쓴 담당 범위\n' >> "$t/.ai/project/scope.md"
 mkdir -p "$t/docs/spec" && echo "명세" > "$t/docs/spec/12-foo.md"
@@ -3396,6 +3396,51 @@ env -u RENDER_TEST_WATCHED RENDER_TEST_BLOCK_LIMIT=nan "$root/test/render-test.s
 check "render-test refuses a limit that is not a positive number" "$?" "2"
 has "$wd/top.err" "RENDER_TEST_BLOCK_LIMIT must be a positive number of seconds" "render-test does not say why it refused the limit"
 unset -f drive gone
+
+echo "UT-96 install turns git hooks on only when core.hooksPath is empty, and leaves any other setting with the command to run"
+# 훅이 꺼진 채면 커밋 형식·시크릿 스캔·생성물 검사가 하나도 돌지 않는다. 남이 둔 설정을 덮으면 그 도구의 훅이 사라진다.
+h96() { HARNESS_HOME="$work/home96" "$root/bin/harness" "$@"; }
+hp96() { git -C "$1" config core.hooksPath || echo "(none)"; }
+hk="$work/hk"; rm -rf "$hk"; mkdir -p "$hk"
+# 빈 값 — 켠다. `.sample` 훅만 있으면 비어 있는 것으로 본다
+t="$hk/empty"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+mkdir -p "$t/.git/hooks"; : > "$t/.git/hooks/pre-commit.sample"
+h96 install --target "$t" > "$work/hk-empty.out" 2>&1; check "install into an empty setting exits 0" "$?" "0"
+check "an empty setting is set to the hooks directory" "$(hp96 "$t")" "script/githooks"
+has "$work/hk-empty.out" "install: set core.hooksPath to script/githooks" "install does not say it set core.hooksPath"
+# 재설치 — 켜진 값은 그대로이고 다시 알리지 않는다
+h96 install --target "$t" > "$work/hk-again.out" 2>&1; check "reinstall exits 0" "$?" "0"
+check "reinstall keeps the value" "$(hp96 "$t")" "script/githooks"
+hasnt "$work/hk-again.out" "set core.hooksPath" "reinstall announced the hooks again"
+# 다른 값 — 두고 켜는 명령을 알린다
+t="$hk/other"; mkdir -p "$t"; ( cd "$t" && git init -q . && git config core.hooksPath .husky )
+h96 install --target "$t" > "$work/hk-other.out" 2>&1; check "install over another value exits 0" "$?" "0"
+check "another value is left as is" "$(hp96 "$t")" ".husky"
+has "$work/hk-other.out" "core.hooksPath is already .husky — left as is" "install does not say it left the other value"
+has "$work/hk-other.out" "git config core.hooksPath script/githooks" "install does not give the command that turns the hooks on"
+hasnt "$work/hk-other.out" "set core.hooksPath to" "install claims it set a value it left"
+# 자기 훅 — 값이 비어 있어도 `.git/hooks/` 의 훅을 가리지 않는다
+t="$hk/own"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+mkdir -p "$t/.git/hooks"; printf '#!/bin/sh\nexit 0\n' > "$t/.git/hooks/pre-commit"; chmod +x "$t/.git/hooks/pre-commit"
+h96 install --target "$t" > "$work/hk-own.out" 2>&1; check "install over own hooks exits 0" "$?" "0"
+check "own hooks keep the setting empty" "$(hp96 "$t")" "(none)"
+has "$work/hk-own.out" "pre-commit" "install does not name the hook it found"
+has "$work/hk-own.out" "left as is" "install does not say it left the own hooks"
+has "$work/hk-own.out" "git config core.hooksPath script/githooks" "install does not give the command for own hooks"
+# git 밖 — 실패가 아니다
+t="$hk/nogit"; mkdir -p "$t"
+h96 install --target "$t" > "$work/hk-nogit.out" 2>&1; check "install outside git exits 0" "$?" "0"
+has "$work/hk-nogit.out" "install: not a git repository — git hooks were not enabled" "install outside git does not say the hooks are off"
+has "$work/hk-nogit.out" "git config core.hooksPath script/githooks" "install outside git does not give the command"
+# 모노레포 — 서브프로젝트의 기대 값으로 켜고, 둘째 서브프로젝트는 첫째의 값을 둔다
+m="$hk/mono"; mkdir -p "$m/packages/api" "$m/packages/web"; ( cd "$m" && git init -q . )
+h96 install --target "$m/packages/api" > "$work/hk-mono.out" 2>&1; check "install into a subproject exits 0" "$?" "0"
+check "a subproject sets its own hooks path" "$(hp96 "$m")" "packages/api/script/githooks"
+has "$work/hk-mono.out" "set core.hooksPath to packages/api/script/githooks" "install does not name the subproject's value"
+h96 install --target "$m/packages/web" > "$work/hk-mono2.out" 2>&1; check "install into a second subproject exits 0" "$?" "0"
+check "a second subproject keeps the first one's value" "$(hp96 "$m")" "packages/api/script/githooks"
+has "$work/hk-mono2.out" "git config core.hooksPath packages/web/script/githooks" "the second subproject does not give its own command"
+cat "$work"/hk-*.out > "$work/hk-all.log"; no_hangul "$work/hk-all.log" "install hooks output"
 
 echo
 if [ "$fail" -eq 0 ]; then

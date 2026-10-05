@@ -1680,7 +1680,11 @@ def cmd_install(cfg, target, args):
     with registry_lock():
         if not install_registered(cfg, target, args):
             return 2
-    return cmd_render(cfg, target, args)
+    rc = cmd_render(cfg, target, args)
+    # 렌더가 끝나야 `script/githooks/` 가 있다.
+    if rc == 0:
+        report_hooks(target)
+    return rc
 
 
 def install_registered(cfg, target: Path, args=None) -> bool:
@@ -1739,9 +1743,83 @@ ADR_EXE = {"adr-tools": "adr"}
 
 
 def hooks_path(target: Path):
-    r = subprocess.run(["git", "-C", str(target), "config", "core.hooksPath"],
-                       capture_output=True, text=True)
+    r = git(target, "config", "core.hooksPath")
     return r.stdout.strip() if r.returncode == 0 else ""
+
+
+HOOKS_DIR = "script/githooks"
+
+
+def repo_prefix(target: Path):
+    """하네스 루트의 리포 안 위치 — 리포 루트면 빈 문자열, 아니면 `/` 로 끝난다. git 작업 트리 밖이면 None."""
+    r = git(target, "rev-parse", "--show-prefix")
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def hooks_expected(target: Path) -> str:
+    """이 하네스의 훅을 켜는 `core.hooksPath` 값. 작업 트리 최상위 기준의 상대 경로다."""
+    return (repo_prefix(target) or "") + HOOKS_DIR
+
+
+def hooks_on(target: Path, value: str = None) -> bool:
+    """`core.hooksPath` 가 하네스 루트의 `script/githooks` 를 가리키는가. 상대 값은 작업 트리 최상위 기준으로 푼다."""
+    value = hooks_path(target) if value is None else value
+    if not value:
+        return False
+    top = git(target, "rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return False
+    p = Path(os.path.expanduser(value))
+    if not p.is_absolute():
+        p = Path(top.stdout.strip()) / p
+    return os.path.realpath(p) == os.path.realpath(target / HOOKS_DIR)
+
+
+def enable_hooks(target: Path):
+    """비어 있을 때만 `core.hooksPath` 를 기대 값으로 켠다. 출력하지 않고 (결과, 부가 값) 을 돌려준다.
+
+    결과는 `no-git` · `already` · `other`(그 값) · `own-hooks`(훅 파일 이름 목록) · `set`(기대 값) · `failed`(git 의 오류 끝 줄).
+    """
+    if repo_prefix(target) is None:
+        return "no-git", None
+    value = hooks_path(target)
+    if hooks_on(target, value):
+        return "already", value
+    if value:
+        return "other", value
+    r = git(target, "rev-parse", "--git-path", "hooks")
+    if r.returncode == 0 and r.stdout.strip():
+        d = Path(r.stdout.strip())
+        d = d if d.is_absolute() else target / d
+        own = sorted(f.name for f in d.iterdir() if f.is_file() and not f.name.endswith(".sample")) if d.is_dir() else []
+        if own:
+            return "own-hooks", (r.stdout.strip(), own)
+    want = hooks_expected(target)
+    r = git(target, "config", "core.hooksPath", want)
+    if r.returncode != 0:
+        tail = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+        return "failed", tail[-1].strip() if tail else "git config exited with %d" % r.returncode
+    return "set", want
+
+
+def report_hooks(target: Path):
+    """install 이 훅 설정 결과를 표준 출력에 알린다. 종료 코드는 바꾸지 않는다."""
+    result, extra = enable_hooks(target)
+    want = hooks_expected(target) if result != "no-git" else HOOKS_DIR
+    help_line = "help: to use this harness's hooks, run `git config core.hooksPath %s`" % want
+    if result == "set":
+        print("install: set core.hooksPath to %s — git hooks now run on commit and push" % extra)
+    elif result == "other":
+        print("install: core.hooksPath is already %s — left as is\n%s" % (extra, help_line))
+    elif result == "own-hooks":
+        d, names = extra
+        print("install: core.hooksPath is not set but %s has hooks of its own (%s) — left as is\n%s"
+              % (d, ", ".join(names), help_line))
+    elif result == "no-git":
+        print("install: not a git repository — git hooks were not enabled\n"
+              "help: after `git init`, run `git config core.hooksPath %s`" % want)
+    elif result == "failed":
+        print("install: could not set core.hooksPath: %s\n%s" % (extra, help_line))
 
 
 def owned_files(target: Path):
