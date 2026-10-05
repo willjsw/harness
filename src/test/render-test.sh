@@ -3580,6 +3580,25 @@ has "$work/fsetup-help.out" "forge-setup" "help does not list forge-setup"
 has "$work/fsetup-help.out" "writes to the remote" "help does not say forge-setup writes to the remote"
 cat "$work"/fsetup*.out "$work/fsetup.err" > "$work/fsetup-all.log"; no_hangul "$work/fsetup-all.log" "forge-setup output"
 
+echo "UT-99 an installed work-preflight reads the issue through the adapter and does not start on a closed or unreadable issue"
+# 없는 번호나 닫힌 이슈에도 standalone 이 나오면 끝난 작업에 브랜치와 리뷰 요청이 새로 생긴다.
+t="$work/preflight99"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+HARNESS_HOME="$work/home99" "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for work-preflight"
+isolate_records "$t"
+cp "$root/test/fake-forge.sh" "$t/script/forge.sh"
+pstate="$work/preflight99-state"; mkdir -p "$pstate"
+pf99() { ( cd "$t" && FAKE_STATE="$pstate" ./script/work-preflight.sh 100 ) > "$work/pf99.out" 2> "$work/pf99.err"; }
+echo closed > "$pstate/issue_state"; pf99; check "a closed issue is not started" "$?" "1"
+has "$work/pf99.err" "stop: issue 100 is closed" "work-preflight does not say the issue is closed"
+echo fail > "$pstate/issue_state"; pf99; check "an unreadable issue stops the run" "$?" "2"
+has "$work/pf99.err" "stop: could not read issue 100 from the tracker" "work-preflight does not say the issue could not be read"
+echo empty > "$pstate/issue_state"; pf99; check "an issue without a state stops the run" "$?" "2"
+has "$work/pf99.err" "stop: could not read the state of issue 100" "work-preflight does not say the state could not be read"
+grep -q "issue-closed" "$t.records/usage.log" && grep -q "issue-query-failed" "$t.records/usage.log" && ok \
+  || bad "the usage log lacks the issue labels"
+no_hangul "$work/pf99.err" "work-preflight issue check output"
+unset -f pf99
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

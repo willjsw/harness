@@ -25,7 +25,7 @@ done
 for t in script/test-review-loop.sh script/test-carryover-issue.sh \
          script/test-sync-task-issues.sh script/test-rollback-work.sh \
          script/test-secret-scan.sh script/test-bash-guard.sh script/test-usage-log.sh \
-         script/test-forge-labels.sh script/test-forge-setup.sh; do
+         script/test-forge-labels.sh script/test-forge-setup.sh script/test-work-preflight.sh; do
   [ -x "$t" ] || continue
   log=$(mktemp)
   if ! "$t" > "$log" 2>&1; then

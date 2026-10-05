@@ -32,6 +32,7 @@
       "Bash(script/test-secret-scan.sh:*)",
       "Bash(script/test-sync-task-issues.sh:*)",
       "Bash(script/test-usage-log.sh:*)",
+      "Bash(script/test-work-preflight.sh:*)",
       "Bash(script/usage-log.sh:*)",
       "Bash(script/usage-report.sh:*)",
       "Bash(script/usage-vocab.sh:*)",
