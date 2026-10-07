@@ -1,10 +1,22 @@
-// 보호 문서 경로. 정본은 `bin/harness` 의 BASE_PROTECTED·PROTECTED_PATH 다 — 여기는 추가 전에 미리 걸러 보일 뿐,
+// 보호 문서 경로. 늘 보호하는 기준 목록은 `harness schema` 의 base_protected 로 받는다.
+// 경로 모양 검사의 정본은 CLI 의 PROTECTED_PATH 다 — 여기는 추가 전에 미리 걸러 보일 뿐,
 // 저장할 때 CLI 가 같은 검사를 다시 한다. 한쪽을 고치면 다른 쪽도 고친다.
-export const BASE_PROTECTED = [".ai/project/scope.md", ".ai/project/architecture.md", ".ai/project/glossary.md", ".ai/project/testing.md", ".ai/project/roles/"];
 
 const PATH = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[\w.-]+(\/[\w.-]+)*(\/|\/\*\*)?$/;
 
 export const isDir = (p) => p.endsWith("/") || p.endsWith("/**");
+
+// 설정 값에서 기준 목록에 있는 항목만 뺀 것 — 사람이 더한 경로. 순서는 그대로다.
+export const ownPaths = (value, base) => value.filter((x) => !base.includes(x));
+
+// 경로들이 함께 놓인 가장 깊은 디렉터리(`/` 로 끝난다). 없으면 빈 문자열이다.
+export function commonDir(list) {
+  if (!list.length) return "";
+  const dirs = list.map((p) => p.slice(0, p.lastIndexOf("/") + 1).split("/").slice(0, -1));
+  const out = [];
+  for (let n = 0; dirs.every((d) => n < d.length && d[n] === dirs[0][n]); n++) out.push(dirs[0][n]);
+  return out.length ? out.join("/") + "/" : "";
+}
 
 // 넣을 수 없으면 이유를, 넣을 수 있으면 null.
 export function pathProblem(p, list) {

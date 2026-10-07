@@ -24,7 +24,8 @@ const DISTINCT = "invariants.distinct_reviewer";
 const collides = (out) => /run on the same runner/.test(out);
 
 // also: 이 값을 바꿀 때 함께 넣을 [키, 값] 들 — 한 번에 넘겨 한 번 검증한다(오케스트레이터 → 서브에이전트 역할의 모델 비우기)
-export default function ValueField({ project, k, label, value, help, compact, allowed, options, also, children }) {
+// base: 보호 문서 목록(docs.protected)의 기준 목록 — schema 의 base_protected. 없으면 그 목록을 편집하지 않는다
+export default function ValueField({ project, k, label, value, help, compact, allowed, options, also, base, children }) {
   const isList = Array.isArray(value);
   const all = options ?? (typeof value === "boolean" ? [["true", "true"], ["false", "false"]] : enumFor(k));
   const choices = all && allowed
@@ -70,7 +71,7 @@ export default function ValueField({ project, k, label, value, help, compact, al
         <span className="label-help"><label htmlFor={k}>{label ?? k}</label><HelpTip text={help} /></span>
         {!compact && <code className="key fname">{k}</code>}
       </div>
-      {k === "docs.protected" ? <PathList project={project} k={k} value={value} /> : (<>
+      {k === "docs.protected" ? <PathList project={project} k={k} value={value} base={base} /> : (<>
       <div className="row">
         {RANGES[k] ? (
           <NumberField id={k} value={Number(v)} min={RANGES[k][0]} max={RANGES[k][1]} disabled={pending} busy={pending}

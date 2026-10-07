@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pathProblem, dirProblem } from "./paths.js";
+import { pathProblem, dirProblem, ownPaths, commonDir } from "./paths.js";
 
 test("pathProblem", () => {
   const list = [".ai/project/scope.md", "docs/spec/"];
@@ -12,4 +12,23 @@ test("pathProblem", () => {
 test("dirProblem", () => {
   for (const ok of ["docs/adr", "docs/adr/", "adr"]) assert.equal(dirProblem(ok), null, ok);
   for (const bad of ["", "/abs", "../x", "docs/**", "a b"]) assert.notEqual(dirProblem(bad), null, bad);
+});
+
+test("ownPaths drops only what the base list holds, in order", () => {
+  const base = [".ai/project/scope.md", ".ai/project/roles/"];
+  assert.deepEqual(ownPaths(["docs/b.md", ".ai/project/scope.md", "docs/a/", ".ai/project/roles/", "README.md"], base),
+    ["docs/b.md", "docs/a/", "README.md"]);
+  assert.deepEqual(ownPaths([".ai/project/scope.md"], base), []);
+});
+
+test("ownPaths with an empty base list is the value as it is", () => {
+  const value = [".ai/project/scope.md", "docs/a.md"];
+  assert.deepEqual(ownPaths(value, []), value);
+});
+
+test("commonDir is the deepest directory the paths share", () => {
+  assert.equal(commonDir([".ai/project/scope.md", ".ai/project/roles/", ".ai/project/workflows/"]), ".ai/project/");
+  assert.equal(commonDir([".ai/project/roles/", ".ai/project/roles/x.md"]), ".ai/project/roles/");
+  assert.equal(commonDir(["README.md", "docs/a.md"]), "");
+  assert.equal(commonDir([]), "");
 });

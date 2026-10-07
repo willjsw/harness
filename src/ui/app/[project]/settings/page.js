@@ -80,7 +80,8 @@ export default async function Settings({ params }) {
             const k = `${section}.${key}`;
             const plain = val === null || typeof val !== "object" || (Array.isArray(val) && val.every((x) => typeof x === "string"));
             return plain && !READONLY.has(k)
-              ? <ValueField key={k} project={project} k={k} label={settingTitle(key)} value={val} help={HELP[k]} allowed={allowed?.[k]} options={options[k]} also={k === "harness.orchestrator" ? resetModel : undefined}>
+              ? <ValueField key={k} project={project} k={k} label={settingTitle(key)} value={val} help={HELP[k]} allowed={allowed?.[k]} options={options[k]} also={k === "harness.orchestrator" ? resetModel : undefined}
+                  base={k === "docs.protected" && schema?.docs ? schema.base_protected : undefined}>
                   {sync[k] && <ToolSync project={project} tools={tools} kind={sync[k]} />}
                   {k === "harness.orchestrator" && schema && Object.entries(schema.roles).some(([, r]) => r.model_ok === false) && (
                     <p className="error">모델이 실행 주체와 맞지 않는 역할: {Object.entries(schema.roles).filter(([, r]) => r.model_ok === false).map(([n, r]) => `${n} (${r.model})`).join(", ")} —{" "}

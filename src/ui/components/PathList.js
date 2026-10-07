@@ -1,7 +1,8 @@
 "use client";
 import { useState, useTransition } from "react";
 import { setValue } from "@/lib/actions";
-import { BASE_PROTECTED, isDir, pathProblem } from "@/lib/paths";
+import { commonDir, isDir, ownPaths, pathProblem } from "@/lib/paths";
+import Reinstall from "@/components/Reinstall";
 
 const FILE = <path d="M4 1.5h5l3 3V14a.5.5 0 0 1-.5.5h-7.5A.5.5 0 0 1 3.5 14V2a.5.5 0 0 1 .5-.5zM9 1.5V5h3" />;
 const DIR = <path d="M1.5 4a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" />;
@@ -10,9 +11,19 @@ const Ico = ({ d, cls = "" }) => (
 );
 
 // 보호 문서 목록. 한 줄에 경로 하나 — 긴 경로를 태그로 늘어놓으면 앞부분이 같은 것끼리 비교하기 어렵다.
-// 기준 문서는 CLI 가 늘 넣으므로 잠겨 있고, 더한 경로만 지울 수 있다.
-export default function PathList({ project, k, value }) {
-  const initial = value.filter((x) => !BASE_PROTECTED.includes(x));
+// 기준 문서(base — schema 의 base_protected)는 CLI 가 늘 넣으므로 잠겨 있고, 더한 경로만 지울 수 있다.
+// base 가 없으면(고정 사본이 기준 목록을 내지 않는다) 편집하지 않고 재설치를 안내한다.
+export default function PathList({ project, k, value, base }) {
+  if (!base) return (<>
+    <ul className="paths" aria-label="보호 문서 목록">{value.map((p) => <li key={p} className="path-row locked"><Ico d={isDir(p) ? DIR : FILE} /><code>{p}</code></li>)}</ul>
+    <Reinstall what="보호 문서 목록을 편집" compact />
+  </>);
+  return <PathEditor project={project} k={k} value={value} base={base} />;
+}
+
+function PathEditor({ project, k, value, base }) {
+  const root = commonDir(base);
+  const initial = ownPaths(value, base);
   const [list, setList] = useState(initial);
   const [draft, setDraft] = useState("");
   const [err, setErr] = useState(null);
@@ -22,21 +33,23 @@ export default function PathList({ project, k, value }) {
 
   const add = () => {
     const p = draft.trim();
-    const why = pathProblem(p, [...BASE_PROTECTED, ...list]);
+    const why = pathProblem(p, [...base, ...list]);
     if (why) { setErr(why); return; }
     setList([...list, p]); setDraft(""); setErr(null);
   };
-  const save = () => start(async () => setMsg(await setValue(project, k, [...BASE_PROTECTED, ...list].join(","), true)));
+  const save = () => start(async () => setMsg(await setValue(project, k, [...base, ...list].join(","), true)));
 
   return (
     <>
       <ul className="paths" aria-label="보호 문서 목록">
-        <li className="path-group">
-          <Ico d={DIR} /><code>.ai/project/</code>
-        </li>
-        {BASE_PROTECTED.map((p) => (
+        {root && (
+          <li className="path-group">
+            <Ico d={DIR} /><code>{root}</code>
+          </li>
+        )}
+        {base.map((p) => (
           <li key={p} className="path-row locked">
-            <Ico d={isDir(p) ? DIR : FILE} /><code>{p.slice(".ai/project/".length)}</code>
+            <Ico d={isDir(p) ? DIR : FILE} /><code>{p.slice(root.length)}</code>
           </li>
         ))}
         {list.map((p) => (
