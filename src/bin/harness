@@ -2107,9 +2107,43 @@ def harness_version() -> str:
     return "%s+%s%s" % (base, rev[:7], "-dirty" if dirty else "")
 
 
-def cmd_install(cfg, target, args):
+def loaded_config(target: Path) -> dict:
+    cfg = load(target)
+    normalize(cfg)
+    validate(cfg)
+    return cfg
+
+
+def cmd_install(_cfg, target, args):
+    """설정을 깔고(없으면) 고정 사본을 깔고 등록한 뒤 render 한다.
+
+    `--create` 는 없는 대상 디렉터리를 만들고 `--git-init` 은 `.git` 이 없는 대상에서 git 을 시작한다.
+    무엇이든 만들기 전에 등록을 가른다 — 거부되면 디렉터리 · `.git` · 설정이 생기지 않는다.
+    """
+    create, git_init = getattr(args, "create", False), getattr(args, "git_init", False)
+    if not os.path.lexists(target) and not create:
+        die("error: target directory does not exist\n  --> %s\n\n"
+            "help: create it as part of the install\n        harness install --create --target %s" % (target, target))
+    if os.path.lexists(target) and not target.is_dir():
+        die("error: target is not a directory\n  --> %s" % target)
     # 같은 이름의 설치가 동시에 돌면 둘 다 빈 등록을 보고 통과한다. 판정부터 등록까지 잠근다.
     with registry_lock():
+        # 판정 이름은 대상의 설정에 있으면 그 이름, 없으면 새로 깔 설정이 채울 디렉터리 이름이다
+        cfg = loaded_config(target) if (target / "harness.toml").is_file() else None
+        if refuse_taken(cfg or {"project": {"name": target.name}}, target) is None:
+            return 2
+        if not target.is_dir():
+            target.mkdir(parents=True)
+            print("install: created %s" % target)
+        if git_init and not os.path.lexists(target / ".git"):
+            r = subprocess.run(["git", "init", "-q"], cwd=str(target), capture_output=True, text=True)
+            if r.returncode != 0:
+                tail = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+                die("error: git init failed: %s\n  --> %s" % (tail[-1].strip() if tail else "exit %d" % r.returncode, target))
+            print("install: started a git repository in %s" % target)
+        if cfg is None:
+            seed_config(target)
+            cfg = loaded_config(target)
         if not install_registered(cfg, target, args):
             return 2
     rc = cmd_render(cfg, target, args)
@@ -4257,7 +4291,7 @@ def cmd_start_server(_cfg, _target, args):
 
 COMMANDS = {
     # 이름          (함수, 설정이 필요한가, 인수, 설명)
-    "install":   (None, True,  "[--target DIR] [--adopt]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
+    "install":   (None, True,  "[--target DIR] [--adopt] [--create] [--git-init]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
     "render":    (None, True,  "[--target DIR] [--adopt]", "harness.toml + .ai/project/ -> generated files"),
     "check":     (None, True,  "[--staged]", "verify generated files match the config and managed files match the manifest"),
     "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, managed file changes, tools, hooks (--remote: also the remote, read-only; "
@@ -4421,6 +4455,8 @@ def main():
     ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
     ap.add_argument("--json", action="store_true", help="doctor: print the items as one JSON object")
     ap.add_argument("--remote", action="store_true", help="doctor, status: also check the remote, read-only")
+    ap.add_argument("--create", action="store_true", help="install: create the target directory if it does not exist")
+    ap.add_argument("--git-init", action="store_true", help="install: run `git init` in the target if it has no .git")
     ap.add_argument("--adopt", action="store_true",
                     help="install, render, set, steps, checks: take over files the harness would write, keeping each as <path>.orig")
     ap.add_argument("-h", "--help", action="store_true")
@@ -4440,10 +4476,10 @@ def main():
     target = Path(args.target).resolve()
     delegate(target, args.command)
 
+    if args.command == "install":       # 설정을 깔기 전에 등록을 가르고, 대상을 만들 수 있다
+        return cmd_install(None, target, args)
     cfg = None
     if COMMANDS[args.command][1]:
-        if args.command == "install":
-            seed_config(target)
         cfg = load(target)
         normalize(cfg)
         validate(cfg)

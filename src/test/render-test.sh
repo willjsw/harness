@@ -4116,7 +4116,7 @@ sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
 cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
 
-echo "UT-105 the UI writes through CLI commands: write-doc writes a document or note and is denied protected names; fix runs a Doctor fix"
+echo "UT-105 the UI writes through CLI commands: write-doc writes a document or note and is denied protected names; fix runs a Doctor fix; install --create makes a new project"
 # UI 가 파일을 직접 쓰면 머리 주석·render 를 UI 와 CLI 가 따로 알게 되고, 한쪽만 고치면 결과가 갈린다.
 body101() { python3 -c 'import sys; print(repr(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
 tree101() { # tree101 <대상> — 등록부를 뺀 파일 경로와 내용의 해시. 파일이 하나라도 생기거나 바뀌면 달라진다
@@ -4251,6 +4251,35 @@ fix101; check "fix refuses a missing fix" "$?" "2"
 cat "$work/fix101.out" "$work/fix101.err" >> "$work/fix101-all.log"
 no_hangul "$work/fix101-all.log" "fix output"
 unset -f fix101
+# install --create · --git-init — 새 프로젝트 만들기가 CLI 한 번이다. 거부되면 아무것도 만들지 않는다
+c101="$work/create101"; rm -rf "$c101" "$work/home101"
+in101() { HARNESS_HOME="$work/home101" "$root/bin/harness" install "$@" > "$work/in101.out" 2> "$work/in101.err"; }
+reg101() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$work/home101/$1/project.json" 2>/dev/null || echo "(none)"; }
+in101 --create --git-init --target "$c101/a/fresh101"; check "install --create --git-init into a missing path" "$?" "0"
+[ -d "$c101/a/fresh101/.git" ] && ok || bad "install --git-init did not start a git repository"
+[ -f "$c101/a/fresh101/harness.toml" ] && ok || bad "install --create did not lay down the config"
+check "the new path is registered" "$(reg101 fresh101)" "$(cd "$c101/a/fresh101" && pwd -P)"
+cat "$work/in101.out" "$work/in101.err" > "$work/in101-all.log"
+in101 --target "$c101/b/missing101"; check "install into a missing path without --create" "$?" "2"
+[ ! -e "$c101/b" ] && ok || bad "install without --create made the path"
+has "$work/in101.err" "error: target directory does not exist" "the refusal does not say the directory is missing"
+has "$work/in101.err" "--create" "the refusal does not point at --create"
+cat "$work/in101.err" >> "$work/in101-all.log"
+before=$(cat "$work/home101/fresh101/project.json")
+in101 --create --git-init --target "$c101/c/fresh101"; check "install --create under a name in use elsewhere" "$?" "2"
+[ ! -e "$c101/c" ] && ok || bad "a refused install --create made the path"
+check "a refused install --create leaves the registry" "$(cat "$work/home101/fresh101/project.json")" "$before"
+has "$work/in101.err" "is already registered to another repository" "the refusal is not the registry's"
+cat "$work/in101.err" >> "$work/in101-all.log"
+r="$c101/d/repo101"; mkdir -p "$r"
+( cd "$r" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first ) || bad "could not prepare a repository"
+head101=$(git -C "$r" rev-parse HEAD)
+in101 --git-init --target "$r"; check "install --git-init into a repository" "$?" "0"
+check "the repository keeps its history" "$(git -C "$r" rev-parse HEAD)|$(git -C "$r" rev-list --count HEAD)" "$head101|1"
+hasnt "$work/in101.out" "started a git repository" "install --git-init claims it started git over an existing one"
+cat "$work/in101.out" "$work/in101.err" >> "$work/in101-all.log"
+no_hangul "$work/in101-all.log" "install --create output"
+unset -f in101 reg101
 
 echo
 if [ "$fail" -eq 0 ]; then
