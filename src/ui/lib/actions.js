@@ -152,9 +152,9 @@ export async function saveWorkflowNotes(project, wf, text) {
   return r;
 }
 
-// 새 프로젝트: 디렉터리를 만들고(필요하면 git init) `harness install` 로 설치·등록한다.
-// 로컬 파일을 쓰는 동작이라 경로를 좁힌다 — 절대 경로, 홈 디렉터리 안쪽, 하네스 등록부 밖.
-// 등록부는 이름(디렉터리 이름)이 키라, 같은 이름의 다른 프로젝트가 있으면 덮지 않고 거부한다.
+// 새 프로젝트: `harness install --create [--git-init]` 한 번이 디렉터리 생성·git 시작·설치·등록을 한다.
+// 같은 이름의 거부는 CLI 가 아무것도 만들기 전에 하고, 그 안내문을 그대로 돌려준다.
+// UI 요청을 받는 자리라 경로를 좁힌다 — 절대 경로, 홈 디렉터리 안쪽, 하네스 등록부 밖.
 export async function createProject(dir, gitInit) {
   const home = os.homedir();
   if (!dir || !nodePath.isAbsolute(dir)) return { ok: false, out: "절대 경로를 적는다 (예: /Users/me/work/my-app)" };
@@ -162,17 +162,11 @@ export async function createProject(dir, gitInit) {
   if (target !== dir.replace(/\/+$/, "")) return { ok: false, out: "경로에 . 이나 .. 을 쓰지 않는다" };
   if (!target.startsWith(home + nodePath.sep) || target === home) return { ok: false, out: `홈 디렉터리(${home}) 안의 디렉터리만 만든다` };
   if (target === HOME || target.startsWith(HOME + nodePath.sep)) return { ok: false, out: "하네스 등록부 안에는 만들지 않는다" };
-  const name = nodePath.basename(target);
-  const taken = (await listProjects()).find((p) => p.name === name && p.path && p.path !== target);
-  if (taken) return { ok: false, out: `같은 이름의 프로젝트가 이미 등록돼 있다: ${taken.path}\n디렉터리 이름을 바꿔 만든다` };
-  await fs.mkdir(target, { recursive: true });
-  if (gitInit) {
-    try { await fs.access(nodePath.join(target, ".git")); }
-    catch { await promisify(execFile)("git", ["init", "-q"], { cwd: target }); }
-  }
-  const r = await harness(target, ["install"]);
+  const r = await harness(target, ["install", "--create", ...(gitInit ? ["--git-init"] : [])]);
   revalidatePath("/");
-  return { ...r, name: r.ok ? name : undefined };
+  // 등록 이름은 설정의 project.name 이다 — 등록부에서 이 경로의 이름을 찾는다
+  const name = r.ok ? ((await listProjects()).find((p) => p.path === target)?.name ?? nodePath.basename(target)) : undefined;
+  return { ...r, name };
 }
 
 // 새 프로젝트 디렉터리를 macOS 폴더 선택 창으로 고른다. 창에서 새 폴더도 만들 수 있다.
