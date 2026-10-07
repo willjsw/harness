@@ -134,6 +134,89 @@ def main(argv):
 if __name__ == "__main__":
     main(sys.argv[1:])
 '
+# 블록 병렬 실행. 블록을 묶음으로 나눠 RENDER_TEST_JOBS(기본: 코어 수, 최대 8)개의 셸에서 동시에 돌린다.
+# 블록이 자기 안에서 정하기 전에 쓰는 변수를 앞 블록이 정했으면, 그 블록부터 여기까지를 한 묶음으로 둔다
+# (앞 블록이 만든 대상 `$t` 를 이어 쓰는 경우). 셸마다 머리말(공용 함수)과 자기 묶음만 담은 사본이 돌고,
+# 작업 디렉터리·감시를 따로 갖는다. RENDER_TEST_JOBS=1 이면 한 셸에서 순서대로 돈다.
+# ponytail: 의존은 변수 이름으로만 찾는다. 앞 블록이 만든 파일·함수를 쓰는 블록이 생기면 그 블록이 실패한다 —
+#           그때는 그 블록에서 대상을 새로 만든다
+shard_py='
+import os, re, shlex, subprocess, sys, tempfile, time
+src = os.path.abspath(sys.argv[1])
+text = open(src, encoding="utf-8").read()
+start = text.index("\necho \"UT-") + 1
+foot = text.index("\necho\nif [ \"$fail\" -eq 0 ]")
+head = text[:start].replace("cd \"$(dirname \"$0\")/..\"", "cd " + shlex.quote(os.path.dirname(os.path.dirname(src))), 1)
+blocks = [b for b in re.split(r"(?m)^(?=echo \"UT-)", text[start:foot]) if b.strip()]
+# 블록 안에서 정의한 도우미 함수는 다른 블록도 부른다 — 정의만 모아 셸마다 머리말 뒤에 싣는다(부작용이 없다)
+lines, defs, i = text[start:foot].split("\n"), [], 0
+while i < len(lines):
+    if re.match(r"[A-Za-z_]\w*\(\)\s*\{", lines[i]):
+        j = i   # 정의의 끝: `}` 로 끝나는 줄 중 거기까지가 셸 문법으로 닫히는 첫 줄
+        while j < len(lines) and not (lines[j].rstrip().endswith("}") and subprocess.run(
+                ["bash", "-n"], input="\n".join(lines[i:j + 1]), text=True, capture_output=True).returncode == 0):
+            j += 1
+        defs.append("\n".join(lines[i:j + 1]))
+        i = j
+    i += 1
+head += "\n".join(defs) + "\n"
+token = re.compile(r"(?<!,)\$\{?([A-Za-z_]\w*)|(?:^|[;\s(])([A-Za-z_]\w*)=|(?:for|read -r|local)\s+([A-Za-z_][\w ]*)", re.M)
+shared = {"root", "work", "pass", "fail", "HOME", "PATH", "HARNESS_HOME", "PWD", "TMPDIR", "RANDOM"}
+defined, unit = {}, list(range(len(blocks)))   # unit[i] = 이 블록이 속한 묶음의 첫 블록
+heredoc = re.compile(r"<<-?\s*[\x27\"]?(\w+)[\x27\"]?[^\n]*\n.*?\n\s*\1\n", re.S)   # 안의 다른 언어 코드는 셸 변수가 아니다
+for i, b in enumerate(blocks):
+    local = set()
+    for use, assign, loop in (m.groups() for m in token.finditer(heredoc.sub("\n", b))):
+        if assign:
+            local.add(assign)
+        elif loop:
+            local.update(loop.split())
+        elif use and use not in local and use not in shared and use in defined:
+            for k in range(defined[use], i + 1):
+                unit[k] = unit[defined[use]]
+    for v in local:
+        defined[v] = i
+for i in range(1, len(blocks)):   # 묶음은 이어진 범위다 — 범위 안 블록은 앞 묶음을 따른다
+    unit[i] = min(unit[i], unit[unit[i]])
+units = {}
+for i, u in enumerate(unit):
+    units.setdefault(u, []).append(i)
+jobs = max(1, min(int(os.environ.get("RENDER_TEST_JOBS") or os.cpu_count() or 1), 8, len(units)))
+shards = [[] for _ in range(jobs)]
+for u in sorted(units.values(), key=lambda ix: -sum(len(blocks[i]) for i in ix)):   # 긴 묶음부터 가장 가벼운 셸에
+    min(shards, key=lambda s: sum(len(blocks[i]) for i in s)).extend(u)
+tmp = tempfile.mkdtemp(prefix="render-test-")
+env = {k: v for k, v in os.environ.items() if k != "RENDER_TEST_WATCHED"}
+procs = []
+for n, s in enumerate(shards):
+    f = os.path.join(tmp, "shard-%d.sh" % n)
+    open(f, "w", encoding="utf-8").write(head + "".join(blocks[i] for i in sorted(s)) + text[foot:])
+    log = open(os.path.join(tmp, "shard-%d.log" % n), "w+")
+    procs.append((subprocess.Popen(["bash", f], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                   env=dict(env, RENDER_TEST_SHARD=str(n))), log))
+t0, took = time.time(), {}
+while len(took) < len(procs):   # 셸마다 끝난 시각을 잰다 — 가장 느린 셸이 전체 시간이다
+    for n, (p, _log) in enumerate(procs):
+        if n not in took and p.poll() is not None:
+            took[n] = time.time() - t0
+    time.sleep(0.2)
+passed = failed = bad = 0
+for p, log in procs:
+    rc = p.returncode
+    log.seek(0)
+    out = log.read()
+    m = re.search(r"render-test: (\d+) passed(?:, (\d+) failed)?", out)
+    passed += int(m.group(1)) if m else 0
+    failed += int(m.group(2) or 0) if m else 0
+    if rc != 0 or "command not found" in out:   # 다른 셸에만 있는 것을 부르면 검사가 조용히 빠진다
+        bad += 1
+        sys.stdout.write(out)
+    sys.stdout.flush()
+print("\nrender-test: %d passed%s  (%d shards, %s)" % (passed, ", %d failed" % failed if failed else "", jobs,
+                                                        " ".join("%.0fs" % took[n] for n in sorted(took))))
+sys.exit(1 if bad else 0)
+'
+[ -n "${RENDER_TEST_SHARD:-}" ] || [ "${RENDER_TEST_JOBS:-}" = 1 ] || exec python3 -c "$shard_py" "$0"
 [ -n "${RENDER_TEST_WATCHED:-}" ] || exec python3 -c "$watch_py" bash "$0" "$@"
 # 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
 # git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
@@ -460,29 +543,20 @@ for f in .ai/AI_AGENT.md .ai/forge.md .ai/adr.md CLAUDE.md AGENTS.md \
   [ -f "$t/$f" ] && ok || bad "not generated: $f"
 done
 
-echo "UT-15 every managed script's regression test passes in an installed repo"
+echo "UT-15 an installed repo verifies right after install"
 # 여기까지가 실제 사용 경로다 — 설치하고, 훅을 켜고, 검증을 돌린다.
+# 설치된 회귀 테스트가 통과하는지는 바로 아래 블록이 worktree 훅 환경에서 한 번에 본다.
 t="$work/installed"; rm -rf "$t"; mkdir -p "$t"
 ( cd "$t" && git init -q . )
 "$root/bin/harness" install --target "$t" >/dev/null
 isolate_records "$t"
-# 목록을 적지 않고 설치된 것을 센다 — 적어 두면 새 테스트가 여기서 빠진 채 지나간다.
-for f in "$t"/script/test-*.sh; do
-  s=$(basename "$f" .sh)
-  if ( cd "$t" && "./script/$s.sh" >"$work/$s.log" 2>&1 ); then
-    ok
-  else
-    bad "$s failed — $work/$s.log"
-    tail -5 "$work/$s.log" >&2
-  fi
-done
 # 프로젝트 명령을 정하기 전이므로 검증 일괄은 실패한다. 그 사실 자체가 신호다.
 ( cd "$t" && ./script/run-lint-test.sh >"$work/lint.log" 2>&1 )
 check "verification bundle right after install" "$?" "1"
 has "$work/lint.log" "verify: not set up" "the failure is not about unset project commands"
 ls "$t.records/metrics"/spans-*.jsonl >/dev/null 2>&1 && ok || bad "the verification bundle left no spans under the isolated metrics dir"
 
-echo "UT-61 regression tests run from a linked worktree's hook leave that worktree's repo alone"
+echo "UT-61 every managed script's regression test passes from a linked worktree's hook and leaves that worktree's repo alone"
 # 링크된 워크트리의 훅은 GIT_DIR·GIT_INDEX_FILE 을 절대 경로로 넘긴다. 그 값을 물려받은 채
 # 임시 리포를 만들면 임시 디렉터리 대신 그 리포가 다시 초기화된다.
 victim="$work/victim"; rm -rf "$victim" "$victim-wt"; mkdir -p "$victim"
@@ -490,13 +564,24 @@ victim="$work/victim"; rm -rf "$victim" "$victim-wt"; mkdir -p "$victim"
     && git worktree add -q -b side "$victim-wt" ) || bad "could not set up the linked worktree"
 wt_gitdir=$(git -C "$victim-wt" rev-parse --absolute-git-dir)
 branches_before=$(git -C "$victim" branch --format='%(refname:short)' | sort)
+# 목록을 적지 않고 설치된 것을 센다 — 적어 두면 새 테스트가 여기서 빠진 채 지나간다. 서로 독립이라 동시에 돈다.
 for f in "$t"/script/test-*.sh; do
   s=$(basename "$f" .sh)
-  ( cd "$t" && GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index" "./script/$s.sh" >"$work/$s.hookenv.log" 2>&1 ) \
-    || bad "$s failed under a linked worktree's hook environment — $work/$s.hookenv.log"
-  check "$s: core.bare of the worktree's repo" "$(git -C "$victim" config core.bare)" "false"
-  check "$s: branches of the worktree's repo" "$(git -C "$victim" branch --format='%(refname:short)' | sort)" "$branches_before"
+  ( cd "$t" && GIT_DIR="$wt_gitdir" GIT_INDEX_FILE="$wt_gitdir/index" "./script/$s.sh" >"$work/$s.hookenv.log" 2>&1
+    echo $? > "$work/$s.hookenv.rc" ) &
 done
+wait
+for f in "$t"/script/test-*.sh; do
+  s=$(basename "$f" .sh)
+  if [ "$(cat "$work/$s.hookenv.rc")" = 0 ]; then
+    ok
+  else
+    bad "$s failed under a linked worktree's hook environment — $work/$s.hookenv.log"
+    tail -5 "$work/$s.hookenv.log" >&2
+  fi
+done
+check "core.bare of the worktree's repo after the tests" "$(git -C "$victim" config core.bare)" "false"
+check "branches of the worktree's repo after the tests" "$(git -C "$victim" branch --format='%(refname:short)' | sort)" "$branches_before"
 
 echo "UT-58 the installed CLI carries its metrics module and leaves no bytecode"
 [ -f "$t/.harness/bin/harness_metrics.py" ] && ok || bad "install did not vendor the metrics module"
@@ -887,7 +972,9 @@ p = pathlib.Path(sys.argv[1]); s = p.read_text(encoding="utf-8")
 p.write_text(re.sub(r"\n\[workflows\.[\s\S]*$", "\n", s), encoding="utf-8")
 PY2
 "$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render without workflows" "$?" "0"
-cmp -s "$t/.ai/workflows/work.md" "$work/steps/../shipped/.ai/workflows/work.md"; check "falls back to the default steps" "$?" "0"
+u="$work/steps-shipped"; rm -rf "$u"; mkdir -p "$u"; cp "$root/templates/harness.toml" "$u/harness.toml"
+"$root/bin/harness" render --target "$u" >/dev/null 2>&1
+cmp -s "$t/.ai/workflows/work.md" "$u/.ai/workflows/work.md"; check "falls back to the default steps" "$?" "0"
 
 echo "UT-37 set replaces a multi-line array whole"
 # 첫 줄만 바꾸면 나머지 줄이 떠서 설정이 통째로 읽히지 않는다.
@@ -1142,7 +1229,8 @@ bash "$t/script/harness-verify.sh" >/dev/null 2>&1; check "unset verification" "
 has "$work/v.doc" "script/harness-verify.sh  — not set up" "doctor does not say verification is unset"
 has "$t/.ai/AI_AGENT.md" "명령이 아직 정해지지 않았다" "the rules do not say the commands are unset"
 # 쉼표·따옴표가 든 명령도 문자열 하나로 남는다
-"$root/bin/harness" set --target "$t" commands.test 'echo "a, b" >/dev/null' commands.format_check 'true' >/dev/null 2>&1; check "set commands" "$?" "0"
+# 이 블록은 프로젝트 명령·검사를 본다 — 하네스 스크립트 회귀(수십 초)는 끈다
+"$root/bin/harness" set --target "$t" commands.test 'echo "a, b" >/dev/null' commands.format_check 'true' verify.script_tests false >/dev/null 2>&1; check "set commands" "$?" "0"
 has "$t/harness.toml" 'test = "echo \"a, b\" >/dev/null"' "the command was not kept as one string"
 has "$t/.ai/AI_AGENT.md" '| 테스트 전체 | `echo "a, b" >/dev/null` |' "the rules do not list the command"
 # 명령의 정본은 harness.toml 하나다 — UI 가 읽는 schema, 규칙 문서, 검증 스크립트가 모두 같은 값을 본다
@@ -1255,7 +1343,7 @@ has "$work/m.sum" "[('work', True), ('review', True)] verify {'codex/m1': 120}" 
 
 echo "UT-55 harness run, run-lint-test and verification steps nest under one trace"
 t="$work/traced"; setup "$t"; md="$work/traced-data"
-"$root/bin/harness" set --target "$t" metrics.dir "$md" commands.test "true" commands.format_check "true" >/dev/null 2>&1
+"$root/bin/harness" set --target "$t" metrics.dir "$md" commands.test "true" commands.format_check "true" verify.script_tests false >/dev/null 2>&1
 ( cd "$t" && git init -q . 2>/dev/null; ./script/run-lint-test.sh ) > "$work/rl.log" 2>&1; check "run-lint-test with commands set" "$?" "0"
 python3 - "$md" > "$work/rl.sum" <<'PY'
 import glob, json, sys
@@ -1700,11 +1788,12 @@ check "doctor reports each left worktree as a warning" "$(grep -c '^  warn workt
 hasnt "$work/wtdoc.log" "wtoutside" "doctor reported a worktree outside worktree.dir"
 hasnt "$work/wtdoc.log" "no worktrees left" "doctor says no worktrees are left while some are"
 grep -qi "ignore" "$work/wtdoc.log" && bad "doctor checks the worktree directory's gitignore" || ok
-doc "$work/base"; code=$?
+setup "$work/wt-base"
+doc "$work/wt-base"; code=$?
 hasnt "$work/wtdoc.log" "worktree" "doctor looked at worktrees outside a git repository"
 hasnt "$work/wtdoc.log" "Traceback" "doctor failed outside a git repository"
-"$root/bin/harness" set --target "$work/base" worktree.dir "$work/base-trees" >/dev/null 2>&1
-doc "$work/base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
+"$root/bin/harness" set --target "$work/wt-base" worktree.dir "$work/base-trees" >/dev/null 2>&1
+doc "$work/wt-base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
 
 echo "UT-62 one project name points to one path: install refuses a name still in use elsewhere"
 # 이름이 등록부의 키다. 같은 이름의 두 번째 클론이 등록을 덮으면 UI 와 실행 기록이 조용히 다른 리포를 가리킨다.
@@ -2875,7 +2964,8 @@ check "doctor sees the project scripts README as filled in" "$(cat "$work/own87-
 # 하네스는 script/project/ 에 쓰지 않는다 — 관리 템플릿, 생성 템플릿, plan() 어느 쪽도
 ( cd "$root/templates/managed" && find . -type f | sed 's|^\./||' ) > "$work/own87-paths"
 ( cd "$root/templates/generated" && find . -type f | sed 's|^\./||' ) >> "$work/own87-paths"
-python3 - "$root/bin/harness" "$work/base" >> "$work/own87-paths" <<'PY'
+setup "$work/own87-base"
+python3 - "$root/bin/harness" "$work/own87-base" >> "$work/own87-paths" <<'PY'
 import importlib.machinery, importlib.util, sys
 from pathlib import Path
 sys.dont_write_bytecode = True
@@ -2890,7 +2980,7 @@ PY
 grep -q '^script/harness.env$' "$work/own87-paths" && ok || bad "the path list does not carry plan() paths"
 grep -q '^script/project/' "$work/own87-paths" && bad "the harness writes under script/project/: $(grep '^script/project/' "$work/own87-paths" | head -1)" || ok
 # 규칙 문서가 프로젝트 스크립트를 새 자리로 보낸다
-t="$work/base"
+t="$work/own87-base"
 python3 - "$t/.ai/AI_AGENT.md" > "$work/own87-canon" <<'PY'
 import re, sys
 s = open(sys.argv[1], encoding="utf-8").read()
@@ -3634,6 +3724,37 @@ for l in Requirement Task invalid; do
 done
 hasnt "$work/labels100.sec" "missing on github" "doctor reports a label missing that is on the forge"
 no_hangul "$work/labels100.txt" "doctor --remote label output"
+
+echo "UT-101 verification skips steps whose paths did not change since they passed, and the hooks follow [verify]"
+t="$work/incr"; setup "$t"; ( cd "$t" && git init -q . )
+ran="$work/incr-ran.log"; : > "$ran"
+"$root/bin/harness" set --target "$t" commands.test "echo t >> $ran" verify.test_paths '["src/**"]' verify.script_tests false >/dev/null 2>&1; check "set test paths" "$?" "0"
+mkdir -p "$t/src" "$t/docs"; echo a > "$t/src/a.txt"
+( cd "$t" && script/harness-verify.sh --commit ) >/dev/null 2>&1; check "first run" "$?" "0"
+( cd "$t" && script/harness-verify.sh --commit ) > "$work/incr.out" 2>&1
+has "$work/incr.out" "skip 테스트 (unchanged" "an unchanged tree reran the test"
+echo d > "$t/docs/d.md"
+( cd "$t" && script/harness-verify.sh --commit ) >/dev/null 2>&1
+echo b > "$t/src/a.txt"
+( cd "$t" && script/harness-verify.sh --commit ) >/dev/null 2>&1
+check "runs: first, then only the src change" "$(wc -l < "$ran" | tr -d ' ')" "2"
+( cd "$t" && script/harness-verify.sh --no-cache ) >/dev/null 2>&1
+check "--no-cache reruns" "$(wc -l < "$ran" | tr -d ' ')" "3"
+"$root/bin/harness" set --target "$t" verify.test_on push >/dev/null 2>&1
+echo c > "$t/src/a.txt"
+( cd "$t" && script/harness-verify.sh --commit ) > "$work/incr.out" 2>&1
+has "$work/incr.out" "skip 테스트 (push stage)" "a push-stage test ran before commit"
+( cd "$t" && script/harness-verify.sh ) >/dev/null 2>&1
+check "the push stage runs without --commit" "$(wc -l < "$ran" | tr -d ' ')" "4"
+# 훅: post-commit 은 켤 때만 생기고, pre-push 는 켜져 있으면 검증을 돈다
+[ ! -e "$t/script/githooks/post-commit" ] && ok || bad "post-commit exists while verify.post_commit is off"
+has "$t/script/githooks/pre-push" "run-lint-test.sh" "pre-push does not verify"
+"$root/bin/harness" set --target "$t" verify.post_commit true verify.pre_push false >/dev/null 2>&1
+[ -x "$t/script/githooks/post-commit" ] && ok || bad "post-commit was not generated when turned on"
+hasnt "$t/script/githooks/pre-push" "run-lint-test.sh" "pre-push still verifies after turning it off"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check after toggling hooks" "$?" "0"
+"$root/bin/harness" set --target "$t" verify.test_on later >/dev/null 2>&1; check "refuse an unknown stage" "$?" "2"
+"$root/bin/harness" checks --target "$t" '[{"name":"a","run":"true","paths":["/abs"]}]' >/dev/null 2>&1; check "refuse an absolute path" "$?" "2"
 
 echo
 if [ "$fail" -eq 0 ]; then
