@@ -16,6 +16,7 @@ import contextlib
 import datetime
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -3076,6 +3077,103 @@ def cmd_set(_cfg, target, args):
     return cmd_render(cfg, target, args)
 
 
+# 프로젝트 문서의 원형. write-doc 이 받는 문서 이름과 schema 의 `docs` 가 여기서 나온다.
+OWNED_DOCS = TEMPLATES / "owned" / ".ai" / "project"
+PROJECT_DOCS = ".ai/project"
+# 메모 머리의 안내 주석. 사람에게 하는 말이라 render 가 생성물에 옮길 때 뺀다.
+NOTE_HEADS = {
+    "roles": "<!--\n이 파일은 프로젝트가 소유한다. 하네스 갱신이 덮지 않는다.\n"
+             "`harness render` 가 이 본문을 이 역할의 에이전트 정의 끝(\"이 프로젝트에서\")에 붙인다.\n-->\n\n",
+    "workflows": "<!--\n이 파일은 프로젝트가 소유한다. 하네스 갱신이 덮지 않는다.\n"
+                 "`harness render` 가 이 본문을 이 절차 끝(\"이 프로젝트에서\")에 붙인다.\n-->\n\n",
+}
+
+
+def project_docs() -> list:
+    """프로젝트 문서 이름 — 하네스 원형의 `.ai/project/*.md`. 명령은 문서가 아니라 설정의 `[commands]` 다."""
+    return sorted(p.stem for p in OWNED_DOCS.glob("*.md") if p.is_file() and p.stem != "commands")
+
+
+def writable_docs(cfg: dict) -> dict:
+    """write-doc 이 받는 이름 → 쓰는 경로(하네스 루트 기준). 문서, 설정의 역할 메모, 설정의 절차 메모."""
+    out = {d: "%s/%s.md" % (PROJECT_DOCS, d) for d in project_docs()}
+    out.update(("roles/%s" % n, "%s/%s.md" % (ROLE_NOTES, n)) for n in sorted(cfg["roles"]))
+    out.update(("workflows/%s" % w, "%s/%s.md" % (WORKFLOW_NOTES, w)) for w in sorted(cfg["workflows"]))
+    return out
+
+
+def note_body(name: str, text: str) -> str:
+    """쓸 본문. 메모는 공백뿐이면 비우고, 안내 주석으로 시작하지 않으면 머리 주석을 붙인다. 끝은 줄바꿈 하나 이상."""
+    kind = name.split("/", 1)[0] if "/" in name else None
+    if kind in NOTE_HEADS:
+        if not text.strip():
+            text = ""
+        elif not text.lstrip().startswith("<!--"):
+            text = NOTE_HEADS[kind] + text
+    return text if text.endswith("\n") else text + "\n"
+
+
+def cmd_write_doc(cfg, target, args):
+    """`harness write-doc <이름> -` — 표준 입력의 본문을 프로젝트 문서나 역할·절차 메모에 쓰고 render 한다.
+
+    경로를 입력에서 만들지 않는다. 이름을 받는 목록과 문자열로 비교하고 맞는 항목의 경로를 쓴다.
+    render 가 실패하면 문서를 쓰기 전으로 되돌린다 — 생성물과 어긋난 문서를 남기지 않는다.
+    """
+    names = writable_docs(cfg)
+    if len(args.args) != 2 or args.args[1] != "-":
+        die("error: write-doc reads the document from standard input\n\n"
+            "usage: harness write-doc <name> -\n"
+            "example: printf '...' | harness write-doc stack -")
+    name = args.args[0]
+    rel = names.get(name)
+    if rel is None:
+        docs = [n for n in names if "/" not in n]
+        notes = [n for n in names if "/" in n]
+        die("error: unknown document `%s`\n  --> write-doc\n\n"
+            "help: write-doc takes one of these names\n        %s\n        %s"
+            % (name, ", ".join(docs), ", ".join(notes)))
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeDecodeError:
+        die("error: standard input is not UTF-8\n  --> %s\n\nnothing was written" % rel)
+    body = note_body(name, text)
+
+    p = guarded_path(target, rel, "write")
+    if p.is_dir():
+        die("error: the document path is a directory\n  --> %s\n\nnothing was written" % rel)
+    before = p.read_bytes() if p.is_file() else None
+    made = [d.as_posix() for d in reversed(p.relative_to(target).parents) if str(d) != "." and not (target / d).exists()]
+    make_parents(target, rel)
+    p.write_text(body, encoding="utf-8")
+
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            # 사용자 파일로 멈추면 안내가 넘겨받는 명령으로 render 를 가리킨다 — write-doc 은 넘겨받지 않는다
+            rc = cmd_render(cfg, target, argparse.Namespace(command="render", adopt=False))
+    except SystemExit as e:
+        rc = e.code if isinstance(e.code, int) and e.code else 2
+        if not isinstance(e.code, int) and e.code:
+            print(e.code, file=sys.stderr)
+    except OSError as e:
+        rc = 2
+        print("error: render failed: %s" % e, file=sys.stderr)
+    if rc != 0:
+        sys.stdout.write(out.getvalue())
+        if before is None:
+            guarded_path(target, rel, "remove").unlink()
+            for d in reversed(made):
+                with contextlib.suppress(OSError):
+                    guarded_path(target, d, "remove").rmdir()
+        else:
+            guarded_path(target, rel, "write").write_bytes(before)
+        print("\nreverted — the document is unchanged", file=sys.stderr)
+        return 2
+    print("write-doc: %s" % rel)
+    sys.stdout.write(out.getvalue())
+    return 0
+
+
 ISSUE_NO = re.compile(r"[0-9]{1,10}")
 
 
@@ -4113,6 +4211,7 @@ COMMANDS = {
     "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, managed file changes, tools, hooks (--remote: also the remote, read-only; "
                   "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
+    "write-doc": (None, True,  "<name> -", "write standard input to a project document or a role or workflow note, and re-render"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
     "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
@@ -4157,7 +4256,7 @@ def cmd_help(_cfg, _target, _args):
 # 전역 CLI 를 깔아도 각 프로젝트는 자기가 고정한 버전으로 돌아야 한다. 그러지 않으면
 # 전역을 올리는 순간 모든 프로젝트의 생성물이 조용히 바뀌고, 그 리포의 검사가 한꺼번에 깨진다.
 DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall",
-             "forge-setup"}
+             "forge-setup", "write-doc"}
 
 
 PINNED_SHOWN = 10
@@ -4247,7 +4346,8 @@ def main():
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
                 "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
-                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup}
+                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup,
+                "write-doc": cmd_write_doc}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,

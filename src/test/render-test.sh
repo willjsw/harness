@@ -4116,6 +4116,93 @@ sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
 cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
 
+echo "UT-105 the UI writes through CLI commands: write-doc writes a project document or note and renders, and reverts when render fails"
+# UI 가 파일을 직접 쓰면 머리 주석·render 를 UI 와 CLI 가 따로 알게 되고, 한쪽만 고치면 결과가 갈린다.
+body101() { python3 -c 'import sys; print(repr(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
+tree101() { # tree101 <대상> — 등록부를 뺀 파일 경로와 내용의 해시. 파일이 하나라도 생기거나 바뀌면 달라진다
+  python3 - "$1" <<'PY'
+import hashlib, os, sys
+h = hashlib.sha256()
+for d, dirs, files in sorted(os.walk(sys.argv[1])):
+    dirs.sort()
+    for f in sorted(files):
+        p = os.path.join(d, f)
+        h.update(p.encode()); h.update(b"\0")
+        h.update(open(p, "rb").read() if not os.path.islink(p) else os.readlink(p).encode())
+    h.update(("dir:" + d).encode())
+print(h.hexdigest())
+PY
+}
+wd101() { # wd101 <대상> <이름> <본문> [두 번째 인수] — 출력은 $work/wd101.out · .err
+  printf '%s' "$3" | "$root/bin/harness" write-doc "$2" "${4:--}" --target "$1" > "$work/wd101.out" 2> "$work/wd101.err"
+}
+t="$work/wd101"; setup "$t"
+wd101 "$t" stack x; check "write-doc of a document exits 0" "$?" "0"
+check "the document is the body ending in one newline" "$(body101 "$t/.ai/project/stack.md")" "'x\\n'"
+has "$work/wd101.out" "write-doc: .ai/project/stack.md" "write-doc does not name the path it wrote"
+has "$work/wd101.out" "render:" "write-doc does not show the render output"
+grep -qx 'x' "$t/.ai/AI_AGENT.md" && ok || bad "the rule canon does not carry the written document"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check after write-doc" "$?" "0"
+cat "$work/wd101.out" "$work/wd101.err" > "$work/wd101-all.log"
+[ ! -e "$t/.ai/project/roles" ] && ok || bad "the test repo already has role notes"
+wd101 "$t" roles/developer "developer-note-101"; check "write-doc of a role note exits 0" "$?" "0"
+has "$t/.ai/project/roles/developer.md" "이 역할의 에이전트 정의 끝" "the role note did not get the role head comment"
+has "$t/.ai/project/roles/developer.md" "developer-note-101" "the role note lost its body"
+has "$t/.claude/agents/developer.md" "developer-note-101" "the agent definition does not carry the role note"
+wd101 "$t" roles/planner "<!-- mine -->
+planner-note-101"; check "write-doc of a note with its own comment exits 0" "$?" "0"
+check "a note starting with a comment gets no head comment" "$(body101 "$t/.ai/project/roles/planner.md")" \
+  "'<!-- mine -->\\nplanner-note-101\\n'"
+wd101 "$t" roles/planner "
+	"; check "write-doc of a blank note exits 0" "$?" "0"
+check "a blank note is written as one newline" "$(body101 "$t/.ai/project/roles/planner.md")" "'\\n'"
+wd101 "$t" workflows/work "work-note-101"; check "write-doc of a workflow note exits 0" "$?" "0"
+has "$t/.ai/project/workflows/work.md" "이 절차 끝" "the workflow note did not get the workflow head comment"
+has "$t/.ai/workflows/work.md" "work-note-101" "the procedure does not carry the workflow note"
+cat "$work/wd101.out" "$work/wd101.err" >> "$work/wd101-all.log"
+# 받지 않는 이름과 인수 — 아무것도 생기거나 바뀌지 않는다
+before=$(tree101 "$t")
+for name in commands ../x stack.md roles/nosuch workflows/nosuch /etc/passwd; do
+  wd101 "$t" "$name" "refused"; check "write-doc refuses \`$name\`" "$?" "2"
+  has "$work/wd101.err" "error: unknown document" "the refusal of \`$name\` is not an error line"
+  has "$work/wd101.err" "roles/developer" "the refusal of \`$name\` does not list the role notes it takes"
+  has "$work/wd101.err" "workflows/work" "the refusal of \`$name\` does not list the workflow notes it takes"
+  has "$work/wd101.err" "review-checks" "the refusal of \`$name\` does not list the documents it takes"
+  cat "$work/wd101.err" >> "$work/wd101-all.log"
+done
+wd101 "$t" stack "refused" x; check "write-doc refuses a second argument other than -" "$?" "2"
+"$root/bin/harness" write-doc stack --target "$t" > /dev/null 2>&1 < /dev/null; check "write-doc refuses a missing -" "$?" "2"
+check "refused calls change no file" "$(tree101 "$t")" "$before"
+# render 가 실패하면 문서를 쓰기 전으로 되돌린다. 없던 메모와 그 디렉터리는 남지 않는다
+rm -f "$t/.ai/forge.md"; mkdir "$t/.ai/forge.md"
+wd101 "$t" stack "should-revert"; check "write-doc exits 2 when render fails" "$?" "2"
+has "$work/wd101.err" "reverted — the document is unchanged" "a failed render does not say the document was reverted"
+check "the document is back to what it was" "$(body101 "$t/.ai/project/stack.md")" "'x\\n'"
+hasnt "$work/wd101.out" "write-doc: " "a reverted write-doc claims it wrote the document"
+wd101 "$t" workflows/retro "should-revert"; check "write-doc of a new note exits 2 when render fails" "$?" "2"
+[ ! -e "$t/.ai/project/workflows/retro.md" ] && ok || bad "a reverted new note was left behind"
+rm -rf "$t/.ai/project/roles"
+wd101 "$t" roles/developer "should-revert"; check "write-doc of a note in a new directory exits 2 when render fails" "$?" "2"
+[ ! -e "$t/.ai/project/roles" ] && ok || bad "a reverted note left the directory it made"
+cat "$work/wd101.out" "$work/wd101.err" >> "$work/wd101-all.log"
+rmdir "$t/.ai/forge.md"
+# 고정 사본이 있는 리포에서는 고정 사본이 답한다
+t="$work/wdpin101"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for write-doc delegation"
+echo "0.0.9" > "$t/.harness/VERSION"
+python3 - "$t" <<'PY'
+import hashlib, pathlib, re, sys
+t = pathlib.Path(sys.argv[1]); m = t / ".harness/managed"
+h = hashlib.sha256((t / ".harness/VERSION").read_bytes()).hexdigest()
+m.write_text(re.sub(r"^[0-9a-f]{64}(  \.harness/VERSION)$", h + r"\1", m.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+PY
+wd101 "$t" stack "pinned-101"; check "write-doc in a pinned repo exits 0" "$?" "0"
+has "$work/wd101.err" "pinned to harness 0.0.9" "the global CLI did not hand write-doc to the pinned copy"
+has "$t/.ai/project/stack.md" "pinned-101" "the pinned copy did not write the document"
+cat "$work/wd101.out" >> "$work/wd101-all.log"
+no_hangul "$work/wd101-all.log" "write-doc output"
+unset -f body101 tree101 wd101
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"
