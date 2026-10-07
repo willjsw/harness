@@ -260,6 +260,8 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `mr.default_assignee` · `default_reviewer` | forge 명령 사전, 작성 요령 |
 | `adr.style` · `tool` · `dir` | 결정 기록 사전·양식·디렉터리 |
 | `docs.protected` | 권한 deny, 명령 가드, 규칙 문서 |
+| `verify.checks` · `test_paths` · `test_on` · `incremental` · `script_tests` | `script/harness-verify.sh` — 단계 목록, 단계마다 다시 돌릴 경로(`paths`)와 시점(`on` = `commit` · `push`), 통과 기록으로 안 바뀐 단계 건너뛰기, 하네스 스크립트 회귀 테스트 |
+| `verify.pre_push` · `post_commit` | pre-push 훅의 검증 전부(실패하면 push 차단), post-commit 훅(켤 때만 생성) |
 | `permissions.allow_push` | `.claude/settings.json` 의 허용 목록에 `git push` 를 넣는지 |
 | `usage.log_path` · `env_var` | 기록·집계 스크립트, 회고 절차 |
 | `worktree.dir` · `include` | 생성 파일은 없다. `harness run --worktree` · `doctor` · 세션 가져오기가 읽는다 |
@@ -327,7 +329,7 @@ src/test/render-test.sh
 뒤쪽 케이스는 임시 리포에 실제로 설치해 관리 스크립트의 회귀 테스트 359건을 돌리고,
 아래 자체 검사가 계약 위반 6종을 실제로 잡는지 확인한다.
 
-설치된 리포에서는 `script/run-lint-test.sh` 가 생성물 일치·회귀 테스트·프로젝트 검증을 잇는다.
+설치된 리포에서는 `script/run-lint-test.sh` 가 생성물 일치와 검증 단계(`[verify]`)를 잇는다. 커밋 전에는 `--commit`, push 전에는 pre-push 훅이 전부를 돈다.
 
 ## 지원 범위
 
