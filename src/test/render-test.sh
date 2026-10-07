@@ -4116,7 +4116,7 @@ sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
 cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
 
-echo "UT-105 the UI writes through CLI commands: write-doc writes a document or note and is denied protected names; fix runs a Doctor fix; install --create makes a new project"
+echo "UT-105 the UI writes through CLI commands and reads paths from schema: write-doc and its deny, fix, install --create, and the schema paths"
 # UI 가 파일을 직접 쓰면 머리 주석·render 를 UI 와 CLI 가 따로 알게 되고, 한쪽만 고치면 결과가 갈린다.
 body101() { python3 -c 'import sys; print(repr(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
 tree101() { # tree101 <대상> — 등록부를 뺀 파일 경로와 내용의 해시. 파일이 하나라도 생기거나 바뀌면 달라진다
@@ -4280,6 +4280,74 @@ hasnt "$work/in101.out" "started a git repository" "install --git-init claims it
 cat "$work/in101.out" "$work/in101.err" >> "$work/in101-all.log"
 no_hangul "$work/in101-all.log" "install --create output"
 unset -f in101 reg101
+# schema — UI 가 짓지 않고 받는 경로와 판정 값
+schema101() { # schema101 <CLI> <대상> <파이썬 식> — schema 를 s, 대상 경로를 t, 원형 디렉터리 목록을 owned 로 두고 식을 찍는다
+  "$1" schema --target "$2" 2>/dev/null | python3 -c '
+import json, os, sys
+s = json.load(sys.stdin); t = sys.argv[1]
+owned = sorted(f[:-3] for f in os.listdir(sys.argv[2]) if f.endswith(".md"))
+print(eval(sys.argv[3]))' "$2" "$root/templates/owned/.ai/project" "$3"
+}
+docs101='sorted(s["docs"]) == [d for d in owned if d != "commands"] and "commands" not in s["docs"] and all(v["path"] == ".ai/project/%s.md" % k and os.path.isfile(os.path.join(t, v["template"])) for k, v in s["docs"].items())'
+t="$work/schpin101"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+HARNESS_HOME="$work/home101" "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for schema"
+check "schema docs in a pinned repo" "$(schema101 "$root/bin/harness" "$t" "$docs101")" "True"
+check "schema templates in a pinned repo come from the pinned copy" \
+  "$(schema101 "$root/bin/harness" "$t" 'all(v["template"].startswith(".harness/templates/owned/") for v in s["docs"].values())')" "True"
+check "schema workflow paths point at generated procedures" \
+  "$(schema101 "$root/bin/harness" "$t" 'bool(s["workflows"]) and all(os.path.isfile(os.path.join(t, w["path"])) for w in s["workflows"].values())')" "True"
+check "schema verify script without a hand-written one" "$(schema101 "$root/bin/harness" "$t" 's["verify_script"]')" "script/harness-verify.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$t/script/verify-project.sh"
+check "schema verify script with a filled hand-written one" "$(schema101 "$root/bin/harness" "$t" 's["verify_script"]')" "script/verify-project.sh"
+rm "$t/script/verify-project.sh"
+check "schema hooks path at a repository root" "$(schema101 "$root/bin/harness" "$t" 's["hooks_path"]')" "$(git -C "$t" config core.hooksPath)"
+m="$work/schmono101"; rm -rf "$m"; mkdir -p "$m/packages/api"; ( cd "$m" && git init -q . )
+HARNESS_HOME="$work/home101" "$root/bin/harness" install --target "$m/packages/api" >/dev/null 2>&1 || bad "could not install a subproject for schema"
+check "schema hooks path in a subproject is what install set" "$(schema101 "$root/bin/harness" "$m/packages/api" 's["hooks_path"]')" \
+  "$(git -C "$m" config core.hooksPath)"
+src="$work/schsrc101"; rm -rf "$src"; mkdir -p "$src/src/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
+( cd "$src" && git init -q . )
+HARNESS_HOME="$work/home101" "$src/src/bin/harness" install --target "$src" >/dev/null 2>&1 || bad "could not install the source tree clone"
+check "schema docs in a source tree clone" "$(schema101 "$src/src/bin/harness" "$src" "$docs101")" "True"
+check "schema templates in a source tree clone come from its src/templates" \
+  "$(schema101 "$src/src/bin/harness" "$src" 'all(v["template"].startswith("src/templates/owned/") for v in s["docs"].values())')" "True"
+# 설정 주석 — 바로 위 주석이 그 키의 설명이다. 구분선은 빠지고, 빈 줄로 떨어진 주석은 붙지 않는다
+t="$work/schnotes101"; setup "$t"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+m = re.search(r"^\[roles\.developer\]\n", s, re.M)
+s = s[:m.end()] + "# ──────────\n# developer-runner-101\n# second line\n" + re.sub(r"^((?:#.*\n)*)(runner =)", r"\2", s[m.end():], count=1, flags=re.M)
+m = re.search(r"^\[project\]\n", s, re.M)
+s = s[:m.end()] + "# orphan-101\n\n" + s[m.end():]
+open(p, "w", encoding="utf-8").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1 || bad "the config with test comments does not render"
+check "a key's note is the comment right above it, without the rule line" \
+  "$(schema101 "$root/bin/harness" "$t" 's["config_notes"].get("roles.developer.runner")' | tr '\n' '|')" "developer-runner-101|second line|"
+check "a comment cut off by a blank line is no key's note" \
+  "$(schema101 "$root/bin/harness" "$t" 'any("orphan-101" in v for v in s["config_notes"].values())')" "False"
+# 기준 보호 목록은 CLI 의 것 그대로이고, 설정에서 비워도 같다
+base101=$(python3 -c '
+import ast, sys
+for n in ast.parse(open(sys.argv[1], encoding="utf-8").read()).body:
+    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "BASE_PROTECTED":
+        print(ast.literal_eval(n.value))' "$root/bin/harness")
+check "schema base_protected is the CLI's list" "$(schema101 "$root/bin/harness" "$t" 's["base_protected"]')" "$base101"
+check "schema base_protected holds workflow notes" "$(schema101 "$root/bin/harness" "$t" '".ai/project/workflows/" in s["base_protected"]')" "True"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+m = re.search(r"^\[docs\]\n", s, re.M)
+s = s[:m.end()] + re.sub(r"^protected = \[[^\]]*\]", "protected = []", s[m.end():], count=1, flags=re.M)
+open(p, "w", encoding="utf-8").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1 || bad "an empty docs.protected does not render"
+check "schema base_protected with docs.protected emptied" "$(schema101 "$root/bin/harness" "$t" 's["base_protected"]')" "$base101"
+check "the existing schema keys stay" \
+  "$(schema101 "$root/bin/harness" "$t" 'all(k in s for k in ("agents", "script_roles", "orchestrator", "orchestrator_model", "roles", "commands", "checks", "legacy_verify", "doctor", "workflow_notes", "workflows"))')" "True"
+unset -f schema101
 
 echo
 if [ "$fail" -eq 0 ]; then

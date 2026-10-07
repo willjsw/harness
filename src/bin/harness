@@ -3816,6 +3816,42 @@ def cmd_tools(_cfg, _target, args):
     return 0
 
 
+# 설정 파일의 주석이 곧 스키마 문서다. 키 바로 위의 주석 줄이 그 키의 설명이다.
+CONFIG_SECTION = re.compile(r"\[([^\]]+)\]")
+CONFIG_KEY = re.compile(r"([A-Za-z0-9_-]+)\s*=")
+
+
+def config_notes(target: Path) -> dict:
+    """`harness.toml` 의 키마다 바로 위 주석 — `{"<절>.<키>": "<설명>"}`. 빈 줄이 끼면 붙이지 않고, `─` 구분선 줄은 뺀다."""
+    p = target / "harness.toml"
+    notes, section, buf = {}, "", []
+    for ln in p.read_text(encoding="utf-8").split("\n") if p.is_file() else []:
+        st = ln.strip()
+        m = CONFIG_SECTION.fullmatch(st)
+        if m:
+            section, buf = m.group(1), []
+            continue
+        if st.startswith("#"):
+            t = re.sub(r"^#\s?", "", st)
+            if not re.fullmatch("─+", t):
+                buf.append(t)
+            continue
+        kv = CONFIG_KEY.match(st)
+        if kv and buf:
+            notes["%s.%s" % (section, kv.group(1))] = "\n".join(buf).strip()
+        if st == "" or kv:
+            buf = []
+    return notes
+
+
+def template_path(target: Path, p: Path) -> str:
+    """이 명령을 답한 하네스의 원형 경로. 하네스 루트 안이면 그 기준 상대 경로, 밖이면 절대 경로."""
+    try:
+        return p.relative_to(target).as_posix()
+    except ValueError:
+        return str(p)
+
+
 def cmd_schema(cfg, _target, _args):
     """`harness schema` — UI 가 선택지를 그리는 데 쓰는 해석된 설정. 등록부와 역할별 실제 실행 주체를 낸다.
 
@@ -3846,8 +3882,16 @@ def cmd_schema(cfg, _target, _args):
         "forge": {k: cfg["forge"][k] for k in FORGE_DEFAULTS},
         "workflow_notes": {wf: "%s/%s.md" % (WORKFLOW_NOTES, wf) for wf in cfg["workflows"]},
         # 절차 목록: 제목과, 이 프로젝트가 만든 것인지(하네스 기본 조각이 없는 것)
-        "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None}
+        "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None,
+                           "path": ".ai/workflows/%s.md" % wf}
                       for wf, body in cfg["workflows"].items()},
+        # UI 가 읽고 보이는 경로와 판정 값. UI 는 경로를 짓지 않고 이것을 쓴다. 이 키가 있는 사본은 write-doc · fix 를 안다
+        "docs": {d: {"path": rel, "template": template_path(_target, OWNED_DOCS / ("%s.md" % d))}
+                 for d, rel in writable_docs(cfg).items() if "/" not in d},
+        "verify_script": verify_entry(_target),
+        "hooks_path": hooks_expected(_target),
+        "config_notes": config_notes(_target),
+        "base_protected": list(BASE_PROTECTED),
     }, ensure_ascii=False, indent=2))
     return 0
 
