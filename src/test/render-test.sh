@@ -4116,7 +4116,7 @@ sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
 cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
 
-echo "UT-105 the UI writes through CLI commands: write-doc writes a project document or note and renders, and reverts when render fails"
+echo "UT-105 the UI writes through CLI commands: write-doc writes a document or note, renders and reverts on failure; protected names are denied to it"
 # UI 가 파일을 직접 쓰면 머리 주석·render 를 UI 와 CLI 가 따로 알게 되고, 한쪽만 고치면 결과가 갈린다.
 body101() { python3 -c 'import sys; print(repr(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
 tree101() { # tree101 <대상> — 등록부를 뺀 파일 경로와 내용의 해시. 파일이 하나라도 생기거나 바뀌면 달라진다
@@ -4201,7 +4201,26 @@ has "$work/wd101.err" "pinned to harness 0.0.9" "the global CLI did not hand wri
 has "$t/.ai/project/stack.md" "pinned-101" "the pinned copy did not write the document"
 cat "$work/wd101.out" >> "$work/wd101-all.log"
 no_hangul "$work/wd101-all.log" "write-doc output"
-unset -f body101 tree101 wd101
+# 권한 deny — 보호 항목마다 세 호출 형태로 write-doc 규칙이 생기고, 기존 편집 규칙은 그대로다
+t="$work/wddeny101"; setup "$t"
+wdrules101() { grep -c 'write-doc' "$1/.claude/settings.json"; }
+for h in harness .harness/bin/harness src/bin/harness; do
+  for n in scope roles/ workflows/; do
+    has "$t/.claude/settings.json" "\"Bash($h write-doc $n:*)\"" "no write-doc deny for \`$n\` through $h"
+  done
+  hasnt "$t/.claude/settings.json" "\"Bash($h write-doc stack:*)\"" "an unprotected document is denied to write-doc through $h"
+done
+has "$t/.claude/settings.json" '"Edit(.ai/project/scope.md)"' "the edit deny for a protected document is gone"
+has "$t/.claude/settings.json" '"Edit(.ai/project/roles/**)"' "the edit deny for role notes is gone"
+"$root/bin/harness" set --target "$t" docs.protected ".ai/project/stack.md," >/dev/null 2>&1 || bad "could not protect stack.md"
+has "$t/.claude/settings.json" '"Bash(harness write-doc stack:*)"' "protecting a document does not deny it to write-doc"
+n101=$(wdrules101 "$t")
+"$root/bin/harness" set --target "$t" docs.protected ".ai/project/stack.md,docs/guide.md,.ai/project/notes.txt," >/dev/null 2>&1 \
+  || bad "could not protect paths outside .ai/project"
+check "a path write-doc cannot write adds no write-doc rule" "$(wdrules101 "$t")" "$n101"
+"$root/bin/harness" set --target "$t" docs.protected ".ai/**," >/dev/null 2>&1 || bad "could not protect .ai/**"
+has "$t/.claude/settings.json" '"Bash(harness write-doc:*)"' "a directory over .ai/project does not deny every write-doc call"
+unset -f body101 tree101 wd101 wdrules101
 
 echo
 if [ "$fail" -eq 0 ]; then

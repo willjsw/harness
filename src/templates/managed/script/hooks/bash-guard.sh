@@ -45,5 +45,6 @@ guard_force_push
 guard_no_verify
 guard_remote_delete
 guard_arch_docs
+guard_write_doc
 
 exit 0

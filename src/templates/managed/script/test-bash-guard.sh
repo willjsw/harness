@@ -11,7 +11,7 @@
 # **케이스 표의 값은 설정에서 온다.** 브랜치·보호 문서·forge CLI 를 바꿔도 이 표가 그대로
 # 따라온다 — 값을 박아 두면 설정을 바꿀 때마다 테스트가 깨진다.
 #
-# 마지막 두 검사는 **가드를 일부러 망가뜨린 사본**에 차단 케이스 표를 그대로 돌린다.
+# 마지막 검사들은 **가드 하나를 일부러 망가뜨린 사본**(force push · write-doc)에 차단 케이스 표를 그대로 돌린다.
 # 망가뜨린 가드의 케이스가 통과로 뒤집히고 나머지 계열은 그대로 차단이어야 한다 —
 # 뒤집히지 않으면 표가 무력화를 못 잡는 것이고, 다른 계열까지 뚫리면 판정이 얽힌 것이다.
 set -uo pipefail
@@ -30,6 +30,16 @@ protected_a=$1
 protected_b=${2:-$1}
 forge_cli=${FORGE_CLIS%% *}
 doc=$PROTECTED_DOCS_SAMPLE
+# write-doc 이 받는 문서 이름. 보호되는 것은 견본에서 떼고, 보호되지 않는 것은 보호 목록에 걸리지 않는 첫 이름이다
+doc_name=${doc#.ai/project/}
+doc_name=${doc_name%.md}
+open_name=
+for n in stack environment review-checks; do
+  printf '%s' ".ai/project/$n.md" | grep -Eq -- "^($PROTECTED_DOCS_RE)" || {
+    open_name=$n
+    break
+  }
+done
 work_branch="feat/100-x"
 sandbox=$(mktemp -d)
 trap 'rm -rf "$sandbox"' EXIT
@@ -105,10 +115,30 @@ arch_cases=(
   "cat > $doc <<EOF"
 )
 
+write_doc_cases=(
+  "harness write-doc $doc_name -"
+  ".harness/bin/harness write-doc $doc_name -"
+  "src/bin/harness write-doc $doc_name -"
+  "./src/bin/harness write-doc $doc_name -"
+  "harness --target . write-doc $doc_name -"
+  "harness write-doc --target . $doc_name -"
+  "harness write-doc roles/developer -"
+  "harness write-doc workflows/work -"
+  "cd x && harness write-doc $doc_name -"
+  "printf x | harness write-doc $doc_name -"
+)
+
 for c in "${protected_cases[@]}" "${force_cases[@]}" "${verify_cases[@]}" \
-  "${remote_delete_cases[@]}" "${arch_cases[@]}"; do
+  "${remote_delete_cases[@]}" "${arch_cases[@]}" "${write_doc_cases[@]}"; do
   case_is 2 "$c"
 done
+
+# ── write-doc 의 보호되지 않은 문서·다른 하네스 명령·인수로 적힌 말은 통과 ──────
+[ -n "$open_name" ] && case_is 0 "harness write-doc $open_name -"
+case_is 0 'harness schema'
+case_is 0 'harness render'
+case_is 0 "echo harness write-doc $doc_name"
+case_is 0 'grep write-doc README.md'
 
 # ── 읽기·정상 git 표기는 통과 ──────────────────────────────────────────────
 case_is 0 "sed -n 1,20p $doc"
@@ -444,7 +474,8 @@ else
 fi
 
 broken_side=0
-for c in "${protected_cases[@]}" "${verify_cases[@]}" "${remote_delete_cases[@]}" "${arch_cases[@]}"; do
+for c in "${protected_cases[@]}" "${verify_cases[@]}" "${remote_delete_cases[@]}" "${arch_cases[@]}" \
+  "${write_doc_cases[@]}"; do
   rc=$(probe "$broken/bash-guard.sh" "$c")
   [ "$rc" = 2 ] || {
     broken_side=$((broken_side + 1))
@@ -456,6 +487,40 @@ if [ "$broken_side" -eq 0 ]; then
 else
   fail=$((fail + 1))
   echo "fail: only one guard was broken, yet other families passed too — the rulings are entangled" >&2
+fi
+
+# write-doc 가드만 무력화한 사본. write-doc 케이스가 전부 통과로 뒤집히고 다른 계열은 그대로 차단이어야 한다
+broken_wd="$sandbox/broken-wd/script/hooks"
+mkdir -p "$broken_wd"
+cp "$repo_root/script/hooks/bash-guard.sh" "$repo_root/script/hooks/_guards.sh" "$broken_wd/"
+cp "$repo_root/script/harness.env" "$sandbox/broken-wd/script/"
+chmod +x "$broken_wd"/*.sh
+sed -i.bak 's/^guard_write_doc() {$/guard_write_doc() { return 0;/' "$broken_wd/_guards.sh"
+wd_still=""
+for c in "${write_doc_cases[@]}"; do
+  rc=$(probe "$broken_wd/bash-guard.sh" "$c")
+  [ "$rc" = 0 ] || wd_still+="  still blocked: $c (got=$rc)"$'\n'
+done
+if [ -z "$wd_still" ]; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "fail: the table did not catch the broken write-doc guard" >&2
+  printf '%s' "$wd_still" >&2
+fi
+wd_side=0
+for c in "${protected_cases[@]}" "${force_cases[@]}" "${verify_cases[@]}" "${remote_delete_cases[@]}" "${arch_cases[@]}"; do
+  rc=$(probe "$broken_wd/bash-guard.sh" "$c")
+  [ "$rc" = 2 ] || {
+    wd_side=$((wd_side + 1))
+    echo "  a case unrelated to the write-doc guard got through: $c (got=$rc)" >&2
+  }
+done
+if [ "$wd_side" -eq 0 ]; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "fail: only the write-doc guard was broken, yet other families passed too — the rulings are entangled" >&2
 fi
 
 echo "PreToolUse guard regression test: ${pass} of $((pass + fail)) passed, ${fail} failed"

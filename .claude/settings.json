@@ -79,7 +79,25 @@
       "Edit(.ai/project/glossary.md)",
       "Edit(.ai/project/testing.md)",
       "Edit(.ai/project/roles/**)",
-      "Edit(.ai/project/workflows/**)"
+      "Edit(.ai/project/workflows/**)",
+      "Bash(harness write-doc scope:*)",
+      "Bash(.harness/bin/harness write-doc scope:*)",
+      "Bash(src/bin/harness write-doc scope:*)",
+      "Bash(harness write-doc architecture:*)",
+      "Bash(.harness/bin/harness write-doc architecture:*)",
+      "Bash(src/bin/harness write-doc architecture:*)",
+      "Bash(harness write-doc glossary:*)",
+      "Bash(.harness/bin/harness write-doc glossary:*)",
+      "Bash(src/bin/harness write-doc glossary:*)",
+      "Bash(harness write-doc testing:*)",
+      "Bash(.harness/bin/harness write-doc testing:*)",
+      "Bash(src/bin/harness write-doc testing:*)",
+      "Bash(harness write-doc roles/:*)",
+      "Bash(.harness/bin/harness write-doc roles/:*)",
+      "Bash(src/bin/harness write-doc roles/:*)",
+      "Bash(harness write-doc workflows/:*)",
+      "Bash(.harness/bin/harness write-doc workflows/:*)",
+      "Bash(src/bin/harness write-doc workflows/:*)"
     ]
   }
 }

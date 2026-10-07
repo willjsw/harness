@@ -811,7 +811,33 @@ def deny_rules(cfg: dict) -> list:
         rule = doc.rstrip("*").rstrip("/") + "/**" if doc.endswith(("/", "/**")) else doc
         # Edit 규칙이 Write · NotebookEdit 를 포함한 파일 편집 도구 전부에 걸린다.
         out.append("Edit(%s)" % rule)
+    # 같은 문서를 `harness write-doc` 으로 쓰는 호출. 표기 차이(옵션 위치 등)는 명령 가드가 잡는다
+    for doc in cfg["docs"]["protected"]:
+        name = write_doc_scope(doc)
+        if name is None:
+            continue
+        for h in WRITE_DOC_CALLERS:
+            rule = "Bash(%s write-doc%s:*)" % (h, " " + name if name else "")
+            if rule not in out:
+                out.append(rule)
     return out
+
+
+# write-doc 을 부르는 세 형태 — 전역 CLI, 고정 사본, 소스 리포의 실행 파일.
+WRITE_DOC_CALLERS = ("harness", ".harness/bin/harness", "src/bin/harness")
+
+
+def write_doc_scope(doc: str):
+    """보호 항목 하나가 write-doc 이름으로 닿는 범위. 이름 접두(`scope` · `roles/`), 전부면 빈 문자열, 닿지 않으면 None."""
+    base = PROJECT_DOCS + "/"
+    if doc.endswith(("/", "/**")):
+        d = doc.rstrip("*").rstrip("/") + "/"
+        if base.startswith(d):
+            return ""
+        return d[len(base):] if d.startswith(base) else None
+    if doc.startswith(base) and doc.endswith(".md") and len(doc) > len(base) + len(".md"):
+        return doc[len(base):-len(".md")]
+    return None
 
 
 # 허용 목록에서 빼는 관리 스크립트 — 이슈·리뷰 요청을 닫거나 만드는, 되돌릴 수 없는 forge 쓰기와
