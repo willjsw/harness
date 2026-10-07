@@ -6,6 +6,7 @@ import Markdown from "@/components/Markdown";
 import ModeToggle from "@/components/ModeToggle";
 import CheckReport from "@/components/CheckReport";
 import RoleEditor from "@/components/RoleEditor";
+import Reinstall from "@/components/Reinstall";
 
 // 역할 카드를 가로로 넘겨 보고, 고른 역할의 계약(읽기 전용)과 이 프로젝트의 지시(편집)를 아래에 연다.
 export default function AgentsView({ project, schema, tools, files }) {
@@ -88,7 +89,7 @@ function AgentDetail({ project, name, schema, tools, file }) {
           <RoleEditor project={project} name={name} schema={schema} tools={tools} />
         ) : (<>
           <code className="key notes-path fname">{schema.roles[name].notes}</code>
-          {edit
+          {edit && !schema.docs ? <Reinstall what="역할 지시를 저장" compact /> : edit
             ? <textarea className="md-edit" value={text} spellCheck={false} aria-label="마크다운 편집"
                 placeholder={"- 이 역할이 이 리포에서만 지킬 것\n- 제목은 쓰지 않는다 — \"이 프로젝트에서\" 절 안에 들어간다"} onChange={(e) => { setText(e.target.value); setReport(null); }} />
             : <div className="md-view">{text.trim() ? <Markdown>{text}</Markdown> : <p className="muted">더한 지시가 없다. 선택 사항이다 — 연필을 눌러 쓴다.</p>}</div>}

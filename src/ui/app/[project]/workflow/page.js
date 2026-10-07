@@ -4,7 +4,8 @@ import FlowCanvas from "@/components/FlowCanvas";
 export default async function Workflow({ params }) {
   const project = decodeURIComponent((await params).project);
   const { path } = await getProject(project);
-  const [steps, flows, schema] = await Promise.all([readSteps(path).catch(() => null), listWorkflows(path), readSchema(path)]);
+  const [steps, schema] = await Promise.all([readSteps(path).catch(() => null), readSchema(path)]);
+  const flows = await listWorkflows(path, schema);
   // 프로젝트는 설치한 버전에 고정된다. 단계 편집 전 버전이면 `harness steps` 가 없다.
   if (!steps || !schema) return (
     <div className="empty">
