@@ -1846,18 +1846,28 @@ def managed_drift(target: Path, staged=False):
 
 
 def cmd_check(cfg, target, args):
+    # 어긋난 매니페스트 줄은 그 경로를 읽지 않는다 — 대조는 검증을 거친 줄로만 한다
+    faults = manifest_faults(target)
     bad = drift(cfg, target, staged=args.staged)
     mbad, compared = managed_drift(target, staged=args.staged)
+    if faults:
+        print("error: the harness manifest has line(s) that are not safe paths under the harness root", file=sys.stderr)
+        for name, n, why in faults:
+            print("  %-52s %s" % ("%s:%d" % (name, n), why), file=sys.stderr)
+        print("\nhelp: the manifest lists only files the harness wrote, as paths under the harness root\n"
+              "      fix or delete those lines", file=sys.stderr)
+        if any(why == "a merge conflict marker" for _n, _l, why in faults):
+            print(MANIFEST_CONFLICT_HELP, file=sys.stderr)
     if bad:
-        print("error: generated files do not match the config%s"
-              % (" (staged contents)" if args.staged else ""), file=sys.stderr)
+        print("%serror: generated files do not match the config%s"
+              % ("\n" if faults else "", " (staged contents)" if args.staged else ""), file=sys.stderr)
         for rel, why in bad:
             print("  %-52s %s" % (rel, why), file=sys.stderr)
         print("\nhelp: regenerate them — never edit generated files by hand\n"
               "        harness render", file=sys.stderr)
     if mbad:
         print("%serror: managed files differ from what the harness installed%s"
-              % ("\n" if bad else "", " (staged contents)" if args.staged else ""), file=sys.stderr)
+              % ("\n" if bad or faults else "", " (staged contents)" if args.staged else ""), file=sys.stderr)
         for rel, why in mbad:
             print("  %-52s %s" % (rel, why), file=sys.stderr)
         print("\nhelp: managed files are the harness's — render puts them back\n"
@@ -1865,7 +1875,7 @@ def cmd_check(cfg, target, args):
               "      project scripts belong in script/project/", file=sys.stderr)
         if any(rel.startswith(PINNED) for rel, _w in mbad):
             print("      the pinned copy under .harness/ comes back with `harness install`", file=sys.stderr)
-    if bad or mbad:
+    if faults or bad or mbad:
         return 1
     print("check: %d generated files match the config" % len(plan(cfg, target)))
     print("check: %d managed files match the manifest" % compared)
@@ -2498,9 +2508,10 @@ def doctor_items(cfg, target, remote=False):
 
     section("generated files")
     diff = drift(cfg, target)
+    unsafe = unsafe_manifest_items(target, MANIFEST, line)
     if diff:
         line("bad", "%d files differ from the config" % len(diff), "run `harness render`")
-    else:
+    elif not unsafe:
         line("ok", "%d files match the config" % len(plan(cfg, target)))
 
     section("managed files")
@@ -2611,14 +2622,25 @@ def doctor_items(cfg, target, remote=False):
 MANAGED_SHOWN = 10
 
 
+def unsafe_manifest_items(target: Path, name: str, line) -> int:
+    """매니페스트 하나의 어긋난 줄을 줄 번호 순으로 몇 개만 낸다. 줄의 내용은 담지 않는다. 어긋난 줄 수를 돌려준다."""
+    faults = read_manifest(target, name)[1]
+    for _name, n, why in faults[:MANAGED_SHOWN]:
+        line("bad", "unsafe manifest line", "%s:%d (%s)" % (name, n, why))
+    if len(faults) > MANAGED_SHOWN:
+        line("bad", "%d more unsafe manifest line(s)" % (len(faults) - MANAGED_SHOWN))
+    return len(faults)
+
+
 def managed_items(target: Path, line):
     """관리 파일과 고정 사본이 `.harness/managed` 와 맞는지. 바뀐 것은 경로 순으로 몇 개만 낸다."""
     if not (target / MANIFEST_MANAGED).is_file():
         line("warn", "no manifest of managed files", "run `harness render`")
         return
+    unsafe = unsafe_manifest_items(target, MANIFEST_MANAGED, line)
     entries = manifest_entries(target)
     bad, n = managed_drift(target)
-    if n and not bad:
+    if n and not bad and not unsafe:
         line("ok", "%d managed files match the manifest" % n)
     for rel, why in sorted(bad)[:MANAGED_SHOWN]:
         line("bad", why, rel)

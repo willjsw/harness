@@ -152,6 +152,16 @@ export function explain(i, base) {
   if ((m = w.match(/^(\d+) files differ from the config$/)))
     return { title: "생성 파일이 설정과 다릅니다", body: `${m[1]}개 파일이 harness.toml 과 맞지 않습니다. 다시 생성하지 않으면 커밋이 막힙니다.`,
       run: { kind: "render", cmd: "harness render" } };
+  // 하네스 기록(매니페스트)의 줄 — 조치 버튼이 없다. 파일을 손으로 고친다
+  if (w === "unsafe manifest line") {
+    const where = d.replace(/ \(.*\)$/, "");
+    const conflict = d.endsWith("(a merge conflict marker)");
+    return { title: "하네스 기록에 정상 경로가 아닌 줄이 있습니다",
+      body: `${where} 의 줄이 하네스 루트 아래의 정상 경로가 아닙니다. 이 줄을 고치거나 지우기 전까지 render · install · set · steps · checks · uninstall 이 아무것도 바꾸지 않고 멈춥니다.`
+        + (conflict ? " 병합 충돌 표지 줄입니다. 양쪽 줄을 남기고 표지 줄만 지운 뒤 harness install 로 기록을 다시 씁니다." : "") };
+  }
+  if ((m = w.match(/^(\d+) more unsafe manifest line\(s\)$/)))
+    return { title: `정상 경로가 아닌 하네스 기록 줄이 ${m[1]}개 더 있습니다`, body: "하네스 기록 파일을 열어 나머지 줄도 고치거나 지웁니다." };
   if (i.section === "managed files" && i.state !== "ok") {
     const r = explainManaged(i);
     if (r) return r;

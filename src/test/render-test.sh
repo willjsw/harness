@@ -3907,7 +3907,7 @@ grep -c 'refuse_link\|linked_component' "$root/bin/harness" > "$work/p101-names"
 check "no per-point link check is left in the CLI" "$(cat "$work/p101-names")" "0"
 
 # 매니페스트는 신뢰하지 않는 입력이다 — 어긋난 줄이 하나라도 있으면 바꾸는 명령은 아무것도 바꾸지 않는다
-mf="$work/mf101/repo"; rm -rf "$work/mf101"; mkdir -p "$mf"; ( cd "$mf" && git init -q . )
+mf="$work/mf101/manifest101"; rm -rf "$work/mf101"; mkdir -p "$mf"; ( cd "$mf" && git init -q . )
 "$root/bin/harness" install --target "$mf" >/dev/null 2>&1 || bad "could not install the manifest repo"
 printf 'victim\n' > "$work/mf101/victim.md"; cp "$work/mf101/victim.md" "$work/p101-victim.copy"
 printf 'outside file\n' > "$out101/abs.md"; cp "$out101/abs.md" "$work/p101-abs.copy"
@@ -3972,6 +3972,58 @@ rm "$mf/.harness/generated"; printf '../victim.md\n' > "$mf/.harness/managed"
 has "$work/p101-29.err" "not safe paths under the harness root" "uninstall did not name the bad manifest"
 hasnt "$work/p101-29.err" "no harness manifest" "uninstall took a bad manifest for none"
 same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "uninstall changed the file outside the harness root"
+
+# 읽기 명령은 멈추지 않고 어긋난 줄을 보고한다 — 그 줄의 경로는 읽지 않고, 줄의 내용을 옮기지 않는다
+ck="$work/ck101/check101"; rm -rf "$work/ck101"; mkdir -p "$ck"; ( cd "$ck" && git init -q . )
+"$root/bin/harness" install --target "$ck" >/dev/null 2>&1 || bad "could not install the check repo"
+printf 'victim\n' > "$work/ck101/victim.md"
+items101() { # items101 <리포> <출력> — doctor 항목 가운데 생성 · 관리 파일 절을 `section|state|what|detail` 로 찍는다
+  "$root/bin/harness" status --target "$1" > "$2.json" 2> "$2.err"
+  python3 - "$2.json" > "$2" <<'PY'
+import json, sys
+for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]:
+    if i["section"] in ("generated files", "managed files"):
+        print("%s|%s|%s|%s" % (i["section"], i["state"], i["what"], i["detail"]))
+PY
+}
+# 매니페스트에 있는 관리 파일이 링크여도 어긋난 줄이 아니다
+printf 'outside file\n' > "$out101/ck.sh"; mv "$ck/script/review-mr.sh" "$work/ck101/review-mr.sh"; ln -s "$out101/ck.sh" "$ck/script/review-mr.sh"
+"$root/bin/harness" check --target "$ck" > "$work/p101-30.out" 2> "$work/p101-30.err"
+hasnt "$work/p101-30.err" "not safe paths under the harness root" "check reported a linked manifest path as a bad line"
+items101 "$ck" "$work/p101-31.items"
+hasnt "$work/p101-31.items" "unsafe manifest line" "doctor reported a linked manifest path as a bad line"
+rm "$ck/script/review-mr.sh"; mv "$work/ck101/review-mr.sh" "$ck/script/review-mr.sh"
+cp "$ck/.harness/generated" "$work/p101-ck.gen"; cp "$ck/.harness/managed" "$work/p101-ck.mf"
+printf '../victim.md\n' >> "$ck/.harness/generated"; g101=$(wc -l < "$ck/.harness/generated" | tr -d ' ')
+printf '<<<<<<< HEAD\n' >> "$ck/.harness/managed"; k101=$(wc -l < "$ck/.harness/managed" | tr -d ' ')
+"$root/bin/harness" check --target "$ck" > "$work/p101-32.out" 2> "$work/p101-32.err"; check "check with bad manifest lines" "$?" "1"
+grep -qE "^  \.harness/generated:$g101 +has a \.\. component$" "$work/p101-32.err" && ok || bad "check does not name the .. line"
+grep -qE "^  \.harness/managed:$k101 +a merge conflict marker$" "$work/p101-32.err" && ok || bad "check does not name the marker line"
+has "$work/p101-32.err" "        harness install" "the check help does not name harness install for the marker"
+check "check reads nothing through the bad line" "$(cat "$work/ck101/victim.md")" "victim"
+printf '\n# edited\n' >> "$ck/script/review-mr.sh"
+"$root/bin/harness" check --target "$ck" > "$work/p101-33.out" 2> "$work/p101-33.err"; check "check with bad lines and an edited managed file" "$?" "1"
+has "$work/p101-33.err" "not safe paths under the harness root" "the bad lines are not reported beside the managed drift"
+has "$work/p101-33.err" "managed files differ from what the harness installed" "the managed drift is not reported beside the bad lines"
+cp "$root/templates/managed/script/review-mr.sh" "$ck/script/review-mr.sh"
+items101 "$ck" "$work/p101-34.items"
+grep -qx "generated files|bad|unsafe manifest line|.harness/generated:$g101 (has a .. component)" "$work/p101-34.items" && ok \
+  || bad "doctor does not report the .. line in generated files: $(cat "$work/p101-34.items")"
+grep -qx "managed files|bad|unsafe manifest line|.harness/managed:$k101 (a merge conflict marker)" "$work/p101-34.items" && ok \
+  || bad "doctor does not report the marker line in managed files: $(cat "$work/p101-34.items")"
+grep -q '^generated files|ok|' "$work/p101-34.items" && bad "the generated files section has an ok item beside a bad line" || ok
+grep -q '^managed files|ok|' "$work/p101-34.items" && bad "the managed files section has an ok item beside a bad line" || ok
+# 개수 제한과 내용을 옮기지 않는 것
+cp "$work/p101-ck.gen" "$ck/.harness/generated"; cp "$work/p101-ck.mf" "$ck/.harness/managed"
+for i in 1 2 3 4 5 6 7 8 9 10; do printf '../x%d.md\n' "$i" >> "$ck/.harness/managed"; done
+printf '%s  %s\n' "$(printf x | shasum -a 256 | cut -c1-64)" "$work/ck101/victim.md" >> "$ck/.harness/managed"
+items101 "$ck" "$work/p101-35.items"
+check "ten bad lines are listed" "$(grep -c '^managed files|bad|unsafe manifest line|' "$work/p101-35.items")" "10"
+grep -qx 'managed files|bad|1 more unsafe manifest line(s)|' "$work/p101-35.items" && ok || bad "the eleventh bad line is not summed up"
+"$root/bin/harness" check --target "$ck" > "$work/p101-36.out" 2> "$work/p101-36.err"; check "check with an absolute manifest line" "$?" "1"
+cat "$work/p101-35.items" "$work/p101-35.items.json" "$work/p101-35.items.err" "$work/p101-36.out" "$work/p101-36.err" \
+  | grep -qF "$work/ck101/victim.md" && bad "a read command printed the bad line's path" || ok
+cat "$work"/p101-*.items "$work"/p101-*.items.err >> "$work/p101-items.log"; no_hangul "$work/p101-items.log" "doctor items for bad manifest lines"
 cat "$work"/p101-*.out "$work"/p101-*.err > "$work/p101-all.log"; no_hangul "$work/p101-all.log" "safe path output"
 
 echo
