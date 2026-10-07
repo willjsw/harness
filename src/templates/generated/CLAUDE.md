@@ -37,7 +37,7 @@
 ## 이 하네스에서의 실행 수단
 
 - 이슈·리뷰 요청 조회·조작: `.ai/forge.md` 의 명령. 쓰기는 사용자가 명시적으로 요청한 턴에서만.
-- 검증: `script/run-lint-test.sh` 를 Bash 로. 결과를 요약하지 말고 실패 출력을 그대로 보고한다.
+- 검증: 커밋 전 `script/run-lint-test.sh --commit` 를 Bash 로. push 전 전체 검증은 pre-push 훅이 돈다. 결과를 요약하지 말고 실패 출력을 그대로 보고한다.
 - 하네스 설정 변경: `harness.toml` 을 고치고 `.harness/bin/harness render`.
 - 커밋·push: `.ai/AI_AGENT.md` 의 "금지 사항" 이 우선한다. 지시 없이 실행하지 않는다.
 

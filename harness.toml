@@ -120,9 +120,17 @@ format_fix = ""
 #   ]
 [verify]
 checks = [
-  { name = "CLI 가 컴파일된다", run = "python3 -m py_compile src/bin/harness" },
-  { name = "UI 단위 테스트", run = "cd src/ui && node --test lib/*.test.js" },
+  { name = "CLI 가 컴파일된다", run = "python3 -m py_compile src/bin/harness", paths = ["src/bin/**"] },
+  { name = "UI 단위 테스트", run = "cd src/ui && node --test lib/*.test.js", paths = ["src/ui/**"] },
 ]
+post_commit = false
+pre_push = true
+incremental = true
+# 하네스 스크립트 회귀는 회귀 테스트(UT-61)가 설치본으로 push 전에 돌린다 — 커밋 단계에서 또 돌리지 않는다
+script_tests = false
+# 회귀 테스트는 CLI·템플릿·테스트 자신이 바뀔 때만, push 전과 CI 에서 돈다 — 한 번에 수 분이다
+test_paths = ["src/bin/**", "src/templates/**", "src/test/**"]
+test_on = "push"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 실행 지표 (Metrics 탭)

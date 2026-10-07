@@ -130,7 +130,7 @@ vim harness.toml
 ## 바꾼 뒤 확인
 
 ```bash
-script/run-lint-test.sh   # 생성물 일치 + 회귀 테스트 + 프로젝트 검증
+script/run-lint-test.sh   # 생성물 일치 + 검증 전부 (통과 기록이 있는 단계는 건너뛴다. --no-cache 면 전수)
 harness doctor            # 끊긴 참조 + 비어 있는 자리 + 도구·훅
 ```
 

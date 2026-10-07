@@ -28,7 +28,6 @@ docs/adr/README.md
 docs/adr/templates/template.md
 script/forge.sh
 script/githooks/commit-msg
-script/githooks/post-commit
 script/githooks/pre-commit
 script/githooks/pre-push
 script/harness-verify.sh
