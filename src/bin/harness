@@ -3291,6 +3291,24 @@ def section_span(lines: list, head: str):
     return at, end
 
 
+def refuse_notes_rename(target: Path, wf: str, new: str) -> bool:
+    """절차 이름을 바꾸기 전에 절차별 지시 문서의 두 경로를 본다. 멈춰야 하면 안내문을 내고 True.
+
+    두 경로에 링크 성분이 있거나, 새 이름 자리에 무엇이든 있으면 멈춘다 — 옮기기가 그 자리를 덮지 않게 한다.
+    """
+    old_rel, new_rel = ("%s/%s.md" % (WORKFLOW_NOTES, n) for n in (wf, new))
+    if refuse_unsafe_paths(target, {old_rel: "move", new_rel: "move"}, "steps"):
+        return True
+    if not os.path.lexists(target / new_rel):
+        return False
+    print("error: cannot rename the workflow notes — a file is already at the new name\n"
+          "  --> %s\n"
+          "nothing was changed\n\n"
+          "help: move that file aside or merge it into the old notes, then rename again\n"
+          "        harness steps %s --rename %s" % (new_rel, wf, new), file=sys.stderr)
+    return True
+
+
 def rename_or_delete_workflow(cfg, target, args):
     """`harness steps <절차> --rename <새이름>` · `harness steps <절차> --delete` — 이 프로젝트가 만든 절차만.
 
@@ -3322,6 +3340,8 @@ def rename_or_delete_workflow(cfg, target, args):
             del lines[at]   # 지운 자리에 빈 줄이 겹치지 않게
     if refuse_unsafe_manifest(target, "steps"):
         return 2
+    if new and refuse_notes_rename(target, wf, new):
+        return 2
     p.write_text("".join(lines), encoding="utf-8")
     try:
         cfg = load(target)
@@ -3336,7 +3356,8 @@ def rename_or_delete_workflow(cfg, target, args):
         return 2
     notes = target / WORKFLOW_NOTES / ("%s.md" % wf)
     if new and notes.is_file():
-        notes.rename(notes.with_name("%s.md" % new))
+        os.rename(guarded_path(target, "%s/%s.md" % (WORKFLOW_NOTES, wf), "move"),
+                  guarded_path(target, "%s/%s.md" % (WORKFLOW_NOTES, new), "move"))
     print("steps: workflows.%s %s" % (wf, ("renamed to %s" % new) if new else "deleted"))
     if not new and notes.is_file():
         print("note: %s is kept — it is yours" % notes.relative_to(target))

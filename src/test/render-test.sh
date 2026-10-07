@@ -4024,6 +4024,42 @@ grep -qx 'managed files|bad|1 more unsafe manifest line(s)|' "$work/p101-35.item
 cat "$work/p101-35.items" "$work/p101-35.items.json" "$work/p101-35.items.err" "$work/p101-36.out" "$work/p101-36.err" \
   | grep -qF "$work/ck101/victim.md" && bad "a read command printed the bad line's path" || ok
 cat "$work"/p101-*.items "$work"/p101-*.items.err >> "$work/p101-items.log"; no_hangul "$work/p101-items.log" "doctor items for bad manifest lines"
+
+# steps --rename — 새 이름 자리의 문서를 덮지 않고, 링크를 거쳐 옮기지 않는다
+rn="$work/rename101"; setup "$rn"; wd="$rn/.ai/project/workflows"
+"$root/bin/harness" steps --target "$rn" hotfix '{"title":"hot","steps":[{"id":"a","type":"gate","title":"t"}]}' >/dev/null 2>&1 \
+  || bad "could not add the hotfix workflow"
+mkdir -p "$wd"; printf 'hotfix notes\n' > "$wd/hotfix.md"; printf 'quickfix notes\n' > "$wd/quickfix.md"
+cp "$rn/harness.toml" "$work/p101-rn.toml"; cp "$wd/hotfix.md" "$work/p101-rn.hot"; cp "$wd/quickfix.md" "$work/p101-rn.quick"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-40.out" 2> "$work/p101-40.err"; check "rename onto existing notes" "$?" "2"
+for s in "a file is already at the new name" "  --> .ai/project/workflows/quickfix.md" "nothing was changed" "harness steps hotfix --rename quickfix"; do
+  has "$work/p101-40.err" "$s" "the rename refusal does not say: $s"
+done
+same101 "$wd/hotfix.md" "$work/p101-rn.hot" "the refused rename changed the old notes"
+same101 "$wd/quickfix.md" "$work/p101-rn.quick" "the refused rename overwrote the notes at the new name"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the refused rename changed the config"
+rm "$wd/quickfix.md"; mkdir "$wd/quickfix.md"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-41.out" 2> "$work/p101-41.err"; check "rename onto a directory" "$?" "2"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the rename onto a directory changed the config"
+rmdir "$wd/quickfix.md"
+mv "$wd" "$out101/workflows"; ln -s "$out101/workflows" "$wd"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-42.out" 2> "$work/p101-42.err"; check "rename through a linked notes directory" "$?" "2"
+has "$work/p101-42.err" "go through a symbolic link" "the linked notes directory is not reported as a link"
+has "$work/p101-42.err" "  --> .ai/project/workflows" "the refusal does not name the linked notes directory"
+check "the directory behind the link is untouched" "$(ls "$out101/workflows" | tr '\n' ' ')" "hotfix.md "
+same101 "$out101/workflows/hotfix.md" "$work/p101-rn.hot" "the rename changed the notes behind the link"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the rename through a link changed the config"
+rm "$wd"; mkdir "$wd"; printf 'outside notes\n' > "$out101/hot.md"; cp "$out101/hot.md" "$work/p101-rn.out"; ln -s "$out101/hot.md" "$wd/hotfix.md"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-43.out" 2> "$work/p101-43.err"; check "rename of linked notes" "$?" "2"
+has "$work/p101-43.err" "  --> .ai/project/workflows/hotfix.md" "the refusal does not name the linked notes"
+same101 "$out101/hot.md" "$work/p101-rn.out" "the rename changed the file behind the link"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the rename of linked notes changed the config"
+rm "$wd/hotfix.md"; cp "$work/p101-rn.hot" "$wd/hotfix.md"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-44.out" 2> "$work/p101-44.err"; check "rename with nothing at the new name" "$?" "0"
+same101 "$wd/quickfix.md" "$work/p101-rn.hot" "the notes did not move to the new name"
+[ -e "$wd/hotfix.md" ] && bad "the old notes are still there after the rename" || ok
+"$root/bin/harness" steps --target "$rn" quickfix --delete > "$work/p101-45.out" 2> "$work/p101-45.err"; check "delete a renamed workflow" "$?" "0"
+[ -f "$wd/quickfix.md" ] && ok || bad "delete removed the person's notes"
 cat "$work"/p101-*.out "$work"/p101-*.err > "$work/p101-all.log"; no_hangul "$work/p101-all.log" "safe path output"
 
 echo
