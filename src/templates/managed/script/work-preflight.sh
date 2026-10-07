@@ -5,12 +5,13 @@
 #
 # 출력(stdout): `plan` = 분해가 있는 경로 · `standalone` = 분해 없는 단독 task
 # 종료 코드: 0 = 착수 가능 · 1 = 착수 불가(사유를 stderr 로) · 2 = 실행 실패
+#           닫힌 이슈는 1, 이슈 조회 실패(없는 번호·인증·네트워크·권한, 읽히지 않는 상태)는 2
 #
 # **착수 전과 구현 위임 직전에 같은 명령을 돌린다.** 판정을 두 곳에 따로 적으면 한쪽에 검사를
 # 더할 때 다른 쪽이 낡는다. 두 결과가 다르면 그 사이에 원격이 바뀐 것이므로 위임하지 않는다.
 #
-# 검사 순서가 결과를 바꾼다. 열린 리뷰 요청을 먼저 본다 — 두 검사 사이에 spec+plan 이 머지되면
-# 분해를 먼저 본 경우 "분해 없음 + 열린 것 없음" 이 되어 단독 task 로 오판한다.
+# 검사 순서가 결과를 바꾼다. 이슈 자체를 먼저 보고, 그다음 열린 리뷰 요청을 본다 — 두 검사 사이에
+# spec+plan 이 머지되면 분해를 먼저 본 경우 "분해 없음 + 열린 것 없음" 이 되어 단독 task 로 오판한다.
 set -euo pipefail
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -29,6 +30,40 @@ log() { "$root/script/usage-log.sh" preflight work-preflight "$1" || true; }
 # `docs/plan/...` 이 그대로는 맞지 않는다 — 현재 위치의 접두를 앞에 붙인다.
 prefix=$(git rev-parse --show-prefix 2>/dev/null) || {
   echo "stop: not inside a git repository" >&2; exit 2; }
+
+# ⓪ 이슈 — 닫혔거나 읽히지 않으면 착수하지 않는다. 분해가 있어도 인수로 받은 이슈만 본다.
+#    닫힘은 정규화 JSON 의 state 로만 가른다. 없는 이슈는 따로 가르지 않고 조회 실패로 다룬다.
+. script/forge.sh
+tracker_require || exit 2
+set +e
+issue_json=$(tracker_issue_view "$issue")
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+  log issue-query-failed
+  echo "stop: could not read issue $issue from the tracker" >&2
+  echo "help: check that the issue exists and that the tracker CLI is signed in" >&2
+  exit 2
+fi
+state=$(printf '%s' "$issue_json" | python3 -c '
+import json, sys
+try:
+    v = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+print((v.get("state") or "") if isinstance(v, dict) else "")
+' 2>/dev/null || true)
+case "$state" in
+  open|opened) ;;
+  closed)
+    log issue-closed
+    echo "stop: issue $issue is closed" >&2
+    exit 1 ;;
+  *)
+    log issue-query-failed
+    echo "stop: could not read the state of issue $issue" >&2
+    exit 2 ;;
+esac
 
 # ① 열린 리뷰 요청 — 있으면 착수하지 않는다.
 set +e

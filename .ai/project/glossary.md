@@ -13,9 +13,10 @@
 | 고정(pin) | 대상 리포가 `.harness/` 에 설치 시점의 하네스 사본을 두고 그 버전으로만 도는 것 |
 | 생성 파일 | `harness.toml` 에서 나오는 파일. 고치지 않고 `render` 로 다시 만든다 |
 | 관리 파일 | 하네스가 그대로 복사해 두는 파일. 갱신이 덮는다 |
-| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · CI 설정) |
+| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · `script/project/README.md` · CI 설정) |
 | 보호 문서 | 에이전트가 근거로 읽는 소유 파일(scope · architecture · glossary · testing · `roles/` · `workflows/`). 권한과 가드가 쓰기를 막고, 사람이 지시한 턴에만 고친다 |
-| 매니페스트 | 지난 렌더가 무엇을 깔았는지 적은 목록(`.harness/generated` · `.harness/managed`). 정리와 제거의 근거 |
+| 매니페스트 | 지난 설치·렌더가 무엇을 깔았는지 적은 목록. `.harness/generated` 는 생성 파일 경로, `.harness/managed` 는 관리 파일과 고정 사본의 sha256 과 경로. 정리·제거·변조 감지의 근거 |
+| 사용자 파일 | 하네스가 쓸 경로에 있으나 매니페스트에 없는 파일. render · install 이 덮지 않고 멈추며, `--adopt` 면 `<경로>.orig` 로 옮기고 넘겨받는다 |
 | 정본 | 어떤 값·규칙을 고칠 때 손대는 유일한 자리. 규칙 값은 `harness.toml`, 프로젝트 사실은 `.ai/project/` |
 | 렌더 | 설정과 프로젝트 사실에서 생성 파일을 만드는 일 (`harness render`) |
 | 역할 | 절차의 한 단계를 맡는 에이전트 (requirement-analyzer · spec-writer · planner · developer · code-reviewer · docs-writer · security-guard) |
@@ -35,13 +36,14 @@
 | 리뷰 요청 | GitHub 의 PR, GitLab 의 MR. 문서에서는 forge 에 중립적으로 이렇게 부른다 |
 | 회차 라벨 | 리뷰 요청에 붙는 `<prefix>:<N>` 라벨. `review-mr.sh` 만 올린다 |
 | 이월 이슈 | 범위 밖으로 넘긴 지적을 담는 이슈. `create-carryover-issue.sh` 가 만든다 |
-| 표지 | 기계가 읽는 문자열 (`script/harness-format.sh`). `REVIEW_VERDICT` · `harness:allow-secret` 등 |
+| 표지 | 기계가 읽는 문자열 (`script/harness-format.sh`). 판정 데이터 블록의 info string(`FMT_REVIEW_BLOCK`) · `harness:allow-secret` 등 |
 | forge | 이슈 추적기와 코드 리뷰 호스트를 묶어 부르는 말 (GitHub · GitLab · Jira) |
 | 어댑터 | forge 명령을 감싸는 스크립트(`script/forge/<kind>.sh`), 또는 역할 계약을 CLI 별 형식으로 옮긴 정의 파일(`.claude/agents/` · `.codex/agents/`) |
 | 자체 검사 | 어댑터가 계약을 지키는지 실제 forge 로 확인하는 것 (`script/forge-selftest.sh`) |
 | 등록부 | 설치된 프로젝트와 기기의 도구 기록 (`~/.harness/`). UI 가 이것으로 프로젝트를 전환한다 |
 | 스팬 · 트레이스 | 실행 지표의 단위. 명령·단계·역할·스크립트 한 번이 스팬, 한 실행의 스팬 묶음이 트레이스 |
 | 결정 기록 | 되돌리기 비싼 결정의 "왜" (`docs/adr/`, Nygard 방식) |
+| 이슈 worktree | `harness run --worktree` 가 이슈 번호 이름으로 `worktree.dir` 아래에 만드는 git worktree |
 
 ### 폐기된 별칭
 

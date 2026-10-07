@@ -15,6 +15,9 @@
 # 망가뜨린 가드의 케이스가 통과로 뒤집히고 나머지 계열은 그대로 차단이어야 한다 —
 # 뒤집히지 않으면 표가 무력화를 못 잡는 것이고, 다른 계열까지 뚫리면 판정이 얽힌 것이다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd) || exit 2
@@ -127,6 +130,12 @@ case_is 0 "echo git push origin $protected_b"
 case_is 0 "echo \"git push --force origin $work_branch\""
 case_is 0 'grep -n "git commit --no-verify" script/hooks/_guards.sh'
 case_is 0 "echo $forge_cli issue delete 100"
+case_is 0 "echo \"a; git push --force origin $work_branch\""
+case_is 0 "echo 'a && git push origin $protected_b'"
+
+# ── 따옴표로 감싼 낱말은 셸이 넘기는 값으로 읽는다 ─────────────────────────
+case_is 2 "git push \"--force\" origin $work_branch"
+case_is 2 "git push origin '$protected_a'"
 
 # ── 래퍼·환경변수 대입 뒤의 git 은 실행 자리다 ─────────────────────────────
 case_is 2 "env GIT_TRACE=1 git push origin $protected_a"
@@ -178,6 +187,228 @@ EOF'; do
 else
   fail=$((fail + 1))
   echo "fail: could not create the temp repo, so the commit rulings went unchecked" >&2
+fi
+
+# ── 명령이 가리키는 작업 트리의 브랜치로 판정한다 ──────────────────────────
+# 훅은 세션의 작업 트리에서 돈다. 명령이 `cd` 나 `git -C` 로 다른 작업 트리를 가리키면
+# 판정은 그 트리의 브랜치를 따라야 한다. 링크된 작업 트리는 임시 리포 안에만 만든다.
+#
+# 가드는 자기가 속한 리포의 작업 트리만 판정하므로, 임시 리포에 훅 사본과 설정을 깔아
+# 그 리포를 하네스가 지키는 리포로 만든다. at_is 는 at_hook 이 가리키는 사본을 부른다.
+wt_prot="$sandbox/wt-protected"
+wt_feat="$sandbox/wt-feature"
+feat_branch="feat/101-other"
+# install_hooks <리포 디렉터리> → 그 리포의 script/ 에 훅 사본과 설정을 깐다
+install_hooks() {
+  mkdir -p "$1/script/hooks" &&
+    cp "$repo_root/script/hooks/bash-guard.sh" "$repo_root/script/hooks/_guards.sh" "$1/script/hooks/" &&
+    cp "$repo_root/script/harness.env" "$1/script/" &&
+    chmod +x "$1/script/hooks/"*.sh
+}
+at_hook="$repo_root/script/hooks/bash-guard.sh"
+# at_is <기대코드> <훅 작업 디렉터리> <명령> <설명>
+at_is() {
+  local expect=$1 dir=$2 cmd=$3 note=$4 rc
+  rc=$(cd "$dir" && probe "$at_hook" "$cmd")
+  if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1))
+    echo "fail: $note — want=$expect got=$rc  $cmd" >&2
+  fi
+}
+mkdir -p "$wt_prot"
+if git -C "$wt_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
+  git -C "$wt_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$wt_prot" worktree add -q -b "$feat_branch" "$wt_feat" >/dev/null 2>&1 &&
+  install_hooks "$wt_prot"; then
+  at_hook="$wt_prot/script/hooks/bash-guard.sh"
+  at_is 0 "$wt_prot" "cd $wt_feat && git commit -m x" \
+    "a commit in another work tree on a work branch must pass"
+  at_is 0 "$wt_prot" "git -C $wt_feat commit -m x" \
+    "a commit through git -C into a work branch tree must pass"
+  at_is 2 "$wt_feat" "git -C $wt_prot commit -m x" \
+    "a commit through git -C into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $wt_prot && git commit -m x" \
+    "a commit after cd into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $sandbox && git -C wt-protected commit -m x" \
+    "git -C applies relative to the directory cd moved to"
+  at_is 0 "$wt_prot" "cd $wt_prot && git -C ../wt-feature commit -m x" \
+    "a relative git -C after cd resolves from the cd target"
+  at_is 0 "$wt_prot" "cd $wt_feat; cd ../wt-feature && git commit -m x" \
+    "a relative cd resolves from the previous cd"
+  at_is 2 "$wt_prot" "cd \"\$(something)\" && git commit -m x" \
+    "an unresolved cd path falls back to the hook directory"
+  at_is 0 "$wt_feat" "cd \"\$(something)\" && git commit -m x" \
+    "an unresolved cd path falls back to the hook directory"
+  at_is 2 "$wt_prot" "cd $sandbox && git commit -m x" \
+    "a cd target that is not a work tree falls back to the hook directory"
+  at_is 2 "$wt_prot" "git -C $sandbox/missing commit -m x" \
+    "a git -C path that does not exist falls back to the hook directory"
+  at_is 2 "$wt_prot" "(cd $wt_feat) && git commit -m x" \
+    "a cd closed inside a subshell does not move the later command"
+  at_is 2 "$wt_feat" "git -C $wt_prot push origin" \
+    "a push with no destination from a protected branch tree must be blocked"
+  at_is 0 "$wt_prot" "cd $wt_feat && git push origin" \
+    "a push with no destination from a work branch tree must pass"
+  at_is 0 "$wt_prot" "git -C $wt_feat commit -m \"keep -n out\"" \
+    "an option-like word inside a quoted message is not an option"
+  at_is 2 "$wt_prot" "git -C \"\$HOME/x\" commit -m x" \
+    "a quoted path with an expansion falls back to the hook directory"
+  at_is 0 "$wt_feat" "git -C \"\$HOME/x\" commit -m x" \
+    "a quoted path with an expansion falls back to the hook directory"
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp work trees, so the work tree rulings went unchecked" >&2
+fi
+
+# ── 공백이 든 작업 트리 경로를 따옴표로 감싸도 그 트리의 브랜치로 판정한다 ──
+sp_prot="$sandbox/prot tree"
+sp_feat="$sandbox/feat tree"
+mkdir -p "$sp_prot"
+if git -C "$sp_prot" init -q -b "$protected_b" >/dev/null 2>&1 &&
+  git -C "$sp_prot" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$sp_prot" worktree add -q -b "feat/102-space" "$sp_feat" >/dev/null 2>&1 &&
+  install_hooks "$sp_prot"; then
+  at_hook="$sp_prot/script/hooks/bash-guard.sh"
+  at_is 2 "$wt_feat" "git -C \"$sp_prot\" commit -m x" \
+    "a double-quoted git -C path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "git -C '$sp_prot' commit -m x" \
+    "a single-quoted git -C path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd \"$sp_prot\" && git commit -m x" \
+    "a double-quoted cd path with a space into a protected branch tree must be blocked"
+  at_is 2 "$wt_feat" "cd $sandbox && git -C 'prot tree' commit -m x" \
+    "a quoted relative git -C path with a space resolves from the cd target"
+  at_is 2 "$wt_feat" "git -C $sandbox/\"prot tree\" commit -m x" \
+    "a quoted part inside a path joins the rest of the word"
+  at_is 2 "$wt_feat" "git -C \"$sp_feat\" push origin \"$protected_a\"" \
+    "a quoted push destination is read as the branch it names"
+  at_is 0 "$wt_prot" "git -C \"$sp_feat\" commit -m x" \
+    "a double-quoted git -C path with a space into a work branch tree must pass"
+  at_is 0 "$wt_prot" "cd '$sp_feat' && git commit -m x" \
+    "a single-quoted cd path with a space into a work branch tree must pass"
+  at_is 0 "$wt_prot" "cd \"$sp_feat\" && git push origin" \
+    "a push with no destination from a quoted work branch tree must pass"
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp work trees with a space, so the quoted path rulings went unchecked" >&2
+fi
+
+# ── 하네스가 지키지 않는 다른 리포에는 보호 브랜치 규칙을 적용하지 않는다 ──
+# 하네스 리포(본 작업 트리 · 링크된 worktree)와 무관한 리포를 함께 만든다. 무관한 리포도
+# 보호 목록과 같은 이름의 브랜치에 있다 — 그 리포의 브랜치 규칙은 이 하네스의 설정이 정하지 않는다.
+h_root="$sandbox/h-root"
+h_feat="$sandbox/h-feature"
+h_prot="$sandbox/h-protected"
+other="$sandbox/other-repo"
+mkdir -p "$h_root" "$other/sub"
+if git -C "$h_root" init -q -b "$protected_a" >/dev/null 2>&1 &&
+  git -C "$h_root" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1 &&
+  git -C "$h_root" worktree add -q -b "feat/103-guard" "$h_feat" >/dev/null 2>&1 &&
+  install_hooks "$h_root" && mkdir -p "$h_root/sub" &&
+  git -C "$other" init -q -b "$protected_a" >/dev/null 2>&1 &&
+  git -C "$other" -c user.email=t@example.com -c user.name=t commit -q --allow-empty -m init >/dev/null 2>&1; then
+  at_hook="$h_root/script/hooks/bash-guard.sh"
+  at_is 0 "$h_feat" "cd $other && git commit -m x" \
+    "a commit after cd into an unrelated repo on a protected name must pass"
+  at_is 0 "$h_feat" "git -C $other commit -m x" \
+    "a commit through git -C into an unrelated repo on a protected name must pass"
+  at_is 0 "$h_feat" "git -C $other/sub commit -m x" \
+    "a subdirectory of an unrelated repo is that unrelated repo"
+  at_is 0 "$h_feat" "cd $other && git push origin" \
+    "a push with no destination from an unrelated repo must pass"
+  at_is 0 "$h_feat" "git -C $other push origin $protected_a" \
+    "a push from an unrelated repo is not ruled by this harness's protected list"
+  at_is 2 "$h_feat" "git -C $other push --force origin $work_branch" \
+    "a force push stays blocked in an unrelated repo"
+  at_is 2 "$h_feat" "git -C $h_root commit -m x" \
+    "a commit through git -C into the harness main work tree on a protected branch must be blocked"
+  at_is 2 "$h_feat" "git -C $h_root/sub commit -m x" \
+    "a subdirectory of the harness main work tree is the harness repo"
+  at_is 2 "$h_feat" "cd $other && git -C $h_root commit -m x" \
+    "git -C back into the harness repo after cd into an unrelated repo is ruled again"
+  at_is 2 "$other" "git commit -m x" \
+    "a command with no directory is ruled by the hook directory"
+  # 본 작업 트리를 작업 브랜치로 옮기고, 비워진 보호 브랜치를 링크된 worktree 로 연다.
+  if git -C "$h_root" checkout -q -b "feat/104-root" >/dev/null 2>&1 &&
+    git -C "$h_root" worktree add -q "$h_prot" "$protected_a" >/dev/null 2>&1; then
+    at_is 2 "$h_feat" "cd $h_prot && git commit -m x" \
+      "a linked worktree of the harness repo on a protected branch must be blocked"
+    at_is 2 "$h_feat" "cd $h_prot && git push origin" \
+      "a push with no destination from a linked harness worktree on a protected branch must be blocked"
+    at_is 0 "$h_prot" "git -C $h_feat commit -m x" \
+      "a linked harness worktree on a work branch must pass"
+  else
+    fail=$((fail + 1))
+    echo "fail: could not open a protected branch in a linked worktree of the temp harness repo" >&2
+  fi
+else
+  fail=$((fail + 1))
+  echo "fail: could not create the temp harness repo and the unrelated repo, so the repo boundary rulings went unchecked" >&2
+fi
+
+# ── 따옴표 안의 구획 문자와 빈 따옴표는 셸이 넘기는 값으로 되돌려 판정한다 ──
+# git ref 에는 `&` · `;` · `|` 가 들어갈 수 있다. 그런 이름을 보호 목록에 둔 사본 레이아웃에서
+# 인용된 목적지가 실제로 가는 브랜치로 비교되는지 본다.
+punct="$sandbox/punct/script/hooks"
+mkdir -p "$punct"
+cp "$repo_root/script/hooks/bash-guard.sh" "$repo_root/script/hooks/_guards.sh" "$punct/"
+chmod +x "$punct"/*.sh
+p_amp="$protected_a&prod"
+p_semi="rel;x"
+p_bar="ops|y"
+{
+  cat "$repo_root/script/harness.env"
+  printf "PROTECTED_BRANCHES='%s %s %s'\n" "$p_amp" "$p_semi" "$p_bar"
+} >"$sandbox/punct/script/harness.env"
+# punct_is <기대코드> <명령> <설명>
+punct_is() {
+  local expect=$1 cmd=$2 note=$3 rc
+  rc=$(probe "$punct/bash-guard.sh" "$cmd")
+  if [ "$rc" = "$expect" ]; then pass=$((pass + 1)); else
+    fail=$((fail + 1))
+    echo "fail: $note — want=$expect got=$rc  $cmd" >&2
+  fi
+}
+punct_is 2 "git push origin '$p_amp'" "a single-quoted destination with & is the protected branch it names"
+punct_is 2 "git push origin \"$p_semi\"" "a double-quoted destination with ; is the protected branch it names"
+punct_is 2 "git push origin '$p_bar'" "a single-quoted destination with | is the protected branch it names"
+punct_is 2 "git push origin HEAD:'$p_amp'" "a quoted refspec right side with & is the protected branch it names"
+punct_is 2 "git push origin $protected_a'&prod'" "a quoted part with & joins the rest of the destination"
+punct_is 2 "git push origin '$p_amp' $work_branch" "a quoted protected destination among several is found"
+punct_is 0 "git push origin '$p_amp-2'" "a quoted destination that only starts with a protected name passes"
+punct_is 0 "git push origin $work_branch" "a work branch push passes under a punctuated protected list"
+
+# 빈 따옴표는 셸이 지운다. 낱말에 붙은 빈 따옴표가 명령·옵션·목적지 판정을 비껴가지 않는다.
+case_is 2 "g''it push origin $protected_a"
+case_is 2 "git pu\"\"sh origin $protected_a"
+case_is 2 "git push origin $protected_b''"
+case_is 2 "git push --for''ce origin $work_branch"
+case_is 2 "git push origin --del''ete $work_branch"
+case_is 2 "git commit --no-''verify -m x"
+case_is 2 "${forge_cli%?}''${forge_cli#"${forge_cli%?}"} issue delete 100"
+case_is 2 "$forge_cli issue de''lete 100"
+case_is 0 "git push origin '' $work_branch"
+case_is 0 "echo g''it push origin $protected_a"
+
+# 보호 목록과 비교되는 값에 자리표(제어 문자)가 남지 않는다. 비교 함수를 기록하는 것으로 바꿔
+# 인용이 섞인 명령마다 비교된 값을 모으고, 제어 문자가 하나라도 있으면 실패다.
+seen="$sandbox/compared"
+for c in "git push origin '$p_amp'" "git push origin \"$p_semi\" '$p_bar'" \
+  "git push origin HEAD:\"$protected_a\"''" "git push origin 'a b~c'" \
+  "git -C 'x&y' push origin" "cd 'p;q' && git commit -m x" "git push origin ''"; do
+  (
+    CMD=$c
+    PROTECTED_BRANCHES=$protected_a
+    . "$repo_root/script/hooks/_guards.sh"
+    is_protected_branch() { printf '%s\n' "$1" >>"$seen"; return 1; }
+    guard_protected_branch
+  ) >/dev/null 2>&1
+done
+if [ -s "$seen" ] && ! LC_ALL=C grep -q '[[:cntrl:]]' "$seen"; then
+  pass=$((pass + 1))
+else
+  fail=$((fail + 1))
+  echo "fail: a value compared against the protected list still carries a quote placeholder" >&2
+  LC_ALL=C od -c "$seen" >&2 2>/dev/null || true
 fi
 
 # ── 망가진 가드를 이 표가 잡는가 ───────────────────────────────────────────

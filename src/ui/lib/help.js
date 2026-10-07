@@ -32,6 +32,10 @@ export const HELP = {
   "metrics.stale_after_hours": "끝 기록 없이 이 시간이 지난 실행은 중단된 것(STALE)으로 봅니다. 실패로 세지 않습니다.",
   "metrics.capture_logs": "errors면 실패한 실행의 로그 끝부분을 토큰·쿠키·이메일·홈 경로를 지운 뒤 남깁니다. off면 남기지 않습니다.",
   "usage.env_var": "이 이름의 환경변수에 경로를 넣으면 Log Path 대신 그곳에 기록합니다. off를 넣으면 기록하지 않습니다. 테스트나 일회성 수집에 씁니다.",
+  "worktree.dir": "harness run --worktree가 이슈마다 작업 트리를 만드는 위치입니다. 리포 밖이어야 하며 이름은 이슈 번호입니다.",
+  "worktree.include": "새 작업 트리에 복사할 로컬 파일입니다. git이 무시하는 파일만 복사합니다.",
+  "doctor.remote_timeout": "원격까지 점검할 때 원격 호출 하나를 기다리는 시간(초)입니다. 넘기면 그 항목은 확인하지 못한 것으로 남습니다.",
+  "permissions.allow_push": "켜면 git push가 승인 없이 실행됩니다. 보호 브랜치 push와 force push는 켜도 그대로 막힙니다.",
 };
 
 // 탭 제목 아래 소개문. 기능보다 그 설정이 무엇을 위한 것인지를 말한다. 문장마다 한 줄로 보인다.

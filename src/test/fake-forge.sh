@@ -4,15 +4,31 @@
 # **자체 검사는 실제 forge 를 상대로 도는 도구이므로 그 자신은 검사되지 않는다.**
 # 계약을 지키는 페이크를 통과시키고 어기는 페이크를 잡아내야, 자체 검사의 판정을 믿을 수 있다.
 #
-# `FAKE_BREAK` 에 함수 이름을 주면 그 함수만 계약을 어긴다.
+# `FAKE_BREAK` 에 이름을 주면 그 동작만 계약을 어긴다.
 #   mr_view      head_sha 를 뺀다
 #   threads      스레드에 inline 키를 뺀다
 #   issue_list   대상 이슈를 목록에서 뺀다 (첫 페이지만 도는 어댑터를 흉내)
 #   open_mrs     이슈↔리뷰 요청 연결을 찾지 못한다
 #   inline_any   diff 밖 줄에도 인라인을 단다
 #   create_url   생성 결과로 식별자가 아니라 URL 을 돌려준다
+#   thread_id    스레드에 id 키를 뺀다
+#   reply_any    없는 스레드 id 에도 답글이 성공한다
+#   reply_new    답글을 지목한 스레드가 아니라 새 노트로 단다
+#   labels       라벨 목록으로 배열이 아니라 객체를 낸다
+#   protected    브랜치 보호 여부로 true/false 가 아닌 값을 낸다
+#
+# 읽기 함수의 결과는 환경 변수로 정한다.
+#   FAKE_AUTH       fail 이면 인증 함수가 종료 코드 1 과 안내 한 줄
+#   FAKE_LABELS     tracker_labels 가 낼 라벨(공백 구분). none 이면 종료 코드 3. 비우면 빈 배열
+#   FAKE_PROTECTED  review_branch_protected 가 true 를 낼 브랜치(공백 구분)
+#
+# 이슈의 상태는 FAKE_STATE/issue_state 파일로 정한다 — 없으면 opened.
+#   closed  닫힌 이슈 · fail  조회 명령이 실패한다 · empty  state 가 빈 JSON
 set -u
 : "${FAKE_BREAK:=}"
+: "${FAKE_AUTH:=}"
+: "${FAKE_LABELS:=}"
+: "${FAKE_PROTECTED:=}"
 : "${FAKE_STATE:?FAKE_STATE 가 필요하다}"
 
 forge_require()       { return 0; }
@@ -49,7 +65,12 @@ if brk == "threads":
     for t in out:
         t.pop("inline", None)
     if not out:
-        out = [{"path": "", "line": "", "notes": [{"body": "x", "created_at": ""}]}]
+        out = [{"id": None, "path": "", "line": "", "notes": [{"body": "x", "created_at": ""}]}]
+if brk == "thread_id":
+    for t in out:
+        t.pop("id", None)
+    if not out:
+        out = [{"inline": False, "path": "", "line": "", "notes": [{"body": "x", "created_at": ""}]}]
 json.dump(out, sys.stdout, ensure_ascii=False)
 PY
 }
@@ -64,9 +85,14 @@ tracker_issue_view() {
   case "$1" in
     *[!0-9A-Za-z-]*) echo "이슈를 찾지 못했다: $1" >&2; return 1 ;;
   esac
-  python3 - "$1" <<'PY'
+  _st=$(cat "$FAKE_STATE/issue_state" 2>/dev/null || echo opened)
+  case "$_st" in
+    fail)  echo "이슈를 읽지 못했다: $1" >&2; return 1 ;;
+    empty) _st="" ;;
+  esac
+  python3 - "$1" "$_st" <<'PY'
 import json, sys
-json.dump({"iid": sys.argv[1], "title": "자체 검사 대상", "state": "opened",
+json.dump({"iid": sys.argv[1], "title": "자체 검사 대상", "state": sys.argv[2],
            "description": "본문", "labels": [], "assignee": "user-a",
            "milestone": "M1"}, sys.stdout, ensure_ascii=False)
 PY
@@ -103,7 +129,8 @@ _fake_add_note() { # <inline> <path> <line> <본문>
 import json, os, sys
 path, inline, f, line, body = sys.argv[1:6]
 cur = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
-cur.append({"inline": inline == "1", "path": f, "line": line,
+cur.append({"id": "t%d" % (len(cur) + 1) if inline == "1" else None,
+            "inline": inline == "1", "path": f, "line": line,
             "notes": [{"body": body, "created_at": "2026-01-01T00:00:00Z"}]})
 json.dump(cur, open(path, "w", encoding="utf-8"), ensure_ascii=False)
 PY
@@ -120,7 +147,56 @@ review_mr_note_inline() { # <n> <파일> <줄> <본문>
 
 review_mr_note_summary() { _fake_add_note 0 "" "" "$(cat "$2")"; }
 
+# 실제 어댑터처럼 있는 스레드에만 답글이 달린다. id 가 null 인 노트는 답글을 받지 않는다.
+review_mr_thread_reply() { # <n> <스레드id> <본문>
+  [ "$FAKE_BREAK" = reply_new ] && { _fake_add_note 0 "" "" "$3"; return 0; }
+  python3 - "$FAKE_STATE/notes.json" "$2" "$3" "$FAKE_BREAK" <<'PY'
+import json, os, sys
+path, tid, body, brk = sys.argv[1:5]
+cur = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+for t in cur:
+    if t.get("id") is not None and t.get("id") == tid:
+        t["notes"].append({"body": body, "created_at": "2026-01-01T00:00:01Z"})
+        json.dump(cur, open(path, "w", encoding="utf-8"), ensure_ascii=False)
+        raise SystemExit(0)
+if brk == "reply_any":
+    raise SystemExit(0)
+print("스레드를 찾지 못했다: %s" % tid, file=sys.stderr)
+raise SystemExit(1)
+PY
+}
+
 tracker_issue_create() {
   [ "$FAKE_BREAK" = create_url ] && { echo "https://forge.invalid/proj/-/issues/42"; return 0; }
   echo 42
+}
+
+_fake_auth() {
+  [ "$FAKE_AUTH" = fail ] || return 0
+  echo 'run `fake auth login`' >&2
+  return 1
+}
+tracker_auth() { _fake_auth; }
+review_auth()  { _fake_auth; }
+
+tracker_labels() {
+  [ "$FAKE_LABELS" = none ] && return 3
+  [ "$FAKE_BREAK" = labels ] && { printf '{"labels":[]}'; return 0; }
+  python3 -c 'import json, sys; json.dump(sys.argv[1].split(), sys.stdout)' "$FAKE_LABELS"
+}
+
+# 받은 라벨을 FAKE_STATE/ensured_labels 에 한 줄씩 남긴다. 빈 인수는 건너뛴다.
+tracker_labels_ensure() {
+  for _l in "$@"; do
+    [ -n "$_l" ] || continue
+    printf '%s\n' "$_l" >> "$FAKE_STATE/ensured_labels"
+  done
+}
+
+review_branch_protected() { # <브랜치>
+  [ "$FAKE_BREAK" = protected ] && { echo yes; return 0; }
+  for _b in $FAKE_PROTECTED; do
+    [ "$_b" = "$1" ] && { echo true; return 0; }
+  done
+  echo false
 }

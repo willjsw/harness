@@ -7,6 +7,9 @@
 #
 # 원격을 부르지 않는다. 임시 로그 파일에 직접 기록을 남기고 집계 출력만 본다.
 set -uo pipefail
+# 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
+# git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
+unset $(git rev-parse --local-env-vars 2>/dev/null)
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 root=$(pwd)
@@ -201,6 +204,95 @@ check UT-05 "single file with no trailing newline — nothing dropped" 0 "$(prin
 out=$(script/usage-report.sh "$logdir")
 check UT-05 "empty file in the mix — total" 2 "$(printf '%s\n' "$out" | sed -n 's/^TOTAL=//p')"
 check UT-05 "empty file in the mix — nothing dropped" 0 "$(printf '%s\n' "$out" | sed -n 's/^DROPPED=//p')"
+
+echo "branch type follows the configured protected branches and commit tags"
+# 브랜치·태그 이름은 설정에서 가져온다. 브랜치는 커밋 없는 임시 저장소의 HEAD 로 만든다.
+branch_repo="$sandbox/branch-repo"
+mkdir -p "$branch_repo" && git -C "$branch_repo" init -q >/dev/null 2>&1 || exit 2
+branch_type_with() { # <기록기> <브랜치이름>
+  git -C "$branch_repo" symbolic-ref HEAD "refs/heads/$2" || return 2
+  : > "$log"
+  (cd "$branch_repo" && with_log "$log" "$1" note test-caller)
+  awk -F'|' 'END{print $5}' "$log"
+}
+branch_type_on() { branch_type_with "$root/script/usage-log.sh" "$1"; }
+IFS=' ' read -r -a protected_list <<< "$PROTECTED_BRANCHES"
+IFS='|' read -r -a tag_list <<< "$COMMIT_TAGS"
+[ "${#protected_list[@]}" -gt 0 ] || { echo "error: no protected branches in the config" >&2; exit 2; }
+[ "${#tag_list[@]}" -gt 0 ] || { echo "error: no commit tags in the config" >&2; exit 2; }
+for b in "${protected_list[@]}"; do
+  check branch-type "protected branch $b" protected "$(branch_type_on "$b")"
+done
+check branch-type "five fields per record on a protected branch" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+base_listed=no
+for b in "${protected_list[@]}"; do [ "$b" = "$BASE_BRANCH" ] && base_listed=yes; done
+if [ "$base_listed" = yes ]; then
+  check branch-type "integration branch $BASE_BRANCH" protected "$(branch_type_on "$BASE_BRANCH")"
+else
+  echo "skip [branch-type] the integration branch is not a protected branch in this config" >&2
+fi
+for t in "${tag_list[@]}"; do
+  check branch-type "tag branch $t/x" "$t" "$(branch_type_on "$t/x")"
+done
+check branch-type "five fields per record on a tag branch" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+outside="${tag_list[0]}x"
+while printf '%s\n' "${tag_list[@]}" | grep -qxF "$outside"; do outside="${outside}x"; done
+check branch-type "prefix outside the configured tags" unknown "$(branch_type_on "$outside/x")"
+check branch-type "tag name alone without a slash" unknown "$(branch_type_on "${tag_list[0]}")"
+
+echo "branch type follows a config whose names differ from the defaults"
+# 이 리포의 설정 값을 본문에 박은 구현은 여기서 드러난다. 기록기를 임시 디렉터리에 두고
+# 설정 사본 끝에 다른 값을 덧써서 그 값으로 판정하는지 본다.
+stage_recorder() { # <디렉터리> <보호 브랜치> <커밋 태그>
+  mkdir -p "$1" || return 2
+  cp "$root/script/usage-log.sh" "$root/script/usage-vocab.sh" "$root/script/harness.env" "$1/" || return 2
+  printf "PROTECTED_BRANCHES='%s'\nCOMMIT_TAGS='%s'\n" "$2" "$3" >> "$1/harness.env"
+  # 배치한 설정의 기록 경로도 샌드박스로 덮는다 — 덮어쓰기 변수를 빠뜨린 호출이 실제 기록에 닿지 않게 한다.
+  printf "USAGE_LOG_PATH='%s'\n" "$sandbox/staged-usage.log" >> "$1/harness.env"
+}
+alt="$sandbox/alt-config/script"
+stage_recorder "$alt" 'release trunk' 'work|hotfix|spike' || exit 2
+for b in release trunk; do
+  check branch-type "configured protected branch $b" protected "$(branch_type_with "$alt/usage-log.sh" "$b")"
+done
+for t in work hotfix spike; do
+  check branch-type "configured tag branch $t/x" "$t" "$(branch_type_with "$alt/usage-log.sh" "$t/x")"
+done
+for b in "${protected_list[@]}"; do
+  case " release trunk " in *" $b "*) continue ;; esac
+  check branch-type "branch $b not in the configured protected branches" unknown "$(branch_type_with "$alt/usage-log.sh" "$b")"
+done
+for t in "${tag_list[@]}"; do
+  case "|work|hotfix|spike|" in *"|$t|"*) continue ;; esac
+  check branch-type "prefix $t/ not in the configured tags" unknown "$(branch_type_with "$alt/usage-log.sh" "$t/x")"
+done
+check branch-type "part of a configured tag is not a tag" unknown "$(branch_type_with "$alt/usage-log.sh" "hot/x")"
+check branch-type "five fields per record with a changed config" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+
+echo "empty protected branches and commit tags match no branch"
+empty="$sandbox/empty-config/script"
+stage_recorder "$empty" '' '' || exit 2
+check branch-type "empty protected branches — ${protected_list[0]}" unknown "$(branch_type_with "$empty/usage-log.sh" "${protected_list[0]}")"
+check branch-type "empty commit tags — ${tag_list[0]}/x" unknown "$(branch_type_with "$empty/usage-log.sh" "${tag_list[0]}/x")"
+check branch-type "empty commit tags — any prefix" unknown "$(branch_type_with "$empty/usage-log.sh" "x/y")"
+check branch-type "five fields per record with an empty config" 5 "$(awk -F'|' 'END{print NF}' "$log")"
+
+echo "a missing config logs nothing, prints nothing and exits 0"
+# 이 리포의 설정은 건드리지 않는다. 기록기만 설정 없는 임시 디렉터리에 둔다.
+noenv="$sandbox/noenv/script"
+mkdir -p "$noenv" || exit 2
+cp "$root/script/usage-log.sh" "$root/script/usage-vocab.sh" "$noenv/" || exit 2
+absent_log="$sandbox/noenv/absent/usage.log"
+noenv_out="$sandbox/noenv/stdout"
+noenv_err="$sandbox/noenv/stderr"
+with_log "$absent_log" "$noenv/usage-log.sh" note test-caller standalone >"$noenv_out" 2>"$noenv_err"
+check no-config "exit code 0" 0 "$?"
+check no-config "no log file created" no "$([ -e "$absent_log" ] && echo yes || echo no)"
+check no-config "no stdout" "" "$(cat "$noenv_out")"
+check no-config "no stderr" "" "$(cat "$noenv_err")"
+printf '%s\n' "2026-09-01T10:00:00|note|test-caller|standalone|-" > "$log"
+with_log "$log" "$noenv/usage-log.sh" note test-caller standalone >/dev/null 2>&1
+check no-config "no line added to an existing log" 1 "$(grep -c . "$log")"
 
 echo
 if [ "$fail" -gt 0 ]; then

@@ -51,15 +51,30 @@ harness doctor
 ```bash
 cd <내-프로젝트>
 harness install
-git config core.hooksPath script/githooks
+harness forge-setup
 harness doctor
 ```
 
 `install` 은 하네스를 `<프로젝트>/.harness/` 에 넣고, 설정이 없으면 기본값을 깔아 프로젝트
 이름까지 채운 뒤 렌더한다. **기본값은 그 프로젝트의 사실이 아니다** — `harness doctor` 가
-무엇이 비어 있는지 알려 준다.
+무엇이 비어 있는지 알려 준다. 원격 준비(origin·base 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너)는
+`harness doctor --remote` 로 확인한다. 읽기만 하고 원격 설정을 바꾸지 않는다.
 
-훅 활성화는 클론마다 1회다. 하지 않으면 커밋·push 검사가 조용히 건너뛰어진다.
+**한 기기에 같은 리포는 하나만 설치한다.** 같은 `project.name` 이 아직 쓰이는 다른 경로에 등록돼
+있으면 `install` 이 거부한다 — 그 클론에서 `harness uninstall` 하거나 이 리포의 `project.name` 을
+바꾼다. 옛 경로에 그 프로젝트가 없으면(리포를 옮겼다) 등록을 넘겨받고, `~/.harness/<이름>/` 아래
+기록은 그대로 이어진다. 같은 리포에서 여러 작업을 나란히 하려면 두 번째 클론이 아니라
+`harness run --worktree` 로 이슈별 worktree 를 쓴다.
+
+**git 훅은 `install` 이 켠다.** `core.hooksPath` 가 비어 있으면 하네스의 `script/githooks` 로 설정하고
+그 사실을 출력한다. 이미 다른 값이 있거나 `.git/hooks/` 에 자기 훅(`.sample` 이 아닌 파일)이 있으면 건드리지 않고,
+켜는 명령(`git config core.hooksPath ...`)만 알려 준다. 훅이 꺼져 있으면 커밋·push 검사가 조용히 건너뛰어진다.
+이미 하네스가 깔린 리포를 새로 클론한 사람은 `install` 을 다시 돌지 않는 한 훅이 꺼진 채다 —
+`harness doctor` 가 켜는 명령을 알려 준다.
+
+**`harness forge-setup` 은 원격에 쓴다.** 설정의 이슈 라벨(`issues.labels`)을 트래커에 미리 만든다 — 이미 있는
+라벨은 그대로 둔다. 사람이 한 번 부르는 명령이고 절차·훅이 자동으로 부르지 않는다. 라벨을 미리 두지 않으면 권한
+문제가 처음 이슈를 만들거나 회차 라벨을 붙일 때에야 드러난다.
 
 ### 모노레포
 
@@ -69,14 +84,17 @@ harness doctor
 
 ```bash
 harness install --target packages/api
-git config core.hooksPath packages/api/script/githooks
 ```
 
-두 가지는 리포당 하나뿐이라 서브프로젝트가 나눠 갖지 못한다.
+`install` 은 그 서브프로젝트의 기대 값(`packages/api/script/githooks`)으로 훅을 켠다. 다른 서브프로젝트가 이미
+켜 둔 값은 두므로 먼저 설치한 서브프로젝트가 훅을 갖고, 나중 것은 켜는 명령만 출력한다.
+
+세 가지는 리포당 하나뿐이라 서브프로젝트가 나눠 갖지 못한다.
 
 | | 무엇이 걸리나 |
 |---|---|
 | `core.hooksPath` | 리포 설정이라 **한 서브프로젝트만 훅을 갖는다.** 나머지는 커밋·push 검사가 서지 않는다 |
+| forge 템플릿 | forge 는 리포 루트의 이슈·리뷰 요청 템플릿만 읽는다. **리포 루트에 설치한 하네스만** 템플릿을 만들고, 서브프로젝트는 만들지 않는다 |
 | `.claude/` | 도구가 여는 작업 디렉터리 기준이다. 그 서브프로젝트를 열어야 권한·훅 설정이 적용된다 |
 
 `docs/spec`·`docs/plan`·ADR 도 하네스 루트 아래에 선다 — 서브프로젝트의 명세는 그 서브프로젝트가 갖는다.
@@ -98,17 +116,20 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 |---|---|
 | `harness install` | 하네스를 `.harness/` 에 넣고 렌더까지 |
 | `harness render` | 설정과 프로젝트 사실 → 생성 파일 |
-| `harness check` | 생성 파일이 설정과 일치하는지. pre-commit 이 `--staged` 로 부른다 |
-| `harness doctor` | 쓸 준비가 됐는지 — 설정·생성물·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅 |
+| `harness check` | 생성 파일이 설정과, 관리 파일이 매니페스트(`.harness/managed`)와 일치하는지. pre-commit 이 `--staged` 로 부른다 |
+| `harness doctor [--remote] [--json]` | 쓸 준비가 됐는지 — 설정·생성물·관리 파일 변조·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅. `--remote` 면 origin·base 브랜치·원격 기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너까지 읽기 전용으로 점검한다. `--json` 이면 결과를 JSON 으로 낸다 |
 | `harness set <절.키> <값> ...` | 설정 값을 (여러 쌍이면 함께) 바꾸고 렌더까지. 성립하지 않으면 되돌린다 |
 | `harness steps [<절차> <JSON>]` | 절차의 단계를 JSON 으로 보거나, 한 절차의 단계를 통째로 바꾸고 렌더까지. `--dry-run` 이면 검사만 |
 | `harness checks [<JSON>]` | 검증 검사(`[verify]`)를 JSON 으로 보거나 통째로 바꾸고 렌더까지 |
-| `harness run <워크플로> <이슈>` | 설정된 오케스트레이터로 절차를 시작한다 |
-| `harness start-server` | 설정·절차·에이전트·프로젝트 문서를 고치는 웹 UI 를 `localhost:7777` 에 띄운다 |
+| `harness run <워크플로> <이슈> [--worktree]` | 설정된 오케스트레이터로 절차를 시작한다. `--worktree` 면 원격 통합 브랜치에서 이슈 번호 이름의 worktree(`worktree.dir` 아래)를 만들거나 남은 것을 열어 그 안에서 띄우고, 끝나면 미커밋 변경·미push 커밋이 없을 때 지운다 |
+| `harness start-server [--dev]` | 설정·절차·에이전트·프로젝트 문서를 고치는 웹 UI 를 `localhost:7777` 에 백그라운드로 띄우고, 응답이 오면 URL 을 내고 돌아온다. UI 소스가 지난 빌드와 다를 때만 빌드한다. `--dev` 는 UI 개발용 포그라운드 `next dev` |
+| `harness stop-server` | `start-server` 가 띄운 웹 UI 를 멈춘다. 기록(`ui.pid`)이 살아 있는 프로세스와 맞을 때만 멈추고, 기록 없이 포트를 쓰는 프로세스는 건드리지 않는다 |
+| `harness server-status` | 웹 UI 가 떠서 응답하는지 한 줄로. 떠 있으면 종료 코드 0, 아니면 1 |
 | `harness tools [--sync]` | 이 기기에 설치된 에이전트 CLI·결정 기록 도구. 결과는 `~/.harness/tools.json` |
 | `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). UI 가 선택지를 그린다 |
-| `harness status` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git |
+| `harness status [--remote]` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git. `--remote` 를 받아 doctor 에 넘긴다 |
 | `harness uninstall` | 하네스가 깐 것만 지운다. `--purge` 면 소유 파일과 설정도 (확인을 받는다) |
+| `harness forge-setup` | 설정의 이슈 라벨(`issues.labels`)을 트래커에 만든다. **원격 쓰기**이고 이미 있는 라벨은 그대로 둔다. 사람이 한 번 부른다 |
 | `harness metrics [import\|prune] [--since 7d] [--trace ID]` | 실행 지표 집계(JSON, Metrics 탭이 읽는다). `import` 는 새 대화 기록의 사용량을 먼저 가져오고, `prune` 은 보관 기간·용량 상한을 적용한다 |
 | `harness vars` | 템플릿 변수 출력(디버깅용) |
 | `harness version` · `help` | 버전, 도움말 |
@@ -144,12 +165,31 @@ remove these? [y/N]
 ## UI
 
 ```bash
-harness start-server          # http://localhost:7777
+harness start-server          # 백그라운드로 띄우고 http://localhost:7777 을 낸 뒤 돌아온다
+harness server-status         # 떠 있는지, 응답하는지
+harness stop-server           # 멈춘다
 ```
+
+서버는 백그라운드에서 돈다. `start-server` 는 응답이 오면 URL 한 줄을 내고 돌아오고, 서버는
+`stop-server` 로 멈출 때까지 남는다. 서버 기록 `ui.pid` 와 그 기동의 설치·빌드·서버 출력 `ui.log` 는
+등록부 최상위(`HARNESS_HOME`, 없으면 `~/.harness/`)에 있다 — 뜨지 않거나 빌드가 실패하면 `ui.log` 를 본다.
+`ui.log` 는 기동할 때마다 새로 쓴다.
+
+UI 소스(`src/ui/` 의 `app/` · `components/` · `lib/` 와 패키지·빌드 설정)가 지난 빌드와 달라지면 다음
+`start-server` 가 빌드부터 한다. 바뀌지 않았으면 빌드 없이 바로 띄운다.
+
+다른 사본(예: 업데이트 전의 전역 설치)이나 옛 빌드의 서버가 떠 있으면 `start-server` 는 그 서버를
+건드리지 않고 멈춘다 — `harness stop-server` 를 먼저 하고 다시 띄운다. UI 의 `node_modules` 는
+심볼릭 링크로 두지 않는다. 빌드가 쓰지 못하므로 링크면 빌드 전에 멈춘다 — 링크를 지우면 다음
+`start-server` 가 의존성을 다시 설치한다.
+
+UI 자체를 고칠 때는 `harness start-server --dev` 가 지금 터미널에서 `next dev` 를 돌린다. 기록을 남기지
+않고, 백그라운드 서버가 떠 있으면 `stop-server` 를 먼저 하라고 멈춘다.
 
 `harness install` 이 `~/.harness/<프로젝트>/project.json` 에 경로를 남기고, UI 가 그 목록으로
 프로젝트를 전환한다. 경로가 없는 옛 설치는 목록에 "재설치 필요" 로 뜬다 — 그 프로젝트에서
-`harness install` 을 다시 돌린다. 서버는 루프백에만 묶이고, 첫 실행에 `npm install` 을 한 번 한다
+`harness install` 을 다시 돌린다. 등록부의 프로젝트 이름 하나는 경로 하나를 가리킨다 — 같은 리포의
+병렬 작업은 두 번째 클론이 아니라 `harness run --worktree` 다. 서버는 루프백에만 묶이고, 첫 실행에 `npm install` 을 한 번 한다
 (Node.js 필요).
 
 | 화면 | 무엇을 | 쓰기 경로 |
@@ -159,7 +199,7 @@ harness start-server          # http://localhost:7777
 | Workflows | 단계 블럭을 끌어 순서 바꾸기·끼우기·빼기, 고른 블럭 하나를 우측 패널에서 편집 | `harness steps` (편집 중에는 `--dry-run` 으로 검사만) · `harness set` |
 | Agents | 역할 카드를 넘겨 보고, 역할 계약(읽기 전용)과 이 프로젝트의 지시(`.ai/project/roles/<역할>.md`)를 본다·고친다 | 파일 쓰기 후 `harness render` · `harness set` |
 | Metrics | 토큰·실행 시간·상태·단계별 사용량·실패 로그. 열 때마다 새 대화 기록을 가져온다 | `harness metrics import` (읽기만) |
-| Doctor | `doctor` 결과를 절별로, 막힌 것부터. 정해 둔 조치는 ▷ 로 바로 실행 | `harness status` · 조치별 명령 |
+| Doctor | `doctor` 결과를 절별로, 막힌 것부터. 정해 둔 조치는 ▷ 로 바로 실행. 원격 점검은 `원격까지 점검` 을 누를 때만 돈다 — 홈은 원격을 점검하지 않는다 | `harness status` · `harness status --remote` · 조치별 명령 |
 
 UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌림·렌더는 CLI 가 한다.
 
@@ -183,9 +223,15 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 
 | 부류 | 어디 | 고치는 법 |
 |---|---|---|
-| **생성** | `.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `script/forge.sh` · `CLAUDE.md` · `AGENTS.md` | 고치지 않는다. `harness.toml` 을 고치고 `render` |
-| **관리** | `.ai/templates/` · `script/` 의 나머지 · `docs/workflow/` | 하네스 것이다. 갱신이 덮는다 |
-| **소유** | `.ai/project/`(역할·절차별 지시 `roles/`·`workflows/` 포함) · `docs/spec/README.md` · CI 설정 | 프로젝트 것이다. 갱신이 건드리지 않는다 |
+| **생성** | `.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `script/forge.sh` · `CLAUDE.md` · `AGENTS.md` · forge 별 이슈·리뷰 요청 템플릿(`.github/ISSUE_TEMPLATE/` · `.github/pull_request_template.md` · `.gitlab/issue_templates/` · `.gitlab/merge_request_templates/`) | 고치지 않는다. `harness.toml` 을 고치고 `render` |
+| **관리** | `.ai/templates/` · `script/` 의 나머지(`script/project/` 제외) · `docs/workflow/` | 하네스 것이다. 갱신이 덮는다 |
+| **소유** | `.ai/project/`(역할·절차별 지시 `roles/`·`workflows/` 포함) · `docs/spec/README.md` · `script/project/README.md` · CI 설정 | 프로젝트 것이다. 갱신이 건드리지 않는다 |
+
+**프로젝트 자동화 스크립트는 `script/project/` 에 둔다.** 하네스는 그 안에 `script/project/README.md` 하나만 없을 때 깔고
+나머지는 만들지도 덮지도 지우지도 않는다. 하네스가 쓸 경로에 이미 있는 파일(지난 설치·렌더가 깐 것이 아닌 것)은
+덮지 않고 아무것도 쓰지 않은 채 멈춘다. `--adopt` 를 주면 원래 파일을 `<경로>.orig` 로 옮기고 넘겨받는다.
+`.harness/managed` 는 관리 파일과 고정 사본의 sha256 을 담고, `check` · `doctor` 가 그것과 대조해 설치 뒤 바뀌거나
+없어진 관리 파일을 보고한다.
 
 **CI 설정은 첫 설치 때 한 번만 깔린다.** `forge.review_host` 에 따라
 `.github/workflows/harness-verify.yml` 또는 `.gitlab-ci.yml` 이 **없을 때만** 생기고,
@@ -209,12 +255,15 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `commit.tags` · `issue_ref` · `ticket_key` | commit-msg 의 **검사식과 안내문 예시**, task 이슈 제목 |
 | `review.max_rounds` · `repeat_file_max` · `round_label` | 리뷰·등록·집계 스크립트가 읽는 상수 |
 | `roles.<역할>.runner` · `model` · `access` | 역할마다 에이전트 정의(Claude·Codex 양쪽)와 그 역할 전용 커맨드, 리뷰 실행 명령 |
-| `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전 |
-| `issues.labels` · `required_fields` · `deletion_forbidden` | 이슈 생성 스크립트, 삭제 가드, 규칙 문서 |
+| `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전, 권한 허용 목록의 forge 명령, 이슈·리뷰 요청 템플릿(`tracker` 가 이슈 템플릿, `review_host` 가 리뷰 요청 템플릿. Jira 트래커는 이슈 템플릿이 없다) |
+| `issues.labels` · `required_fields` · `deletion_forbidden` | 이슈 생성 스크립트, 삭제 가드, 규칙 문서, 이슈 템플릿의 라벨, `harness forge-setup` 이 만드는 라벨 |
 | `mr.default_assignee` · `default_reviewer` | forge 명령 사전, 작성 요령 |
 | `adr.style` · `tool` · `dir` | 결정 기록 사전·양식·디렉터리 |
 | `docs.protected` | 권한 deny, 명령 가드, 규칙 문서 |
+| `permissions.allow_push` | `.claude/settings.json` 의 허용 목록에 `git push` 를 넣는지 |
 | `usage.log_path` · `env_var` | 기록·집계 스크립트, 회고 절차 |
+| `worktree.dir` · `include` | 생성 파일은 없다. `harness run --worktree` · `doctor` · 세션 가져오기가 읽는다 |
+| `doctor.remote_timeout` | `script/harness.plan.json` 의 CLI 러너 역할마다 `auth_timeout`(`run-agent.py --check` 가 로그인 확인 명령에 주는 시간). `doctor --remote` 의 원격 호출 하나에 주는 시간(초, 1~600, 기본 30)이고, UI 의 원격 점검은 이 값으로 기다릴 시간을 정한다 |
 | `workflows.<절차>.steps` | `.ai/workflows/<절차>.md` — 단계 순서·종류(`type`)·제목. 없으면 하네스 기본값. 절차 끝에 붙일 지시는 `.ai/project/workflows/<절차>.md` |
 
 `invariants.distinct_reviewer` 는 파일을 만들지 않고 **render 를 막는다.** 구현자와 리뷰어의
@@ -285,7 +334,7 @@ src/test/render-test.sh
 | 대상 | 어댑터 | 실제 forge 검증 |
 |---|---|---|
 | GitLab (`glab`) | 이슈·리뷰 양쪽 | **미검증** |
-| GitHub (`gh`) | 이슈·리뷰 양쪽 | 계약 13종 통과 |
+| GitHub (`gh`) | 이슈·리뷰 양쪽 | 계약 17종 통과 |
 | Jira (`jira`) | **이슈만** | **미검증** |
 
 `forge.tracker` 와 `forge.review_host` 는 따로 고른다. **Jira 는 리뷰 호스트가 될 수 없다** —
@@ -300,7 +349,7 @@ Jira 는 이슈 식별자가 번호가 아니라 키(`PROJ-12`)다. `commit.issu
 어댑터를 한 줄도 타지 않는다.
 
 ```bash
-script/forge-selftest.sh <리뷰요청번호> <이슈번호>                 # 읽기 9종, 흔적 없음
+script/forge-selftest.sh <리뷰요청번호> <이슈번호>                 # 읽기 13종, 흔적 없음
 script/forge-selftest.sh --write <리뷰요청번호> <이슈번호>          # + 쓰기 3종, 댓글 2건이 남는다
 script/forge-selftest.sh --create-issue <리뷰요청번호> <이슈번호>   # + 이슈 1건, 되돌릴 수 없다
 ```

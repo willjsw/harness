@@ -207,9 +207,9 @@ export async function setValues(project, pairs) {
 }
 
 // 홈 카드가 뒤이어 채우는 상태. 이름은 등록부에 있는 것만 받는다.
-export async function projectStatus(project) {
+export async function projectStatus(project, remote = false) {
   const { path } = await getProject(project);
-  return readStatus(path);
+  return readStatus(path, remote);
 }
 
 // 손으로 쓴 옛 검증 스크립트가 있는가 — 있으면 run-lint-test.sh 가 그것을 돈다(CLI 의 legacy_verify 와 같은 기준)

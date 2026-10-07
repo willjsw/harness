@@ -27,8 +27,9 @@
 
 - 대상 리포에 하네스를 설치·갱신·검사·점검·제거한다 (`install` · `render` · `check` · `doctor` · `uninstall`)
 - 설정 값·절차 단계·검증 검사를 CLI 로 바꾸고 생성물을 따라 바꾼다 (`set` · `steps` · `checks`)
-- 설정된 오케스트레이터로 절차를 시작한다 (`run`). 절차는 `/prework` · `/work` · `/retro` 셋이 기본이고 프로젝트가 더할 수 있다
-- 웹 UI 로 설정·절차·에이전트·프로젝트 문서·실행 지표·점검 결과를 보고 고친다 (`start-server`)
+- 설정된 오케스트레이터로 절차를 시작한다 (`run`). 절차는 `/prework` · `/work` · `/retro` 셋이 기본이고 프로젝트가 더할 수 있다. 이슈별 worktree 에서 절차를 돌려 같은 리포의 여러 이슈를 동시에 진행할 수 있다
+- 웹 UI 로 설정·절차·에이전트·프로젝트 문서·실행 지표·점검 결과를 보고 고친다 (`start-server` · `stop-server` · `server-status`)
+- 원격 이슈 추적기에 설정된 이슈 라벨을 준비한다 (`forge-setup`). 사람이 부를 때만 원격에 쓴다
 - 실행 지표를 모으고 집계한다 (`metrics`). 이 기기의 에이전트 CLI 와 결정 기록 도구를 찾는다 (`tools`)
 
 ### 만들지 않는 것
@@ -59,9 +60,10 @@
 | 고정(pin) | 대상 리포가 `.harness/` 에 설치 시점의 하네스 사본을 두고 그 버전으로만 도는 것 |
 | 생성 파일 | `harness.toml` 에서 나오는 파일. 고치지 않고 `render` 로 다시 만든다 |
 | 관리 파일 | 하네스가 그대로 복사해 두는 파일. 갱신이 덮는다 |
-| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · CI 설정) |
+| 소유 파일 | 프로젝트 것. 없을 때만 깔고 갱신이 건드리지 않는다 (`.ai/project/` · `docs/spec/README.md` · `script/project/README.md` · CI 설정) |
 | 보호 문서 | 에이전트가 근거로 읽는 소유 파일(scope · architecture · glossary · testing · `roles/` · `workflows/`). 권한과 가드가 쓰기를 막고, 사람이 지시한 턴에만 고친다 |
-| 매니페스트 | 지난 렌더가 무엇을 깔았는지 적은 목록(`.harness/generated` · `.harness/managed`). 정리와 제거의 근거 |
+| 매니페스트 | 지난 설치·렌더가 무엇을 깔았는지 적은 목록. `.harness/generated` 는 생성 파일 경로, `.harness/managed` 는 관리 파일과 고정 사본의 sha256 과 경로. 정리·제거·변조 감지의 근거 |
+| 사용자 파일 | 하네스가 쓸 경로에 있으나 매니페스트에 없는 파일. render · install 이 덮지 않고 멈추며, `--adopt` 면 `<경로>.orig` 로 옮기고 넘겨받는다 |
 | 정본 | 어떤 값·규칙을 고칠 때 손대는 유일한 자리. 규칙 값은 `harness.toml`, 프로젝트 사실은 `.ai/project/` |
 | 렌더 | 설정과 프로젝트 사실에서 생성 파일을 만드는 일 (`harness render`) |
 | 역할 | 절차의 한 단계를 맡는 에이전트 (requirement-analyzer · spec-writer · planner · developer · code-reviewer · docs-writer · security-guard) |
@@ -81,13 +83,14 @@
 | 리뷰 요청 | GitHub 의 PR, GitLab 의 MR. 문서에서는 forge 에 중립적으로 이렇게 부른다 |
 | 회차 라벨 | 리뷰 요청에 붙는 `<prefix>:<N>` 라벨. `review-mr.sh` 만 올린다 |
 | 이월 이슈 | 범위 밖으로 넘긴 지적을 담는 이슈. `create-carryover-issue.sh` 가 만든다 |
-| 표지 | 기계가 읽는 문자열 (`script/harness-format.sh`). `REVIEW_VERDICT` · `harness:allow-secret` 등 |
+| 표지 | 기계가 읽는 문자열 (`script/harness-format.sh`). 판정 데이터 블록의 info string(`FMT_REVIEW_BLOCK`) · `harness:allow-secret` 등 |
 | forge | 이슈 추적기와 코드 리뷰 호스트를 묶어 부르는 말 (GitHub · GitLab · Jira) |
 | 어댑터 | forge 명령을 감싸는 스크립트(`script/forge/<kind>.sh`), 또는 역할 계약을 CLI 별 형식으로 옮긴 정의 파일(`.claude/agents/` · `.codex/agents/`) |
 | 자체 검사 | 어댑터가 계약을 지키는지 실제 forge 로 확인하는 것 (`script/forge-selftest.sh`) |
 | 등록부 | 설치된 프로젝트와 기기의 도구 기록 (`~/.harness/`). UI 가 이것으로 프로젝트를 전환한다 |
 | 스팬 · 트레이스 | 실행 지표의 단위. 명령·단계·역할·스크립트 한 번이 스팬, 한 실행의 스팬 묶음이 트레이스 |
 | 결정 기록 | 되돌리기 비싼 결정의 "왜" (`docs/adr/`, Nygard 방식) |
+| 이슈 worktree | `harness run --worktree` 가 이슈 번호 이름으로 `worktree.dir` 아래에 만드는 git worktree |
 
 ### 폐기된 별칭
 
@@ -115,7 +118,8 @@
 
 검증(`script/harness-verify.sh`)은 이 순서로 돈다: CLI 가 컴파일된다 → UI 단위 테스트 → 테스트.
 
-자동화 스크립트는 `script/` 에 둔다. 새 스크립트는 `script/README.md` 표에 한 줄 추가한다.
+프로젝트 자동화 스크립트는 `script/project/` 에 두고 `script/project/README.md` 표에 한 줄 추가한다.
+`script/` 바로 아래는 하네스 것이라 갱신이 덮는다.
 
 ## 4. 스택
 
@@ -134,26 +138,27 @@
 
 ### 구성 요소
 
-- `src/bin/harness` — python3 표준 라이브러리만 쓰는 단일 파일 CLI. 설정을 읽어 검증(`validate()`)하고, 생성물을 만들고(`plan()` · `render`), 검사하고(`check`), 점검하고(`doctor`), 설정을 고치고(`set` · `steps` · `checks`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`). 명령 전부가 여기 있다
+- `src/bin/harness` — CLI 본체. 설정을 읽어 검증(`validate()`)하고, 생성물을 만들고(`plan()` · `render`), 검사하고(`check`), 점검하고(`doctor`), 설정을 고치고(`set` · `steps` · `checks`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`). 명령 전부가 여기 있다. doctor 는 점검 결과를 항목 목록으로 모으고 텍스트·JSON 으로 그린다. `status` 는 그 목록을 쓴다. 지표 집계와 세션 가져오기는 옆의 `src/bin/harness_metrics.py` 모듈이 갖는다. 둘 다 python3 표준 라이브러리만 쓴다
 - `src/templates/` — 대상 리포로 가는 것 전부. `harness.toml`(기본 설정) · `generated/`({{VAR}} 치환) · `managed/`(그대로 복사) · `owned/`(없을 때만 복사) · `agents/`(역할 어댑터 본문과 선언) · `workflows/<절차>/`(절차 조각) · `forge/<kind>/`(forge 명령 사전 조각) · `adr/<style>/`(결정 기록 문서 세트) · `ci/<host>/`(CI 골격) · `vendors.toml`(에이전트 CLI 등록부)
-- `src/ui/` — Next.js 앱. `harness start-server` 가 루프백에 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
+- `src/ui/` — Next.js 앱. `harness start-server` 가 필요할 때 빌드하고 루프백에 백그라운드로 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
-- 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh`)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다
-- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서
+- 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다. `script/project/` 는 프로젝트 것이다 — 하네스는 그 안의 `README.md` 만 없을 때 깐다
+- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치), 등록부 최상위의 `ui.pid`(백그라운드 UI 서버 기록) · `ui.log`(그 기동의 설치·빌드·서버 출력). 설치 등록부는 프로젝트 이름 하나에 경로 하나다 — `install` 은 같은 이름이 아직 쓰이는 다른 경로에 등록돼 있으면 거부한다
 
 ### 데이터 흐름
 
-- 렌더: `harness.toml` + `.ai/project/` → `src/bin/harness render` → 생성 파일(`.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `CLAUDE.md` · `AGENTS.md`) → 에이전트·훅·가드·CI 가 읽는다
-- UI: 브라우저 → 루프백 HTTP → Next.js 서버 액션 → `src/bin/harness <명령>` 서브프로세스 → 파일 → 다시 UI. 저장 전 검사는 정적 검사와 저렴한 모델(오케스트레이터 CLI, 쓰기 도구 없이)로 한다
-- 절차 실행: `harness run` → 오케스트레이터 CLI → 절차 문서를 따라 역할(서브에이전트, 또는 `script/run-agent.py` 가 실행 계획대로 띄운 CLI)과 스크립트를 부른다. 리뷰 루프는 `work-preflight.sh` → 구현자 → `review-mr.sh`(diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → `post-review.sh`(발견 집계 · 반복 지적 누적) → 종료 코드로 분기
+- 렌더: `harness.toml` + `.ai/project/` → `src/bin/harness render` → 생성 파일(`.ai/AI_AGENT.md` · `.ai/workflows/` · `.ai/forge.md` · `.ai/adr.md` · `.claude/` · `.codex/` · `script/githooks/` · `script/harness.env` · `script/harness.plan.json` · `script/harness-verify.sh` · `CLAUDE.md` · `AGENTS.md`, forge 별 이슈·리뷰 요청 템플릿) → 에이전트·훅·가드·CI 가 읽는다. 이슈 템플릿은 `forge.tracker` 가, 리뷰 요청 템플릿은 `forge.review_host` 가 따로 정한다 — github 면 `.github/ISSUE_TEMPLATE/` · `.github/pull_request_template.md`, gitlab 이면 `.gitlab/issue_templates/` · `.gitlab/merge_request_templates/Default.md`, jira 면 이슈 템플릿을 만들지 않는다. 하네스 루트가 리포 루트이거나 git 작업 트리 밖일 때만 만들고 모노레포 서브프로젝트에서는 만들지 않는다. render 는 쓰기 전에 사용자 파일을 판정하고, 관리 파일의 sha256 을 `.harness/managed` 에 기록한다. `check` · `doctor` 가 그것과 대조한다. 전역 CLI 는 고정 사본으로 넘기기 전에 같은 버전의 자기 파일과 대조한다
+- UI: `harness start-server` → (UI 소스 해시가 `.next` 스탬프와 다르면) `next build` → 새 세션의 `next start`(루프백) → `ui.pid` · `ui.log`. 브라우저 → 루프백 HTTP → Next.js 서버 액션 → `src/bin/harness <명령>` 서브프로세스 → 파일 → 다시 UI. 저장 전 검사는 정적 검사와 저렴한 모델(오케스트레이터 CLI, 쓰기 도구 없이)로 한다
+- 절차 실행: `harness run` → 오케스트레이터 CLI → 절차 문서를 따라 역할(서브에이전트, 또는 `script/run-agent.py` 가 실행 계획대로 띄운 CLI)과 스크립트를 부른다. 리뷰 루프는 `work-preflight.sh`(이슈 확인 · 착수 판정) → 구현자 → `review-mr.sh`(리뷰 러너 점검 · diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → 리뷰어의 판정 데이터(JSON 블록) → `post-review.sh`(스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약·인라인 댓글 렌더링) → 종료 코드로 분기. `harness run --worktree` 는 원격 통합 브랜치에서 이슈별 worktree 를 만들고 그 안에서 오케스트레이터를 띄운 뒤, 끝나면 미커밋 변경·미push 커밋이 없을 때 제거한다
 - forge: 스크립트 → `script/forge.sh` 어댑터 함수(tracker 군 · review 군) → `gh` · `glab` · `jira`. 호출부는 forge 를 모르고 정규화된 JSON 을 받는다
-- 실행 지표: 명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) → 홈 아래 `.harness/<프로젝트>/metrics/spans-*.jsonl` → `harness metrics`(가져오기 · 집계) → UI Metrics 탭. 트레이스·부모 스팬은 환경 변수로 자식에게 넘어간다
+- 실행 지표: 명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) → 홈 아래 `.harness/<프로젝트>/metrics/spans-*.jsonl` → `harness metrics`(가져오기 · 집계) → UI Metrics 탭. 트레이스·부모 스팬은 환경 변수로 자식에게 넘어간다. 세션 가져오기는 run 스팬의 worktree 이름과 설정의 `worktree.dir` 로 worktree 실행 디렉터리를 다시 계산해 기록을 붙인다
 
 ### 신뢰 경계
 
-- 들어오는 입력: `harness.toml`(TOML)과 `.ai/project/` 마크다운(프로젝트가 쓴다), 오케스트레이터 훅이 stdin 으로 주는 도구 호출 JSON(`script/hooks/bash-guard.sh`), forge CLI 의 출력, 에이전트 CLI 의 출력(JSON · JSONL)과 대화 기록, UI 요청(루프백에만 묶인다), 명령줄 인자(경로는 리포 기준 상대 경로만 받는다 — 절대 경로 · `..` · 공백 · glob 거부)
+- 들어오는 입력: `harness.toml`(TOML)과 `.ai/project/` 마크다운(프로젝트가 쓴다), 오케스트레이터 훅이 stdin 으로 주는 도구 호출 JSON(`script/hooks/bash-guard.sh`), forge CLI 의 출력, 에이전트 CLI 의 출력(JSON · JSONL)과 대화 기록, 리뷰어의 판정 데이터(스키마로 엄격히 검증하고, 어기면 등록하지 않는다), `doctor --remote` 가 읽는 git·forge·러너 CLI 의 응답(원격 점검은 읽기 전용이고, 원격 URL 과 CLI 출력을 결과에 옮기지 않는다), UI 요청(루프백에만 묶인다), 명령줄 인자(경로는 리포 기준 상대 경로만 받는다 — 절대 경로 · `..` · 공백 · glob 거부)
 - 다루는 민감 정보: forge 와 에이전트 CLI 의 인증은 각 CLI 가 갖고 리포에 두지 않는다. 실행 지표는 프롬프트·명령줄·문서 본문을 남기지 않고, 실패 로그는 토큰·쿠키·URL 쿼리·이메일·홈 경로를 지운 뒤 끝부분만 남긴다(디렉터리 0700 · 파일 0600). `script/secret-scan.sh` 가 커밋에 새로 들어오는 자격증명을 막고, 막을 때 값을 출력에 옮기지 않는다
 - 가드는 미탐을 허용하고 오탐을 피한다. 규칙이 정본이고 가드·권한은 보조다. 단 가드가 설정을 읽지 못하면 통과가 아니라 차단이다
+- `worktree.include` 는 git 이 무시하는 로컬 파일만 worktree 로 복사하고 그 경로·내용을 출력하지 않는다. 기존 worktree 는 git 공통 디렉터리가 같을 때만 연다
 
 ### 새 코드를 둘 곳
 
@@ -163,7 +168,9 @@
 - 새 역할 → `src/templates/agents/<역할>.md`(어댑터 본문과 frontmatter 선언) + `src/templates/managed/.ai/templates/<역할>.md`(계약) + `src/templates/harness.toml` 의 `[roles.<역할>]`. 부를 수 있는 경로(커맨드나 절차 단계)를 함께 만든다
 - 새 에이전트 CLI → `src/templates/vendors.toml` 한 항목. 실행 명령은 여기만 갖고, 사용량 파서가 필요하면 `run-agent.py` 의 `PARSERS`
 - 새 forge → `src/templates/managed/script/forge/<kind>.sh`(계약 함수 전부) + `src/templates/forge/<kind>/`(명령 사전 조각) + `validate()` 의 허용 목록. 실제 forge 로 `forge-selftest.sh` 를 통과하기 전까지 머리글에 미검증 표기
-- 새 관리 스크립트 → `src/templates/managed/script/` + `script/README.md` 표 한 줄. 회귀 테스트는 같은 곳의 `test-<이름>.sh`
+- 새 관리 스크립트 → `src/templates/managed/script/` + `src/templates/managed/script/README.md` 표 한 줄. 회귀 테스트는 같은 곳의 `test-<이름>.sh`
+- 대상 리포의 프로젝트 스크립트 → `script/project/` + `script/project/README.md` 표 한 줄
+- 지표 집계·세션 가져오기 코드 → `src/bin/harness_metrics.py`. 리뷰 루프의 파이썬 → `script/_review.py`(정본 `src/templates/managed/script/_review.py`) — `review-mr.sh` · `post-review.sh` 본문에 파이썬을 넣지 않는다
 - 새 가드 → `src/templates/managed/script/hooks/_guards.sh` 의 함수 + `bash-guard.sh` 의 호출 + `test-bash-guard.sh` 케이스. 판정에 쓰는 값은 `script/harness.env` 로 받는다
 - 새 절차 단계 본문 → `src/templates/workflows/<절차>/<id>.md`. 다른 단계는 `{{step:<id>}}` 로 가리킨다
 - 새 결정 기록 스타일 → `src/templates/adr/<style>/`
@@ -187,11 +194,12 @@
 
 ### 검사하지 않는 것 (현재 상태 기록)
 
-- `src/bin/harness` 가 명령 전부를 한 파일에 담는다(2천 줄 이상). 모듈로 나누지 않았다
+- `src/bin/harness` 는 지표 모듈을 뺀 나머지 명령을 한 파일에 담는다(2천 줄 이상). 그 나머지는 모듈로 나누지 않았다
 - 대상 리포에 깔리는 셸 스크립트는 정적 검사 도구를 거치지 않는다. 회귀 테스트(`script/test-*.sh`)만 있다
 - UI 의 화면과 서버 액션은 자동 테스트가 없다. 순수 함수만 단위 테스트한다
 - README 와 `.ai/project/` 가 같은 사실(구조·명령·부류)을 두 곳에 적는다. README 는 사람용이고 여기는 에이전트용이라 둔 것이지만, 한쪽이 낡을 수 있다
 - GitLab · Jira 어댑터는 실제 forge 로 검증하지 않았다. 머리글의 미검증 표기가 그 사실이다
+- 고정 사본(`.harness/bin` · `.harness/templates`)을 고치면 pre-commit · `run-lint-test.sh` · CI 의 검사도 고친 사본이 돈다. 사본과 매니페스트를 함께 고치면 그 검사들은 알아채지 못한다. 사본 변조를 잡는 것은 같은 버전의 전역 CLI 가 넘기기 전에 하는 대조뿐이고, 그것도 경고만 한다
 
 ### 코드 주석
 
@@ -251,9 +259,9 @@ relates to <상위 이슈>
   (`docs/plan/<번호>/`)의 유무가 정한다.
   - 분해가 있으면 **요구사항 이슈**가 단위다. 그 안의 task 는 커밋 단위로 내려간다
   - 분해가 없으면 **그 이슈 자신**이 단위다. 상위가 없으므로 `relates to` 를 쓰지 않는다
-- **리뷰 요청 대상 브랜치는 `main`.** 보호 브랜치(`main`)로의
+- **리뷰 요청 대상 브랜치는 `develop`.** 보호 브랜치(`main develop`)로의
   직접 push 는 훅과 권한 설정이 막는다.
-- **선행 리뷰 요청이 머지되면 후속 브랜치를 `main` 위로 rebase 한다.** squash 머지는
+- **선행 리뷰 요청이 머지되면 후속 브랜치를 `develop` 위로 rebase 한다.** squash 머지는
   커밋 ID 를 바꾸므로, 그냥 두면 diff 에 이미 머지된 변경이 다시 섞인다.
   **`git fetch -p origin` 을 먼저 한다** — 로컬 추적 ref 는 자동 갱신되지 않아 낡은 ref 위로
   rebase 하면 문제가 남는다. **rebase 뒤 push 는 사람이 한다** — force push 는 AI 가 하지 않는다.
@@ -291,7 +299,7 @@ relates to <상위 이슈>
 **아래를 하지 않는다.** 각 항목 뒤의 설명은 그 금지의 근거이거나 예외이지, 지시가 아니다.
 
 - 이 리포지토리 외부 파일 수정
-- 보호 브랜치(`main`) 직접 push, force push
+- 보호 브랜치(`main develop`) 직접 push, force push
 - 명시적 지시 없는 커밋, push, 리뷰 요청 생성, 머지
 - 리뷰 요청·이슈를 닫는 것. **예외는 `script/rollback-work.sh` 하나**이고, 그것도 사용자가
   직접 부르고 확인을 준 턴에서만 돈다 — 무엇이 닫히는지 먼저 보이고 멈춘다
@@ -319,7 +327,7 @@ relates to <상위 이슈>
 3. 통과 시에만 커밋. 실패 시 커밋하지 않고 실패 원인을 보고
 4. 커밋 시 pre-commit 훅이 생성물 일치를 다시 검사 — **어긋나면 커밋이 차단된다**
 
-훅 활성화는 클론 후 1회: `git config core.hooksPath script/githooks`
+훅은 `harness install` 이 `core.hooksPath` 가 비어 있을 때 켠다. 켜지지 않았으면 `harness doctor` 가 켜는 명령을 알려 준다
 
 ## 9. 문서 지도
 
@@ -337,7 +345,8 @@ relates to <상위 이슈>
 | `docs/spec/` | 특정 기능을 구현할 때 |
 | `docs/plan/<이슈번호>/` | 구현에 착수할 때 |
 | `docs/workflow/` | 하네스가 어떻게 도는지, 무엇을 고쳐야 하는지 (사람용) |
-| `script/README.md` | 자동화 스크립트를 추가·실행할 때 |
+| `script/README.md` | 하네스 스크립트를 실행할 때 |
+| `script/project/README.md` | 프로젝트 스크립트를 추가·실행할 때 |
 | `harness.toml` | 하네스 설정을 바꿀 때. **규칙 값의 정본** |
 
 **근거 우선순위: `.ai/adr.md` 가 가리키는 결정 기록 > `.ai/project/` > `docs/spec/` > 대화.**
@@ -355,7 +364,8 @@ relates to <상위 이슈>
 |---|---|
 | `harness.toml` | 설정 정본. 규칙 값은 전부 여기 |
 | `.ai/project/` | **소유** — 프로젝트가 쓰고 하네스 갱신이 건드리지 않는다 |
-| `.ai/templates/`, `script/` | **관리** — 하네스 것. 갱신이 덮는다 |
+| `script/project/` | **소유** — 프로젝트가 쓰고 하네스 갱신이 건드리지 않는다 |
+| `.ai/templates/`, `script/` (`script/project/` 를 뺀 나머지) | **관리** — 하네스 것. 갱신이 덮는다 |
 | `.ai/AI_AGENT.md`, `.ai/workflows/`, `.ai/forge.md`, `.ai/adr.md`, `.claude/`, `.codex/`, `script/githooks/`, `script/harness.env`, `script/forge.sh` | **생성** — 설정에서 나온다 |
 | `AGENTS.md`, `CLAUDE.md` | 정본으로 보내는 관문 |
 

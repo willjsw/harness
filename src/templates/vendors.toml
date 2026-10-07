@@ -11,6 +11,8 @@
 #   output     결과를 받는 방법. "stdout" 이거나, 결과 파일을 넘기는 인자({out})
 #   usage_format  사용량(토큰)을 함께 내게 하는 인자. 있으면 run-agent.py 가 출력을 받아
 #   usage_parser  이 파서(run-agent.py 의 PARSERS)로 본문과 사용량을 가른다 — 본문은 output 대신 직접 쓴다
+#   auth_check 로그인 여부를 확인하는 argv — 로그인되어 있으면 0, 아니면 0 이 아닌 코드. 자리 치환을 쓰지 않고
+#              첫 원소는 exe 와 같다. 그 CLI 로 직접 확인한 벤더에만 적는다 — 없으면 설치만 확인한다
 #   adapter    서브에이전트 정의 파일 형식 — bin/harness 의 ADAPTERS 에 렌더러가 있다
 #   models     고를 수 있는 모델을 읽는 곳 — bin/harness 의 MODEL_READERS 에 리더가 있다
 #   subagents  오케스트레이터일 때 inproc 역할을 서브에이전트로 부를 수 있는가
@@ -33,6 +35,7 @@ model = ["--model", "{model}"]
 output = "stdout"
 usage_format = ["--output-format", "json"]
 usage_parser = "claude-json"
+auth_check = ["claude", "auth", "status"]   # Claude Code 2.1.284 — 로그인 0, 설정 디렉터리가 비면 1
 
 [[vendor]]
 id = "codex"
@@ -50,6 +53,7 @@ model = ["-m", "{model}"]
 output = ["--output-last-message", "{out}"]
 usage_format = ["--json"]
 usage_parser = "codex-jsonl"
+auth_check = ["codex", "login", "status"]   # codex-cli 0.155.1 — 로그인 0, 설정 디렉터리가 비면 1
 
 # 감지만 한다 — 명령을 확인하기 전까지 고를 수 없다.
 [[vendor]]

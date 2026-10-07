@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # forge 어댑터가 계약을 지키는지 **실제 forge 를 상대로** 확인한다.
 #
-#   script/forge-selftest.sh <리뷰요청번호> [이슈번호]           읽기 전용 9종
-#   script/forge-selftest.sh --write <리뷰요청번호> [이슈번호]    + 쓰기 3종
+#   script/forge-selftest.sh <리뷰요청번호> [이슈번호]           읽기 전용 13종
+#   script/forge-selftest.sh --write <리뷰요청번호> [이슈번호]    + 쓰기 4종
 #   script/forge-selftest.sh --create-issue <리뷰요청번호> <이슈번호>  + 이슈 생성 1종
 #
 # 종료 코드: 0 = 전 항목 통과 · 1 = 실패한 항목 있음 · 2 = 실행 실패
@@ -16,7 +16,7 @@
 # | 단계 | 무엇이 남나 | 되돌리기 |
 # |---|---|---|
 # | (기본) | 아무것도 남지 않는다 | — |
-# | `--write` | 댓글 2건 | 사람이 지운다 |
+# | `--write` | 댓글 3건 (인라인 1 · 그 답글 1 · 요약 1) | 사람이 지운다 |
 # | `--create-issue` | 이슈 1건 | 삭제를 금지한 프로젝트에서는 **불가** |
 #
 # 그러므로 `--write` 이상은 **버려도 되는 리뷰 요청**에만 쓴다. 대상 번호를 인수로 받는 이유가
@@ -121,7 +121,7 @@ else
 fi
 
 if review_mr_threads "$mr" > "$work/threads.json" 2>"$work/err"; then
-  shape "review_mr_threads shape" "$work/threads.json" array inline path line notes
+  shape "review_mr_threads shape" "$work/threads.json" array id inline path line notes
 else
   bad "review_mr_threads" "$(head -1 "$work/err")"
 fi
@@ -130,6 +130,41 @@ if review_mr_list_open > "$work/open.json" 2>"$work/err"; then
   shape "review_mr_list_open shape" "$work/open.json" array iid source_branch description
 else
   bad "review_mr_list_open" "$(head -1 "$work/err")"
+fi
+
+# 원격 점검이 쓰는 읽기 함수. 인증 실패 안내는 어댑터의 고정 문구 한 줄이다.
+if tracker_auth 2>"$work/err"; then ok "tracker_auth"; else bad "tracker_auth" "$(head -1 "$work/err")"; fi
+if review_auth 2>"$work/err"; then ok "review_auth"; else bad "review_auth" "$(head -1 "$work/err")"; fi
+
+tracker_labels > "$work/labels.json" 2>"$work/err"
+rc=$?
+if [ $rc -eq 3 ]; then
+  if [ -s "$work/labels.json" ]; then bad "tracker_labels" "exit code 3 must come with no output"
+  else ok "tracker_labels — this tracker keeps no labels"; fi
+elif [ $rc -eq 0 ]; then
+  msg=$(python3 - "$work/labels.json" <<'PY'
+import json, sys
+try:
+    v = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception as e:
+    print("not JSON: %s" % e); raise SystemExit(0)
+if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+    print("not an array of strings: %s" % type(v).__name__)
+PY
+)
+  if [ -z "$msg" ]; then ok "tracker_labels"; else bad "tracker_labels" "$msg"; fi
+else
+  bad "tracker_labels" "exit code $rc ($(head -1 "$work/err"))"
+fi
+
+prot=$(review_branch_protected "$BASE_BRANCH" 2>"$work/err")
+rc=$?
+if [ $rc -eq 0 ] && { [ "$prot" = true ] || [ "$prot" = false ]; }; then
+  ok "review_branch_protected $BASE_BRANCH → $prot"
+elif [ $rc -eq 0 ]; then
+  bad "review_branch_protected" "expected one line, true or false — got '$(printf '%s' "$prot" | head -c 80)'"
+else
+  bad "review_branch_protected" "exit code $rc ($(head -1 "$work/err"))"
 fi
 
 if [ -n "$issue" ]; then
@@ -157,6 +192,13 @@ sys.exit(0 if sys.argv[2] in ids else 1)' "$work/issues.json" "$issue"; then
     bad "tracker_issue_list" "$(head -1 "$work/err")"
   fi
 
+  # 설정의 이슈 라벨로 한 번 — 이미 있는 라벨에 대해 도는 멱등 호출이다.
+  if tracker_labels_ensure "$ISSUE_LABEL_REQUIREMENT" "$ISSUE_LABEL_TASK" "$ISSUE_LABEL_INVALID" 2>"$work/err"; then
+    ok "tracker_labels_ensure"
+  else
+    bad "tracker_labels_ensure" "$(head -1 "$work/err")"
+  fi
+
   found=$(harness_issue_open_mrs "$issue" 2>"$work/err")
   rc=$?
   if [ $rc -eq 0 ]; then
@@ -176,7 +218,7 @@ fi
 if [ "$mode" = read ]; then
   echo
   echo "2. writes — skipped (enable with --write)"
-  note "review_mr_labels_set · note_inline · note_summary" "read-only mode"
+  note "review_mr_labels_set · note_inline · thread_reply · note_summary" "read-only mode"
   note "tracker_issue_create" "read-only mode"
 else
   echo
@@ -230,6 +272,37 @@ raise SystemExit(1)' "$work/threads2.json" "selftest probe"; then
         ok "review_mr_note_inline appears inline in threads"
       else
         bad "review_mr_note_inline" "it posted, but threads does not report it as inline"
+      fi
+      # 답글은 지목한 스레드의 notes 끝에 붙어야 한다. 새 노트로 달리면 지적과 조치가 끊긴다.
+      tid=$(python3 -c '
+import json, sys
+for t in json.load(open(sys.argv[1])):
+    if t.get("inline") and t.get("id") and any(sys.argv[2] in n.get("body","") for n in t.get("notes",[])):
+        print(t["id"]); break' "$work/threads2.json" "selftest probe" 2>/dev/null)
+      if [ -z "$tid" ]; then
+        bad "review_mr_thread_reply" "threads gives no id for the inline thread it just posted"
+      elif review_mr_thread_reply "$mr" "$tid" "selftest reply — checking the adapter contract. Safe to delete." \
+             >/dev/null 2>"$work/err"; then
+        review_mr_threads "$mr" > "$work/threads4.json" 2>/dev/null
+        if python3 -c '
+import json, sys
+for t in json.load(open(sys.argv[1])):
+    if str(t.get("id")) == sys.argv[2]:
+        notes = t.get("notes") or []
+        raise SystemExit(0 if notes and "selftest reply" in notes[-1].get("body","") else 1)
+raise SystemExit(1)' "$work/threads4.json" "$tid"; then
+          ok "review_mr_thread_reply lands at the end of the thread it names"
+        else
+          bad "review_mr_thread_reply" "it posted, but the reply is not the last note of thread $tid"
+        fi
+      else
+        bad "review_mr_thread_reply" "$(head -1 "$work/err")"
+      fi
+      # 없는 스레드에는 실패해야 한다. 성공하면 답글이 어디에도 달리지 않은 채 조치가 남은 것처럼 보인다.
+      if review_mr_thread_reply "$mr" 0 "$body" >/dev/null 2>&1; then
+        bad "review_mr_thread_reply unknown thread" "it succeeded for a thread id that does not exist"
+      else
+        ok "review_mr_thread_reply fails for an unknown thread"
       fi
     else
       bad "review_mr_note_inline" "$(head -1 "$work/err")"
@@ -300,7 +373,7 @@ if [ "$skip" -gt 0 ]; then
   echo "some checks were skipped — the adapter counts as verified only once all of them run"
   exit 0
 fi
-echo "all 13 contract functions checked — clear the unverified note in the adapter header:"
+echo "all 18 contract functions checked — clear the unverified note in the adapter header:"
 for a in $(printf '%s\n%s\n' "$FORGE_TRACKER" "$FORGE_REVIEW_HOST" | sort -u); do
   echo "   script/forge/$a.sh"
 done

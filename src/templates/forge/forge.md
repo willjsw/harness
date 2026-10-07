@@ -28,6 +28,7 @@ forge 를 바꿔도 부르는 쪽이 그대로 돌고, 페이지네이션과 응
 ```bash
 . script/forge.sh        # 하네스 루트에서. 모노레포면 리포 루트가 아니라 그 서브프로젝트다
 review_mr_threads 12          # 정규화 JSON 으로 돌아온다
+review_mr_thread_reply 12 <스레드id> "<본문>"   # id 는 위 출력의 그 스레드 값. null 이면 스레드가 아니다
 ```
 
 함수 목록과 출력 계약은 `script/forge/_common.sh` 상단에 있다.

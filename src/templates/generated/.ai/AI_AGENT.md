@@ -18,7 +18,8 @@
 
 {{PROJECT_COMMANDS}}
 
-자동화 스크립트는 `script/` 에 둔다. 새 스크립트는 `script/README.md` 표에 한 줄 추가한다.
+프로젝트 자동화 스크립트는 `script/project/` 에 두고 `script/project/README.md` 표에 한 줄 추가한다.
+`script/` 바로 아래는 하네스 것이라 갱신이 덮는다.
 
 ## 4. 스택
 
@@ -153,7 +154,7 @@ relates to <상위 이슈>
 3. 통과 시에만 커밋. 실패 시 커밋하지 않고 실패 원인을 보고
 4. 커밋 시 pre-commit 훅이 생성물 일치를 다시 검사 — **어긋나면 커밋이 차단된다**
 
-훅 활성화는 클론 후 1회: `git config core.hooksPath script/githooks`
+훅은 `harness install` 이 `core.hooksPath` 가 비어 있을 때 켠다. 켜지지 않았으면 `harness doctor` 가 켜는 명령을 알려 준다
 
 ## 9. 문서 지도
 
@@ -171,7 +172,8 @@ relates to <상위 이슈>
 | `docs/spec/` | 특정 기능을 구현할 때 |
 | `docs/plan/<이슈번호>/` | 구현에 착수할 때 |
 | `docs/workflow/` | 하네스가 어떻게 도는지, 무엇을 고쳐야 하는지 (사람용) |
-| `script/README.md` | 자동화 스크립트를 추가·실행할 때 |
+| `script/README.md` | 하네스 스크립트를 실행할 때 |
+| `script/project/README.md` | 프로젝트 스크립트를 추가·실행할 때 |
 | `harness.toml` | 하네스 설정을 바꿀 때. **규칙 값의 정본** |
 
 **근거 우선순위: `.ai/adr.md` 가 가리키는 결정 기록 > `.ai/project/` > `docs/spec/` > 대화.**
@@ -189,7 +191,8 @@ relates to <상위 이슈>
 |---|---|
 | `harness.toml` | 설정 정본. 규칙 값은 전부 여기 |
 | `.ai/project/` | **소유** — 프로젝트가 쓰고 하네스 갱신이 건드리지 않는다 |
-| `.ai/templates/`, `script/` | **관리** — 하네스 것. 갱신이 덮는다 |
+| `script/project/` | **소유** — 프로젝트가 쓰고 하네스 갱신이 건드리지 않는다 |
+| `.ai/templates/`, `script/` (`script/project/` 를 뺀 나머지) | **관리** — 하네스 것. 갱신이 덮는다 |
 | `.ai/AI_AGENT.md`, `.ai/workflows/`, `.ai/forge.md`, `.ai/adr.md`, `.claude/`, `.codex/`, `script/githooks/`, `script/harness.env`, `script/forge.sh` | **생성** — 설정에서 나온다 |
 | `AGENTS.md`, `CLAUDE.md` | 정본으로 보내는 관문 |
 

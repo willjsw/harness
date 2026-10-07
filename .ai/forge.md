@@ -13,7 +13,7 @@
 |---|---|
 | 이슈 추적 | github (`gh`) |
 | 코드 리뷰 | github (`gh`) |
-| 리뷰 대상 브랜치 | `main` |
+| 리뷰 대상 브랜치 | `develop` |
 
 ## 용어
 
@@ -28,6 +28,7 @@ forge 를 바꿔도 부르는 쪽이 그대로 돌고, 페이지네이션과 응
 ```bash
 . script/forge.sh        # 하네스 루트에서. 모노레포면 리포 루트가 아니라 그 서브프로젝트다
 review_mr_threads 12          # 정규화 JSON 으로 돌아온다
+review_mr_thread_reply 12 <스레드id> "<본문>"   # id 는 위 출력의 그 스레드 값. null 이면 스레드가 아니다
 ```
 
 함수 목록과 출력 계약은 `script/forge/_common.sh` 상단에 있다.
@@ -54,6 +55,7 @@ review_mr_threads 12          # 정규화 JSON 으로 돌아온다
 | PR 조회 | `gh pr view <번호>` |
 | PR diff | `gh pr diff <번호>` |
 | PR 라벨 | `gh pr edit <번호> --add-label <라벨>` |
+| PR 리뷰 스레드 답글 | `gh api repos/{owner}/{repo}/pulls/<번호>/comments/<스레드id>/replies -f body=<본문>` |
 
 PR 번호는 `#N` 으로 적는다. 이슈 번호와 같은 표기이므로 어느 쪽인지 문장에서 밝힌다.
 
@@ -61,7 +63,7 @@ PR 번호는 `#N` 으로 적는다. 이슈 번호와 같은 표기이므로 어�
 
 ```bash
 gh pr create --title "<제목>" --body-file <본문파일> \
-  --base main --assignee <username> --reviewer <username>
+  --base develop --assignee <username> --reviewer <username>
 ```
 
 - 본문 자동 채움(`--fill`)을 쓰지 않는다 — 양식 항목이 누락된다.

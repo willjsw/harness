@@ -1,47 +1,52 @@
-.ai/templates/code-reviewer.md
-.ai/templates/developer.md
-.ai/templates/docs-writer.md
-.ai/templates/issue-requirement.md
-.ai/templates/issue-task.md
-.ai/templates/mr-guide.md
-.ai/templates/mr.md
-.ai/templates/planner.md
-.ai/templates/requirement-analyzer.md
-.ai/templates/security-guard.md
-.ai/templates/spec-writer.md
-.claude/commands/prework.md
-.claude/commands/security-guard.md
-.claude/commands/work.md
-docs/workflow/README.md
-docs/workflow/changing.md
-docs/workflow/flow.md
-script/README.md
-script/check-open-mrs.sh
-script/create-carryover-issue.sh
-script/forge-selftest.sh
-script/forge/_common.sh
-script/forge/github.sh
-script/forge/gitlab.sh
-script/forge/jira.sh
-script/harness-format.sh
-script/hooks/_guards.sh
-script/hooks/bash-guard.sh
-script/metric.py
-script/post-review.sh
-script/review-mr.sh
-script/rollback-work.sh
-script/run-agent.py
-script/run-lint-test.sh
-script/secret-scan.sh
-script/sync-task-issues.sh
-script/test-bash-guard.sh
-script/test-carryover-issue.sh
-script/test-review-loop.sh
-script/test-rollback-work.sh
-script/test-secret-scan.sh
-script/test-sync-task-issues.sh
-script/test-usage-log.sh
-script/usage-log.sh
-script/usage-report.sh
-script/usage-vocab.sh
-script/work-preflight.sh
+b1ece4faf3b6cace34ea9693b2b1f3f99ad11add0a8be5a0ddc425592acd76b9  .ai/templates/code-reviewer.md
+132a0e04a8b196611ebd70ee6be6ca073a662c368e4f0973ffe8dec893e00029  .ai/templates/developer.md
+7ef90e24b85d96eba9705c247364b7358e3b6f2cf61a1e3ef96949819af2676c  .ai/templates/docs-writer.md
+9ff6b013011aa88f85a9189152f6f8cee7771ff37a4c8b030e96f466a5f9502b  .ai/templates/issue-requirement.md
+871abeab7dc59cf877df1cacb855404bcd62d3ac07f85d79c4d27339a5ccd98a  .ai/templates/issue-task.md
+4ad2a2d8ae792fa23a382e4ac289716dccd8668dec61c82e5b777ad556d21966  .ai/templates/mr-guide.md
+217d0b31bd34f05e0fe53577d2adfaffd4dd3a2f639979c07db9602e05ffe7a5  .ai/templates/mr.md
+0a62d26661bcc2c462d7fb822c1fd4b2ce76f2cf66b0bc4ab37123f4c69701a0  .ai/templates/planner.md
+df632fa7ebf99b3597f148da39d8329641c32297809f36d6b5dc5fac9d0a01a8  .ai/templates/requirement-analyzer.md
+3a63af45775fbb70ed31eda023cf0fd0e9cee324f7f2237efcc38f459c37fd4a  .ai/templates/security-guard.md
+ec1908e51132d7f65ec02d7ce4002d01137f6c041fd18b298f116bcb2ea4a372  .ai/templates/spec-writer.md
+0033c12bc68b329e42e27d3487bc259c082b20b73e3632320b510196b58c3372  .claude/commands/prework.md
+ce6be72ef6a19cfd5ececc28b91c0545103590919d74b717068629b780045357  .claude/commands/security-guard.md
+34c393d6e8015eca2ca50aaf5ea42c8bb328c259d7e3aef9682aedeca25e2fab  .claude/commands/work.md
+2a1e3f1ba38321bc36a3bfdbefc9fab65685db6b9e4677784f4412492fa2c9af  docs/workflow/README.md
+ae36a98b7fa61cceeae164cad62db9b10ffc9087141cb1a1a8e3dfd1880687dd  docs/workflow/changing.md
+99297c03a604398a5f0d639fbac182bd7baa628916cf51d306f3f49bda03d30b  docs/workflow/flow.md
+b4eeaaf8f8177332109733672bc750fbb7d0a8b84b2260f4614e075a8e03d23e  script/README.md
+e974f7716af21424c5bf35367eed3cda641f3ac0e0cde39072c2ee990e9bd261  script/_review.py
+d6df67d3b9a0bc0a47d5e27b9917344c0bb8f6a27fd4c7a02a78235ed3855a0d  script/check-open-mrs.sh
+04c7c0e717520b9f7ae337b08955001e62c9421de57dff562aab680a86355d41  script/create-carryover-issue.sh
+91d33b450cb085e739c7619d3bca2796c1bd25f9b252a60e9cefff72594867c4  script/forge-selftest.sh
+f8645830e57bd4e0d415070f73f12c5f5a812a52a5fe532e115a4b0f8e1e072a  script/forge-setup.sh
+c70e0a823a18225021eea978a675dcfccbb557c0729845056b265976c23eabab  script/forge/_common.sh
+21a1d6fcd6e8ca6ac1d10af64784d47f29c02a6ff4d63f49fd420f682012135e  script/forge/github.sh
+bc47a6f4a6e819e4f1148dd11f6beadd1ccc5e78da40a957e20bac326accaa56  script/forge/gitlab.sh
+08af932f2659596a83f7563aab7f7258733f8f8a89590c4ffc91f6f94943b0bb  script/forge/jira.sh
+643c8aa17a1075c765b639113e4762b6abe4d26c012d0d9d8bd46c4775a8340b  script/harness-format.sh
+6273ad9e5e270700de3b1c7d279310108b24e5b47cb51f86f3ebaf1c307341ad  script/hooks/_guards.sh
+0978283970a4ffbb42bf400a24b7bac3cbed5c1cd49d7c5e8c15f116192b1a8f  script/hooks/bash-guard.sh
+162baa310c9b9dcc0df7bf1dedf12a0cd98c3f7a942a28f22dd6d4778fbd972a  script/metric.py
+7912ad66c72886614cd9eb54a0952651f9eeafa2ee6db497176d2b54598c0c76  script/post-review.sh
+8b7eceb5ef87cfcc63ac843b3ff5d8b3506e36c5ada543c9a5012aa9f7066da3  script/review-mr.sh
+f737aac463df70903f27025982835401fa9edfa3c582a4cda17dd445588ad6eb  script/rollback-work.sh
+b1ae88bc6eb3820186607fe47286c688778c1056ecca01453e0ff88f9f32ca5f  script/run-agent.py
+46901b02107e7c1ac3aa896737ddd0ed8f034e9fd95b397ce0612e1c1a7960ee  script/run-lint-test.sh
+e1224a70dbb65bd9d93d8052c236f342b5900d0daef51f529e27f9c94d0a3501  script/secret-scan.sh
+68327f6ab6eb88c7b71fc944c133524cfbfa2514e8e6de45d72b69a0c725c8dd  script/sync-task-issues.sh
+2c5532571f8a5b389f9c12504def5ac98e1310b278b41dea5b830a9484810efc  script/test-bash-guard.sh
+b6e3419be8881925838ebf497a32fa7eba92bb10cd999270ba6d3427244977c9  script/test-carryover-issue.sh
+384d0ec7cb89978274c6352a5fcba7c37133bada216bf937bbd30a8cec0af06a  script/test-forge-labels.sh
+3c59d6cafff7e3a9d1663a67a4a7a70638ae3600576f2ee9d46bb7dc083c067f  script/test-forge-setup.sh
+e7a96420dc29dd0fca43d1b5f4e089987a1ec5db3719be6d40e64c42660b8371  script/test-review-loop.sh
+469d99dc6be1e692a747778fc236db15c46102ce2741737509d6dbb299dfdec0  script/test-rollback-work.sh
+a894318994a9191fa9ed60830564e721be2cf616e140733c85e93ea3cce82bd6  script/test-secret-scan.sh
+8a198779f82715d0209b763ebaefe52017d9e9bc5f0082dbebe3f38393045d12  script/test-sync-task-issues.sh
+94400668eece1cbe6190e8f29b2cfa4264f2017dc57aeaae8f12d97725d67fa9  script/test-usage-log.sh
+97600cd7e1fe868f33981c0e777391fef1a6d940eee29de23d93f5e0b47430bd  script/test-work-preflight.sh
+ed4e012ebe1c3bf0ea263e461828a8b6aa50ae8ca55ede9068be4e11b1a4a9aa  script/usage-log.sh
+b0ad47f40f40e45f99cba421d15251fc1f10906036bcf4becbc0b2fc87219165  script/usage-report.sh
+b54eb243b4271832f0aa0f4bcf3374636eec9cbb11c40f94fae0b5f1762cef32  script/usage-vocab.sh
+0f72e8492e9c27e8784e2447128a4e789f3df14e5ac9b5d4b27d3829a6c7cec1  script/work-preflight.sh

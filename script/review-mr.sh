@@ -26,7 +26,11 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
   exec env HARNESS_METRIC_SELF=review-mr script/metric.py wrap --name review-mr --kind script --attr script=review-mr -- "$PWD/script/review-mr.sh" "$@"
 root=$(pwd)
 . script/harness.env
+# 표지는 리뷰 루프 모듈(script/_review.py)이 환경에서 읽으므로 export 한다.
+set -a
 . script/harness-format.sh
+set +a
+REVIEW_PY=script/_review.py
 
 CONTRACT=".ai/templates/code-reviewer.md"
 
@@ -69,14 +73,18 @@ on_exit() {
 trap on_exit EXIT
 
 command -v python3 >/dev/null || { echo "error: python3 is not installed" >&2; exit 2; }
-# 리뷰를 띄우는 명령은 실행 계획(script/harness.plan.json)이 정한다. 여기서는 CLI 러너인지와 설치 여부만 본다
-reviewer_exe=$(python3 -c 'import json,sys; p=json.load(open("script/harness.plan.json"))["roles"]["code-reviewer"]; print(p.get("exe", ""))') \
+# 리뷰를 띄우는 명령은 실행 계획(script/harness.plan.json)이 정한다. 여기서는 CLI 러너인지만 본다
+reviewer_exe=$(python3 "$REVIEW_PY" plan-exe script/harness.plan.json) \
   || { echo "error: script/harness.plan.json is missing or broken" >&2; echo "help: harness render" >&2; exit 2; }
 [ -n "$reviewer_exe" ] || {
   echo "error: no review runner is configured" >&2
   echo "help: when roles.code-reviewer.runner is inproc, the orchestrator reviews as a subagent instead of this script" >&2
   exit 2; }
-command -v "$reviewer_exe" >/dev/null || { echo "error: $reviewer_exe is not installed" >&2; exit 2; }
+# 회차를 올리기 전에 리뷰 러너의 설치와 로그인을 공용 진입점으로 본다. forge 조회·회차 라벨보다 앞이다 —
+# 로그인되지 않은 러너로 회차를 올리면 리뷰 없이 상한 한 칸을 쓴다. 판정의 표준 출력은 버리고 오류는 그대로 둔다
+script/run-agent.py code-reviewer --check >/dev/null || {
+  echo "help: the round was not used — fix the review runner, then rerun" >&2
+  exit 2; }
 [ -f "$CONTRACT" ] || { echo "error: review contract not found: $CONTRACT" >&2; exit 2; }
 
 . script/forge.sh
@@ -89,23 +97,14 @@ work=$(mktemp -d)
 review_mr_view "$mr" > "$work/mr.json" || {
   echo "stop: could not read review request $mr" >&2; exit 2; }
 
-read_json() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$1" "$2"; }
-
-src_branch=$(read_json "$work/mr.json" source_branch)
-mr_sha=$(read_json "$work/mr.json" head_sha)
+src_branch=$(python3 "$REVIEW_PY" mr-field "$work/mr.json" source_branch)
+mr_sha=$(python3 "$REVIEW_PY" mr-field "$work/mr.json" head_sha)
 cur_branch=$(git rev-parse --abbrev-ref HEAD)
 head_sha=$(git rev-parse HEAD)
 
 # 회차 읽기. 라벨이 둘 이상 붙어 있을 수 있어(제거를 빠뜨린 회차) 최댓값을 쓴다.
 # 읽기와 아래 갱신은 원자적이지 않다 — 동시 실행 미지원(상단 주석).
-mrl_read=$(python3 -c '
-import json, re, sys
-labels = json.load(open(sys.argv[1])).get("labels") or []
-found = {n: int(m.group(1)) for n in labels
-         if (m := re.fullmatch(re.escape(sys.argv[2]) + r":(\d+)", n.strip()))}
-print(max(found.values()) if found else 0)
-print(" ".join(sorted(found)))
-' "$work/mr.json" "$REVIEW_ROUND_LABEL") || {
+mrl_read=$(python3 "$REVIEW_PY" round "$work/mr.json" "$REVIEW_ROUND_LABEL") || {
   echo "stop: could not read labels — refusing to review without a round count" >&2; exit 2; }
 
 mrl_cur=$(printf '%s' "$mrl_read" | sed -n 1p)
@@ -170,12 +169,7 @@ echo "review round ${mrl_next} ($add, cap $REVIEW_MAX_ROUNDS)"
 review_mr_threads "$mr" > "$work/threads.json" 2>/dev/null \
   || echo "warning: could not read review threads — reviewing without the previous-round section" >&2
 
-issue_ref=$(python3 -c '
-import json, re, sys
-desc = json.load(open(sys.argv[1])).get("description") or ""
-m = re.search(r"(?i)\b%s\s+\S*?#?([0-9A-Za-z][0-9A-Za-z-]*)" % re.escape(sys.argv[2]), desc)
-print(m.group(1) if m else "")
-' "$work/mr.json" "$FMT_MR_CLOSES" 2>/dev/null || true)
+issue_ref=$(python3 "$REVIEW_PY" issue-ref "$work/mr.json" 2>/dev/null || true)
 
 : > "$work/issue.json"
 if [ -n "$issue_ref" ]; then
@@ -185,105 +179,8 @@ fi
 
 : > "$work/context.md"
 : > "$work/prev-sha"
-python3 - "$work" "$mrl_cur" "$FMT_MR_PURPOSE" "$FMT_MR_REVIEW_POINTS" \
-               "$FMT_SUMMARY_HEADING" "$FMT_REVIEWED_HEAD" "$issue_ref" <<'PY' \
+python3 "$REVIEW_PY" context "$work" "$mrl_cur" "$issue_ref" \
   || echo "warning: could not build the review context — passing the diff alone" >&2
-import json, glob, os, re, sys
-
-work, prev_rounds, purpose, points, summary_head, reviewed_head, issue_ref = sys.argv[1:8]
-prev_rounds = int(prev_rounds)
-
-HEADING = re.compile(r'^(#{1,6})\s+(.*?)\s*#*\s*$')
-FINDING = re.compile(r'^\*\*\[(?:blocker|major)\]\*\*')
-HEAD_LINE = re.compile(re.escape(reviewed_head) + r' `([0-9a-f]{7,40})`')
-
-
-def load(name, default):
-    try:
-        text = open(os.path.join(work, name), encoding='utf-8').read().strip()
-        return json.loads(text) if text else default
-    except (OSError, json.JSONDecodeError):
-        return default
-
-
-def md_section(text, title):
-    """제목이 일치하는 절의 본문. 같은 수준 이상의 다음 제목에서 끝난다. 없으면 None."""
-    lines = (text or "").splitlines()
-    start = level = None
-    for i, ln in enumerate(lines):
-        m = HEADING.match(ln)
-        if not m:
-            continue
-        if start is None:
-            if m.group(2).strip() == title:
-                start, level = i + 1, len(m.group(1))
-        elif len(m.group(1)) <= level:
-            return "\n".join(lines[start:i]).strip()
-    return None if start is None else "\n".join(lines[start:]).strip()
-
-
-def quote(text):
-    """인용한 본문의 제목 줄이 입력의 절 제목으로 읽히지 않게 접두한다."""
-    return "\n".join(("> " + ln).rstrip() for ln in (text or "").strip().splitlines())
-
-
-mr = load('mr.json', {})
-out = []
-
-# 본문에서 목적과 리뷰 요청 포인트만 가져온다. 둘 다 찾지 못하면 본문 전체를 넘긴다.
-desc = mr.get("description") or ""
-parts = []
-for title in (purpose, points):
-    body = md_section(desc, title)
-    if body:
-        parts.append(f"### {title}\n\n{quote(body)}")
-if not parts and desc.strip():
-    parts.append(quote(desc))
-if parts:
-    out.append("## 리뷰 요청 본문\n\n" + "\n\n".join(parts))
-
-issue = load('issue.json', {})
-if issue.get("description"):
-    spec = sorted(glob.glob(f"docs/spec/{issue_ref}-*.md"))
-    tail = ("\n\n명세: " + " · ".join(spec)) if spec else ""
-    out.append(f"## 이슈 본문 — {issue_ref} {issue.get('title', '').strip()}".rstrip()
-               + f"\n\n{quote(issue['description'])}{tail}")
-
-# 직전 회차의 요약과, 그 회차 발견에 달린 답글.
-if prev_rounds >= 1:
-    threads = load('threads.json', [])
-    summaries = sorted(
-        (n for t in threads for n in t.get("notes", [])
-         if (n.get("body") or "").lstrip().startswith(summary_head)),
-        key=lambda n: n.get("created_at") or "")
-
-    if summaries:
-        last = summaries[-1]
-        last_at = last.get("created_at") or ""
-        since = summaries[-2].get("created_at") or "" if len(summaries) > 1 else ""
-        found = HEAD_LINE.search(last.get("body") or "")
-        if found:
-            open(os.path.join(work, 'prev-sha'), 'w', encoding='utf-8').write(found.group(1))
-        else:
-            sys.stderr.write("warning: the previous summary records no reviewed revision — falling back to the cumulative diff\n")
-        block = [f"## 직전 회차 리뷰 ({prev_rounds}회차)", "", "### 자동 리뷰 요약", "",
-                 quote(last.get("body"))]
-        # 인라인 발견은 그 회차 요약 직전에 달린다. 직전 요약과 그 앞 요약 사이가 직전 회차다.
-        for t in threads:
-            notes = t.get("notes") or []
-            if len(notes) < 2 or not FINDING.match((notes[0].get("body") or "").strip()):
-                continue
-            at = notes[0].get("created_at") or ""
-            if not (since < at <= last_at):
-                continue
-            block += ["", "### 발견과 그에 달린 답글", "", quote(notes[0].get("body"))]
-            for n in notes[1:]:
-                block += ["", "답글:", "", quote(n.get("body"))]
-        out.append("\n".join(block))
-
-if out:
-    open(os.path.join(work, 'context.md'), 'w', encoding='utf-8').write("\n\n".join(out) + "\n\n")
-PY
 
 {
   echo "# 리뷰 입력"

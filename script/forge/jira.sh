@@ -163,8 +163,35 @@ tracker_current_user() {
   "$JIRA_CLI" me
 }
 
+# 로그인 여부만 본다. jira-cli 의 출력에는 계정 정보가 있어 옮기지 않는다.
+tracker_auth() {
+  "$JIRA_CLI" me </dev/null >/dev/null 2>&1 && return 0
+  echo 'run `jira init`' >&2
+  return 1
+}
+
+# Jira 는 라벨을 미리 두지 않는다 — 붙이는 순간 생긴다.
+tracker_labels() {
+  return 3
+}
+
+# 할 일이 없다 — Jira 라벨은 이슈에 붙일 때 생긴다.
+tracker_labels_ensure() {
+  return 0
+}
+
 fi
 
 # ── 리뷰 호스트 ──────────────────────────────────────────────────────────────
 # 없다. Jira 는 코드 리뷰를 호스팅하지 않는다 — `forge.review_host` 가 gitlab·github 중
 # 하나여야 하고, 설정 검증이 jira 를 거부한다. 여기서 빈 함수를 두면 그 거부가 무력해진다.
+# 스레드 답글 하나만은 지원하지 않는다는 오류를 내는 함수로 둔다 — 호출이 성공처럼 지나가지 않는다.
+
+if [ "${_FORGE_WANT_REVIEW:-0}" = 1 ]; then
+
+review_mr_thread_reply() {
+  echo "error: jira does not host code review — review thread replies are not supported" >&2
+  return 2
+}
+
+fi

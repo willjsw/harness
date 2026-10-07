@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DOCS } from "./fields.js";
+import { STATUS_TIMEOUT_MS, remoteStatusTimeoutMs } from "./doctor.js";
 
 const run = promisify(execFile);
 export const HOME = process.env.HARNESS_HOME || path.join(os.homedir(), ".harness");
@@ -20,11 +21,17 @@ export async function listProjects() {
   for (const name of names.sort()) {
     if (name.startsWith(".")) continue;
     let p = null;
-    try { p = JSON.parse(await fs.readFile(path.join(HOME, name, "project.json"), "utf8")).path; } catch {}
-    const ok = !!p && (await exists(path.join(p, "harness.toml")));
+    try { p = registeredPath(JSON.parse(await fs.readFile(path.join(HOME, name, "project.json"), "utf8"))); } catch {}
+    const ok = p !== null && (await exists(path.join(p, "harness.toml")));
     out.push({ name, path: p, ok });
   }
   return out;
+}
+
+// 등록 JSON 의 경로. 비어 있지 않은 문자열만 경로로 보고, 나머지는 경로 없음(null)이다.
+export function registeredPath(data) {
+  const p = data && typeof data === "object" && !Array.isArray(data) ? data.path : null;
+  return typeof p === "string" && p !== "" ? p : null;
 }
 
 export async function getProject(name) {
@@ -46,9 +53,10 @@ export async function readConfig(dir) {
 }
 
 // 쓰기는 전부 CLI 로 간다. `set` 이 검증·되돌림·렌더를 이미 한다.
-export async function harness(dir, args) {
+// timeout 은 그 명령이 끝나기를 기다리는 최대 시간(ms)이다. 넘기면 결과 없이 실패로 돌려준다.
+export async function harness(dir, args, { timeout = STATUS_TIMEOUT_MS } = {}) {
   try {
-    const { stdout, stderr } = await run(BIN, [...args, "--target", dir], { timeout: 60_000 });
+    const { stdout, stderr } = await run(BIN, [...args, "--target", dir], { timeout });
     return { ok: true, out: (stdout + stderr).trim() };
   } catch (e) {
     return { ok: false, out: ((e.stdout || "") + (e.stderr || "") || e.message).trim() };
@@ -151,8 +159,16 @@ export async function readText(dir, rel) {
 }
 
 // 홈 화면용 프로젝트 상태. 프로젝트에 고정된 하네스가 답하므로 옛 버전이면 null 이다.
-export async function readStatus(dir) {
-  const r = await harness(dir, ["status"]);
+// remote 면 원격 준비 점검까지 한다 — `--remote` 를 모르는 옛 버전도 null 이다.
+// 원격 점검은 원격이 응답하지 않을 때 걸리는 최악 누적 시간보다 길게 기다린다 — 그래야 확인하지 못한 줄을 받는다.
+export async function readStatus(dir, remote = false) {
+  let opts = {};
+  if (remote) {
+    let cfg = null;
+    try { cfg = await readConfig(dir); } catch {}
+    opts = { timeout: remoteStatusTimeoutMs(cfg) };
+  }
+  const r = await harness(dir, remote ? ["status", "--remote"] : ["status"], opts);
   if (!r.ok) return null;
   try { return JSON.parse(r.out); } catch { return null; }
 }
