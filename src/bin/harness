@@ -1359,8 +1359,87 @@ def refuse_link(root: Path, rel: str, verb: str = "write"):
             "help: replace the link with a regular file or directory, then run the command again" % (verb, hit))
 
 
+# 하네스가 대상 리포를 바꾸는 경로의 규칙. 하네스 루트 기준 상대 경로이고, 성분은 `docs.protected` 의
+# 성분(PROTECTED_PATH)과 같은 문자 집합이며, `.` · `..` · 빈 성분이 없고, 루트 아래의 성분에 심볼릭 링크가 없다.
+PATH_COMPONENT = re.compile(r"[\w.-]+")
+GUARD_VERBS = ("create", "write", "remove", "move")
+
+
+def path_form_fault(rel: str):
+    """경로 문자열의 형식 어긋남 사유. 맞으면 None. 파일 시스템을 보지 않는다."""
+    if rel.startswith("/"):
+        return "an absolute path"
+    parts = rel.split("/")
+    if ".." in parts:
+        return "has a .. component"
+    if any(p == "." or not PATH_COMPONENT.fullmatch(p) for p in parts):
+        return "not a path"
+    return None
+
+
+def link_component(root: Path, rel: str):
+    """root 아래 rel 의 성분(`a` · `a/b` · … · rel 자신) 가운데 심볼릭 링크인 첫 것. 없으면 None.
+
+    링크 대상이 있는지와 상관없다. root 자신과 그 위는 보지 않는다. 아직 없는 성분은 어긋남이 아니다.
+    """
+    parts = rel.split("/")
+    for i in range(1, len(parts) + 1):
+        head = "/".join(parts[:i])
+        p = root / head
+        if os.path.islink(p):
+            return head
+        if not os.path.lexists(p):
+            return None
+    return None
+
+
+def path_fault(root: Path, rel: str):
+    """경로 규칙의 어긋남 — (사유, 링크인 성분 또는 None). 맞으면 None."""
+    why = path_form_fault(rel)
+    if why:
+        return why, None
+    hit = link_component(root, rel)
+    if hit is not None:
+        return "through a symbolic link", hit
+    return None
+
+
+def guarded_path(root: Path, rel: str, verb: str) -> Path:
+    """경로 규칙을 지키는 경로만 돌려준다. 대상 리포를 바꾸는 시스템 호출은 전부 이 함수가 돌려준 경로에 한다.
+
+    호출 바로 앞에서 판정한다 — 사전 판정이 통과시킨 경로도 다시 본다. 어긋나면 아무것도 하지 않고 종료 코드 2.
+    형식이 어긋난 경로는 출력하지 않는다.
+    """
+    assert verb in GUARD_VERBS, verb
+    fault = path_fault(root, rel)
+    if fault is None:
+        return root / rel
+    why, hit = fault
+    if hit is not None:
+        die("error: refusing to %s through a symbolic link\n  --> %s\n\n"
+            "help: replace the link with the directory or file it points to, then run the command again" % (verb, hit))
+    die("error: refusing to %s a path that is not safe under the harness root (%s)" % (verb, why))
+
+
+def make_dirs(root: Path, rel_dir: str):
+    """rel_dir 까지의 디렉터리를 위에서부터 하나씩 공용 함수를 거쳐 만든다."""
+    parts = rel_dir.split("/") if rel_dir else []
+    for i in range(1, len(parts) + 1):
+        p = guarded_path(root, "/".join(parts[:i]), "create")
+        if not p.is_dir():
+            p.mkdir()
+
+
+def make_parents(root: Path, rel: str):
+    if "/" in rel:
+        make_dirs(root, rel.rsplit("/", 1)[0])
+
+
 def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None):
-    """관리 파일은 덮어쓰고, 소유 파일은 없을 때만 깐다. (바뀐 수, 깐 경로 전부)"""
+    """관리 파일은 덮어쓰고, 소유 파일은 없을 때만 깐다. (바뀐 수, 깐 경로 전부)
+
+    dst 는 하네스 루트다 — 쓰는 경로는 공용 함수를 거친다.
+    """
     n, paths = 0, []
     if not src.is_dir():
         return 0, []
@@ -1371,18 +1450,17 @@ def copy_tree(src: Path, dst: Path, only_if_absent: bool, skip=None, subst=None)
         if skip and skip(rel):
             continue
         paths.append(rel)
-        out = dst / rel
-        if only_if_absent and out.exists():
+        if only_if_absent and os.path.lexists(dst / rel):
             continue
-        refuse_link(dst, rel)
-        out.parent.mkdir(parents=True, exist_ok=True)
+        make_parents(dst, rel)
         text = f.read_text(encoding="utf-8")
         if subst is not None:
             text = substitute(text, subst, str(f))
+        out = guarded_path(dst, rel, "write")
         if out.is_file() and out.read_text(encoding="utf-8") == text:
             continue
-        out.write_text(text, encoding="utf-8")
-        os.chmod(out, 0o755 if os.access(f, os.X_OK) else 0o644)
+        guarded_path(dst, rel, "write").write_text(text, encoding="utf-8")
+        os.chmod(guarded_path(dst, rel, "write"), 0o755 if os.access(f, os.X_OK) else 0o644)
         n += 1
     return n, paths
 
@@ -1427,8 +1505,8 @@ def sha256_of(p: Path) -> str:
 
 def write_manifest_hashes(target: Path, entries: dict):
     """`.harness/managed` 를 경로 순의 `<sha256>  <경로>` 줄로 쓴다. 해시가 None 인 경로는 옛 형식 그대로 경로만 쓴다."""
-    refuse_link(target, MANIFEST_MANAGED)
-    (target / MANIFEST_MANAGED).write_text(
+    make_parents(target, MANIFEST_MANAGED)
+    guarded_path(target, MANIFEST_MANAGED, "write").write_text(
         "".join(("%s  %s\n" % (entries[rel], rel)) if entries[rel] else rel + "\n" for rel in sorted(entries)),
         encoding="utf-8")
 
@@ -1454,15 +1532,17 @@ def prune(target: Path, keep: set, manifest: str) -> int:
     for rel in previous(target, manifest):
         if rel in keep or rel.startswith(PINNED):
             continue
-        stale = target / rel
-        if stale.is_file() or stale.is_symlink():
-            refuse_link(target, rel, "remove")
-            stale.unlink()
+        stale = guarded_path(target, rel, "remove")
+        if stale.is_file():
+            guarded_path(target, rel, "remove").unlink()
             n += 1
-            for d in stale.parents:
-                if d == target or any(d.iterdir()):
+            parts = rel.split("/")[:-1]
+            while parts:
+                d = guarded_path(target, "/".join(parts), "remove")
+                if any(d.iterdir()):
                     break
                 d.rmdir()
+                parts.pop()
     return n
 
 
@@ -1494,12 +1574,65 @@ def harness_paths(cfg: dict, at: Path = None) -> set:
 
 
 def seeded_paths(cfg: dict) -> set:
-    """없을 때만 까는 소유 파일과 CI 골격의 경로. 그 자체는 판정 대상이 아니지만 부모 디렉터리는 만들어야 한다."""
+    """없을 때만 까는 소유 파일과 CI 골격의 경로. 사용자 파일 판정 대상은 아니지만 경로 규칙과 부모 디렉터리는 본다."""
     out = set()
     for src in (TEMPLATES / "owned", ci_dir(cfg)):
         if src.is_dir():
             out |= {f.relative_to(src).as_posix() for f in src.rglob("*") if f.is_file()}
     return out
+
+
+def stale_paths(cfg: dict, target: Path) -> set:
+    """정리(`prune`)가 지울 옛 경로 — 이전 매니페스트에 있으나 이번 render 가 쓰지 않는 것. 고정 사본은 정리하지 않는다."""
+    writes = harness_paths(cfg, target)
+    made = {rel for rel, _c, _m in plan(cfg, at=target)}
+    prev_gen, prev_man = set(previous(target, MANIFEST)), set(previous(target, MANIFEST_MANAGED))
+    return {rel for rel in (prev_gen - made) | (prev_man - writes) if not rel.startswith(PINNED)}
+
+
+def adoptable(cfg: dict, target: Path) -> set:
+    """`--adopt` 가 옮길 수 있는 후보 — 쓸 경로에 무엇이 있으나 이전 매니페스트에 없는 것."""
+    ours = set(previous(target, MANIFEST)) | set(previous(target, MANIFEST_MANAGED))
+    return {rel for rel in harness_paths(cfg, target) if rel not in ours and os.path.lexists(target / rel)}
+
+
+def change_paths(cfg: dict, target: Path, adopt: bool = False) -> dict:
+    """이번 render 가 바꿀 경로 전부 — {경로: 동사}. 관리 · 생성 · 소유 파일과 CI 골격, 매니페스트, 정리가 지울 옛 경로,
+    `--adopt` 면 넘겨받을 경로와 `<경로>.orig`."""
+    out = {rel: "write" for rel in harness_paths(cfg, target) | seeded_paths(cfg) | {MANIFEST, MANIFEST_MANAGED}}
+    out.update((rel, "remove") for rel in stale_paths(cfg, target))
+    if adopt:
+        for rel in adoptable(cfg, target):
+            out[rel] = out[rel + ".orig"] = "move"
+    return out
+
+
+def refuse_unsafe_paths(target: Path, paths: dict, command: str) -> bool:
+    """바꿀 경로 가운데 경로 규칙을 어긴 것이 있으면 안내문을 표준 오류로 내고 True. 무엇도 바꾸기 전에 부른다.
+
+    링크인 성분은 전부 모아 경로 순으로 낸다 — 한 링크 아래의 경로는 따로 나열하지 않는다.
+    형식이 어긋난 경로는 출력하지 않는다.
+    """
+    links = set()
+    for rel, verb in sorted(paths.items()):
+        why = path_form_fault(rel)
+        if why:
+            print("error: refusing to %s a path that is not safe under the harness root (%s)\nnothing was changed"
+                  % (verb, why), file=sys.stderr)
+            return True
+        hit = link_component(target, rel)
+        if hit is not None:
+            links.add(hit)
+    if not links:
+        return False
+    print("error: %d path(s) the harness would change go through a symbolic link" % len(links), file=sys.stderr)
+    for hit in sorted(links):
+        print("  --> %s" % hit, file=sys.stderr)
+    print("nothing was changed\n\n"
+          "help: the harness does not write through symbolic links under the harness root\n"
+          "      replace each link with the directory or file it points to, then run the command again\n"
+          "        harness %s" % command, file=sys.stderr)
+    return True
 
 
 def user_files(cfg: dict, target: Path) -> list:
@@ -1508,34 +1641,12 @@ def user_files(cfg: dict, target: Path) -> list:
     - 하네스가 쓸 경로에 이미 있으나 이전 매니페스트에 없는 것. 내용은 보지 않는다
     - 쓸 경로에 디렉터리가 있는 것. 매니페스트에 있어도 덮을 수 없다
     - 쓸 경로의 부모 가운데 디렉터리가 아닌 것. 소유 파일·CI 골격·매니페스트의 부모도 본다
-    - 쓸 경로와 그 부모 가운데 심볼릭 링크인 것 — 링크를 따라 쓰면 리포 밖의 파일이 바뀐다. 매니페스트에 있어도 같다.
-      `.harness` 가 링크면 사본을 갈아 끼울 때 링크 너머의 파일을 지운다. 하네스 루트 자신과 그 위는 보지 않는다
-    - 없을 때만 까는 경로가 대상이 없는 링크면 그 링크를 따라 새 파일을 만들게 되므로 같게 본다
-    - 정리(`prune`)가 지울 옛 경로와 그 부모 가운데 심볼릭 링크인 것 — 지우면 리포 밖의 파일이 사라진다
+    심볼릭 링크는 이 판정보다 먼저 도는 경로 규칙의 사전 판정이 막는다.
     """
-    prev_gen, prev_man = set(previous(target, MANIFEST)), set(previous(target, MANIFEST_MANAGED))
-    ours = prev_gen | prev_man
+    ours = set(previous(target, MANIFEST)) | set(previous(target, MANIFEST_MANAGED))
     writes = harness_paths(cfg, target)
-    made = {rel for rel, _c, _m in plan(cfg, at=target)}
     found = {}
-    seeded = seeded_paths(cfg)
-    # 정리가 지울 옛 경로 — 지우기 전에 같은 방식으로 링크를 본다. 고정 사본은 정리하지 않는다
-    stale = {rel for rel in (prev_gen - made) | (prev_man - writes) if not rel.startswith(PINNED)}
-    for rel in sorted(stale):
-        hit = linked_component(target, rel)
-        if hit is not None and not any(hit == h or hit.startswith(h + "/") for h in found):
-            found[hit] = "a symbolic link"
-    if (target / PINNED.rstrip("/")).is_symlink():
-        found[PINNED.rstrip("/")] = "a symbolic link"
-    for rel in sorted(writes | seeded | {MANIFEST, MANIFEST_MANAGED}):
-        own = rel in writes or rel in (MANIFEST, MANIFEST_MANAGED)
-        hit = linked_component(target, rel, last=own)
-        if hit is None and not own and (target / rel).is_symlink() and not (target / rel).exists():
-            hit = rel
-        if hit is not None:
-            if not any(hit == h or hit.startswith(h + "/") for h in found):
-                found[hit] = "a symbolic link"
-            continue
+    for rel in sorted(writes | seeded_paths(cfg) | {MANIFEST, MANIFEST_MANAGED}):
         parts = rel.split("/")
         for i in range(1, len(parts)):
             head = "/".join(parts[:i])
@@ -1549,7 +1660,7 @@ def user_files(cfg: dict, target: Path) -> list:
         p = target / rel
         if rel in found or any(rel.startswith(h + "/") for h in found) or not os.path.lexists(p):
             continue
-        if p.is_dir() and not p.is_symlink():
+        if p.is_dir():
             found[rel] = "a directory"
         elif rel in ours:
             continue
@@ -1578,18 +1689,29 @@ def refuse_user_files(cfg, target: Path, args) -> bool:
     return True
 
 
+def refuse_changes(cfg, target: Path, args, extra: dict = None) -> bool:
+    """render 가 무엇이든 바꾸기 전의 판정 — 경로 규칙의 사전 판정, 사용자 파일 판정 순. 멈춰야 하면 안내문을 내고 True.
+
+    extra 는 그 명령이 더 바꿀 경로다({경로: 동사}).
+    """
+    command = getattr(args, "command", None) or "render"
+    paths = change_paths(cfg, target, getattr(args, "adopt", False))
+    paths.update(extra or {})
+    if refuse_unsafe_paths(target, paths, command):
+        return True
+    return refuse_user_files(cfg, target, args)
+
+
 def adopt_user_files(cfg, target: Path):
     """사용자 파일을 `<경로>.orig` 로 옮긴다. 이름만 바꾸므로 권한 비트가 그대로다."""
     for rel, _why in user_files(cfg, target):
-        refuse_link(target, rel, "move")
-        refuse_link(target, rel + ".orig", "move")
-        os.rename(target / rel, target / (rel + ".orig"))
+        os.rename(guarded_path(target, rel, "move"), guarded_path(target, rel + ".orig", "move"))
         print("render: adopted %s — yours is at %s.orig" % (rel, rel))
 
 
 def cmd_render(cfg, target, args):
-    # 무엇이든 쓰기 전에 가른다 — 하네스가 쓸 자리에 프로젝트 파일이 있으면 덮지 않고 멈춘다.
-    if refuse_user_files(cfg, target, args):
+    # 무엇이든 쓰기 전에 가른다 — 바꿀 경로가 링크를 거치거나, 하네스가 쓸 자리에 프로젝트 파일이 있으면 멈춘다.
+    if refuse_changes(cfg, target, args):
         return 2
     if getattr(args, "adopt", False):
         adopt_user_files(cfg, target)
@@ -1606,14 +1728,13 @@ def cmd_render(cfg, target, args):
     items = plan(cfg, target)
     written = 0
     for rel, content, mode in items:
-        p = target / rel
-        refuse_link(target, rel)
-        p.parent.mkdir(parents=True, exist_ok=True)
+        make_parents(target, rel)
+        p = guarded_path(target, rel, "write")
         old = p.read_text(encoding="utf-8") if p.is_file() else None
         if old != content:
-            p.write_text(content, encoding="utf-8")
+            guarded_path(target, rel, "write").write_text(content, encoding="utf-8")
             written += 1
-        os.chmod(p, mode)
+        os.chmod(guarded_path(target, rel, "write"), mode)
 
     # 설정이 바뀌면 만들던 파일이 빠진다. 남겨 두면 옛 forge 어댑터나 쓰지 않는 역할의 계약이
     # 리포에 그대로 있어, 사람도 에이전트도 어느 쪽이 현재인지 알 수 없다.
@@ -1626,11 +1747,8 @@ def cmd_render(cfg, target, args):
     if (target / PINNED / "bin" / "harness").is_file():
         hashes.update((rel, h) for rel, h in manifest_entries(target)
                       if rel.startswith(PINNED) and h is not None)
-    refuse_link(target, MANIFEST)
-    refuse_link(target, MANIFEST_MANAGED)
-    mf = target / MANIFEST
-    mf.parent.mkdir(parents=True, exist_ok=True)
-    mf.write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
+    make_parents(target, MANIFEST)
+    guarded_path(target, MANIFEST, "write").write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
     write_manifest_hashes(target, hashes)
 
     print("render: %d generated (%d updated, %d removed) · %d managed updated · %d owned created"
@@ -1902,7 +2020,7 @@ def install_registered(cfg, target: Path, args=None) -> bool:
     if claim is None:
         return False
     # 사본을 바꾸기 전에 가른다. 판정은 설치하려는 이 CLI 의 템플릿과 설정으로 한다.
-    if refuse_user_files(cfg, target, args):
+    if refuse_changes(cfg, target, args):
         return False
     if source_tree(target):
         # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
@@ -2816,8 +2934,8 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
 
 
 def revert_for_user_files(cfg, target: Path, args, conf: Path, original: str) -> bool:
-    """바꾼 설정의 render 가 사용자 파일로 멈출 것이면 설정을 되돌리고 True."""
-    if not refuse_user_files(cfg, target, args):
+    """바꾼 설정의 render 가 경로 규칙의 사전 판정이나 사용자 파일로 멈출 것이면 설정을 되돌리고 True."""
+    if not refuse_changes(cfg, target, args):
         return False
     conf.write_text(original, encoding="utf-8")
     print("\nreverted — the config is unchanged", file=sys.stderr)
