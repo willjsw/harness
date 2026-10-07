@@ -161,6 +161,11 @@ def legacy_verify(target) -> bool:
     return bool(f and f.is_file() and LEGACY_VERIFY_TEMPLATE not in f.read_text(encoding="utf-8"))
 
 
+def verify_entry(target) -> str:
+    """검증으로 도는 스크립트 — 채운 옛 검증 스크립트가 있으면 그것, 아니면 생성된 검증 스크립트. 하네스 루트 기준."""
+    return LEGACY_VERIFY if legacy_verify(target) else VERIFY_SCRIPT
+
+
 def verify_steps(cfg: dict) -> list:
     """프로젝트 검증 단계 (이름, 명령, 경로, 시점). 계층 의존 검사가 먼저다 — 싸고, 위반이면 어차피 설계를 고쳐야 한다."""
     c, v = cfg["commands"], cfg["verify"]
@@ -2236,24 +2241,45 @@ def enable_hooks(target: Path):
     return "set", want
 
 
-def report_hooks(target: Path):
-    """install 이 훅 설정 결과를 표준 출력에 알린다. 종료 코드는 바꾸지 않는다."""
+def report_hooks(target: Path, who: str = "install") -> str:
+    """훅 설정 결과를 알리고 결과를 돌려준다. install 은 모두 표준 출력에 내고, 그 밖은 켜지 않은 이유를 표준 오류에 낸다."""
     result, extra = enable_hooks(target)
     want = hooks_expected(target) if result != "no-git" else HOOKS_DIR
     help_line = "help: to use this harness's hooks, run `git config core.hooksPath %s`" % want
+    out = sys.stdout if who == "install" or result in ("set", "already") else sys.stderr
     if result == "set":
-        print("install: set core.hooksPath to %s — git hooks now run on commit and push" % extra)
+        print("%s: set core.hooksPath to %s — git hooks now run on commit and push" % (who, extra), file=out)
+    elif result == "already" and who != "install":
+        print("%s: core.hooksPath is already %s — git hooks run on commit and push" % (who, extra), file=out)
     elif result == "other":
-        print("install: core.hooksPath is already %s — left as is\n%s" % (extra, help_line))
+        print("%s: core.hooksPath is already %s — left as is\n%s" % (who, extra, help_line), file=out)
     elif result == "own-hooks":
         d, names = extra
-        print("install: core.hooksPath is not set but %s has hooks of its own (%s) — left as is\n%s"
-              % (d, ", ".join(names), help_line))
+        print("%s: core.hooksPath is not set but %s has hooks of its own (%s) — left as is\n%s"
+              % (who, d, ", ".join(names), help_line), file=out)
     elif result == "no-git":
-        print("install: not a git repository — git hooks were not enabled\n"
-              "help: after `git init`, run `git config core.hooksPath %s`" % want)
+        print("%s: not a git repository — git hooks were not enabled\n"
+              "help: after `git init`, run `git config core.hooksPath %s`" % (who, want), file=out)
     elif result == "failed":
-        print("install: could not set core.hooksPath: %s\n%s" % (extra, help_line))
+        print("%s: could not set core.hooksPath: %s\n%s" % (who, extra, help_line), file=out)
+    return result
+
+
+# Doctor 화면의 조치 가운데 명령이 따로 없던 것.
+FIXES = ("hooks", "verify")
+
+
+def cmd_fix(_cfg, target, args):
+    """`harness fix hooks|verify` — 훅 경로는 install 의 설정 로직으로 켜고, 검증은 그 스크립트를 다시 돌린다."""
+    if len(args.args) != 1 or args.args[0] not in FIXES:
+        die("error: fix takes one of: %s\n\n"
+            "usage: harness fix <hooks|verify>\n"
+            "  hooks    point core.hooksPath at this harness's git hooks, as install does\n"
+            "  verify   run the verification script again" % ", ".join(FIXES))
+    if args.args[0] == "verify":
+        sys.stdout.flush()
+        return subprocess.run(["bash", verify_entry(target)], cwd=str(target)).returncode
+    return 0 if report_hooks(target, "fix") in ("set", "already") else 2
 
 
 def owned_files(target: Path):
@@ -4238,6 +4264,7 @@ COMMANDS = {
                   "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
     "write-doc": (None, True,  "<name> -", "write standard input to a project document or a role or workflow note, and re-render"),
+    "fix":       (None, True,  "<hooks|verify>", "run a Doctor fix: turn the git hooks on as install does, or run verification again"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
     "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
@@ -4282,7 +4309,7 @@ def cmd_help(_cfg, _target, _args):
 # 전역 CLI 를 깔아도 각 프로젝트는 자기가 고정한 버전으로 돌아야 한다. 그러지 않으면
 # 전역을 올리는 순간 모든 프로젝트의 생성물이 조용히 바뀌고, 그 리포의 검사가 한꺼번에 깨진다.
 DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall",
-             "forge-setup", "write-doc"}
+             "forge-setup", "write-doc", "fix"}
 
 
 PINNED_SHOWN = 10
@@ -4373,7 +4400,7 @@ def main():
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
                 "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
                 "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup,
-                "write-doc": cmd_write_doc}
+                "write-doc": cmd_write_doc, "fix": cmd_fix}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,

@@ -4116,7 +4116,7 @@ sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
 cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
 
-echo "UT-105 the UI writes through CLI commands: write-doc writes a document or note, renders and reverts on failure; protected names are denied to it"
+echo "UT-105 the UI writes through CLI commands: write-doc writes a document or note and is denied protected names; fix runs a Doctor fix"
 # UI 가 파일을 직접 쓰면 머리 주석·render 를 UI 와 CLI 가 따로 알게 되고, 한쪽만 고치면 결과가 갈린다.
 body101() { python3 -c 'import sys; print(repr(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
 tree101() { # tree101 <대상> — 등록부를 뺀 파일 경로와 내용의 해시. 파일이 하나라도 생기거나 바뀌면 달라진다
@@ -4221,6 +4221,36 @@ check "a path write-doc cannot write adds no write-doc rule" "$(wdrules101 "$t")
 "$root/bin/harness" set --target "$t" docs.protected ".ai/**," >/dev/null 2>&1 || bad "could not protect .ai/**"
 has "$t/.claude/settings.json" '"Bash(harness write-doc:*)"' "a directory over .ai/project does not deny every write-doc call"
 unset -f body101 tree101 wd101 wdrules101
+# fix — Doctor 조치. 검증은 그 리포의 검증 스크립트를, 훅은 install 과 같은 판정으로 켠다
+t="$work/fix101"; setup "$t"
+fix101() { "$root/bin/harness" fix "$@" --target "$t" > "$work/fix101.out" 2> "$work/fix101.err"; }
+"$root/bin/harness" set --target "$t" commands.test "true" >/dev/null 2>&1 || bad "could not set a passing test command"
+fix101 verify; check "fix verify with a passing command" "$?" "0"
+has "$work/fix101.out" "verify: ok" "fix verify did not show the verification output"
+"$root/bin/harness" set --target "$t" commands.test "false" >/dev/null 2>&1 || bad "could not set a failing test command"
+fix101 verify; [ "$?" -ne 0 ] && ok || bad "fix verify exits 0 though the command fails"
+printf '#!/usr/bin/env bash\necho legacy-verify-101\nexit 0\n' > "$t/script/verify-project.sh"
+fix101 verify; check "fix verify with a filled hand-written script" "$?" "0"
+has "$work/fix101.out" "legacy-verify-101" "fix verify did not run the hand-written script"
+# 검증 출력은 그 리포의 단계 이름을 담으므로 한글 검사에서 뺀다
+( cd "$t" && git init -q . )
+fix101 hooks; check "fix hooks on an empty setting" "$?" "0"
+check "fix hooks sets the hooks path" "$(git -C "$t" config core.hooksPath)" "script/githooks"
+has "$work/fix101.out" "fix: set core.hooksPath to script/githooks" "fix hooks does not say it set the value"
+fix101 hooks; check "fix hooks when the value is already right" "$?" "0"
+has "$work/fix101.out" "already script/githooks" "fix hooks does not say the value is already right"
+cat "$work/fix101.out" "$work/fix101.err" > "$work/fix101-all.log"
+t="$work/fixown101"; setup "$t"; ( cd "$t" && git init -q . )
+mkdir -p "$t/.git/hooks"; printf '#!/bin/sh\nexit 0\n' > "$t/.git/hooks/pre-commit"; chmod +x "$t/.git/hooks/pre-commit"
+fix101 hooks; check "fix hooks over hooks of the repository's own" "$?" "2"
+check "fix hooks leaves the setting empty" "$(git -C "$t" config core.hooksPath || echo '(none)')" "(none)"
+has "$work/fix101.err" "pre-commit" "fix hooks does not say why it left the setting"
+fix101 nosuch; check "fix refuses an unknown fix" "$?" "2"
+has "$work/fix101.err" "usage: harness fix" "the refusal does not show the usage"
+fix101; check "fix refuses a missing fix" "$?" "2"
+cat "$work/fix101.out" "$work/fix101.err" >> "$work/fix101-all.log"
+no_hangul "$work/fix101-all.log" "fix output"
+unset -f fix101
 
 echo
 if [ "$fail" -eq 0 ]; then
