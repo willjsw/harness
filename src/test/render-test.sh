@@ -3072,24 +3072,6 @@ rm -f "$u/docs/spec/README.md"; cp "$u/.harness/managed" "$work/u87-mf"
 has "$work/u87-9.err" "docs/decisions/README.md" "the render refusal does not name the user file"
 [ -e "$u/docs/spec/README.md" ] && bad "the refused render laid an owned file" || ok
 cmp -s "$u/.harness/managed" "$work/u87-mf" && ok || bad "the refused render rewrote the manifest"
-# .harness 가 심볼릭 링크면 사본을 갈아 끼우지 않는다 — 링크 너머의 파일을 지우게 된다
-ln87="$work/link87"; out87="$work/link87-outside"; rm -rf "$ln87" "$out87"; mkdir -p "$ln87" "$out87/keep-dir"
-( cd "$ln87" && git init -q . )
-printf 'outside\n' > "$out87/keep.txt"; printf 'nested\n' > "$out87/keep-dir/nested.txt"
-ln -s "$out87" "$ln87/.harness"
-"$root/bin/harness" install --target "$ln87" > "$work/u87-10.out" 2> "$work/u87-10.err"; check "install through a symlinked .harness" "$?" "2"
-has "$work/u87-10.err" "  --> .harness" "the refusal does not name the linked .harness"
-check "the link target's file is kept" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
-check "the link target's nested file is kept" "$(cat "$out87/keep-dir/nested.txt" 2>/dev/null)" "nested"
-[ -e "$out87/bin" ] && bad "the refused install wrote into the link target" || ok
-[ -e "$HARNESS_HOME/link87/project.json" ] && bad "the refused install registered the project" || ok
-"$root/bin/harness" install --target "$ln87" --adopt > "$work/u87-11.out" 2> "$work/u87-11.err"; check "install --adopt through a symlinked .harness" "$?" "2"
-check "the link target survives --adopt" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
-# 설치된 리포의 .harness 를 링크로 바꿔도 같다
-cp -R "$u/.harness" "$out87/pinned"; rm -rf "$u/.harness.bak"; mv "$u/.harness" "$u/.harness.bak"; ln -s "$out87/pinned" "$u/.harness"
-"$root/bin/harness" install --target "$u" > "$work/u87-12.out" 2> "$work/u87-12.err"; check "reinstall through a symlinked .harness" "$?" "2"
-[ -f "$out87/pinned/bin/harness" ] && [ -f "$out87/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
-rm "$u/.harness"; mv "$u/.harness.bak" "$u/.harness"
 # 쓸 경로의 부모가 파일이면 무엇이든 쓰기 전에 멈춘다 — 소유 파일의 부모도 본다
 pf87="$work/parent87"; rm -rf "$pf87"; mkdir -p "$pf87"; ( cd "$pf87" && git init -q . )
 printf 'not a dir\n' > "$pf87/script"
@@ -3106,38 +3088,6 @@ rm "$u/script/review-mr.sh"; mkdir "$u/script/review-mr.sh"; cp "$u/.harness/man
 has "$work/u87-14.err" "  --> script/review-mr.sh (a directory)" "the refusal does not say the managed path is a directory"
 cmp -s "$u/.harness/managed" "$work/u87-mf2" && ok || bad "the refused render rewrote the manifest"
 rmdir "$u/script/review-mr.sh"
-# 제거·설정 씨앗·사본 걷기도 링크를 따라가지 않는다 — 무엇이든 지우거나 쓰기 전에 멈춘다
-lk87="$work/linkall87"; lo87="$work/linkall87-outside"; rm -rf "$lk87" "$lo87"; mkdir -p "$lk87" "$lo87"
-( cd "$lk87" && git init -q . )
-"$root/bin/harness" install --target "$lk87" >/dev/null 2>&1 || bad "could not install the link repo"
-[ -f "$lk87/docs/adr/README.md" ] && ok || bad "the decision-record README was not installed"
-mv "$lk87/docs/adr" "$lo87/adr"; ln -s "$lo87/adr" "$lk87/docs/adr"
-# 제거가 지울 경로의 부모가 링크
-"$root/bin/harness" uninstall --target "$lk87" > "$work/u87-19.out" 2> "$work/u87-19.err"; check "uninstall through a link" "$?" "2"
-has "$work/u87-19.err" "  --> docs/adr" "the uninstall refusal does not name the link"
-has "$work/u87-19.err" "nothing was removed" "the uninstall refusal does not say nothing was removed"
-[ -f "$lo87/adr/README.md" ] && ok || bad "uninstall removed the README behind the link"
-[ -f "$lk87/CLAUDE.md" ] && [ -d "$lk87/.harness" ] && ok || bad "the refused uninstall removed harness files"
-rm "$lk87/docs/adr"; mv "$lo87/adr" "$lk87/docs/adr"
-# --purge 가 지울 소유 파일의 부모가 링크
-mv "$lk87/.ai/project" "$lo87/project"; ln -s "$lo87/project" "$lk87/.ai/project"
-"$root/bin/harness" uninstall --target "$lk87" --purge --yes > "$work/u87-20.out" 2> "$work/u87-20.err"; check "uninstall --purge through a linked owned directory" "$?" "2"
-[ -f "$lo87/project/scope.md" ] && ok || bad "--purge removed an owned file behind the link"
-rm "$lk87/.ai/project"; mv "$lo87/project" "$lk87/.ai/project"
-# 대상이 없는 harness.toml 링크를 따라 기본 설정을 쓰지 않는다
-sd87="$work/seedlink87"; rm -rf "$sd87"; mkdir -p "$sd87"; ( cd "$sd87" && git init -q . )
-ln -s "$lo87/seeded.toml" "$sd87/harness.toml"
-"$root/bin/harness" install --target "$sd87" > "$work/u87-22.out" 2> "$work/u87-22.err"; check "install over a dangling harness.toml link" "$?" "2"
-has "$work/u87-22.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
-[ -e "$lo87/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
-# 소스 리포가 옛 사본을 걷을 때 .harness/ 아래 링크는 링크만 걷는다
-src87="$work/source87"; rm -rf "$src87"; mkdir -p "$src87/src/bin" "$lo87/oldbin"
-cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src87/src/bin/"; cp -R "$root/templates" "$src87/src/templates"
-( cd "$src87" && git init -q . )
-printf 'outside bin\n' > "$lo87/oldbin/keep"; mkdir -p "$src87/.harness"; ln -s "$lo87/oldbin" "$src87/.harness/bin"
-"$src87/src/bin/harness" install --target "$src87" > "$work/u87-23.out" 2> "$work/u87-23.err"; check "install on a source tree with a linked .harness/bin" "$?" "0"
-check "the directory behind the old copy's link keeps its file" "$(cat "$lo87/oldbin/keep" 2>/dev/null)" "outside bin"
-[ -e "$src87/.harness/bin" ] && bad "the old copy's link was not cleared" || ok
 cat "$work"/u87-*.out "$work"/u87-*.err > "$work/u87-all.log"; no_hangul "$work/u87-all.log" "user file refusal output"
 
 echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
@@ -3890,6 +3840,70 @@ same101 "$out101/notes.md" "$work/p101-notes.copy" "the adopt changed the file b
 # 하네스 루트 자신과 그 위의 링크는 보지 않는다
 ln -sfn "$m" "$work/rootlink101"
 "$root/bin/harness" render --target "$work/rootlink101" > "$work/p101-9.out" 2> "$work/p101-9.err"; check "render through a link to the harness root" "$?" "0"
+[ -e "$n/.harness" ] && bad "the install refused over script/project still wrote .harness/" || ok
+
+# install 의 사본 교체 — .harness 가 바깥 디렉터리 링크면 새 리포에서도 설치된 리포에서도 멈춘다
+hl="$work/hlink101"; rm -rf "$hl"; mkdir -p "$hl" "$out101/pin/keep-dir"; ( cd "$hl" && git init -q . )
+printf 'outside\n' > "$out101/pin/keep.txt"; printf 'nested\n' > "$out101/pin/keep-dir/nested.txt"
+ln -s "$out101/pin" "$hl/.harness"
+"$root/bin/harness" install --target "$hl" > "$work/p101-10.out" 2> "$work/p101-10.err"; check "install on a new repo with a linked .harness" "$?" "2"
+has "$work/p101-10.err" "  --> .harness" "the refusal does not name the linked .harness"
+check "the link target's file is kept" "$(cat "$out101/pin/keep.txt")" "outside"
+check "the link target's nested file is kept" "$(cat "$out101/pin/keep-dir/nested.txt")" "nested"
+check "nothing was written behind the link" "$(ls "$out101/pin" | tr '\n' ' ')" "keep-dir keep.txt "
+[ -e "$HARNESS_HOME/hlink101/project.json" ] && bad "the refused install registered the project" || ok
+cp "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy"
+cp -R "$m/.harness" "$out101/pinned"; mv "$m/.harness" "$m/.harness.real"; ln -s "$out101/pinned" "$m/.harness"
+"$root/bin/harness" install --target "$m" > "$work/p101-11.out" 2> "$work/p101-11.err"; check "reinstall with a linked .harness" "$?" "2"
+[ -f "$out101/pinned/bin/harness" ] && [ -f "$out101/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
+same101 "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy" "the refused reinstall changed the registry"
+rm "$m/.harness"; mv "$m/.harness.real" "$m/.harness"
+# 소스 리포의 옛 사본 정리 — .harness/bin 이 바깥 디렉터리 링크면 멈춘다
+s101="$work/source101"; rm -rf "$s101"; mkdir -p "$s101/src/bin" "$out101/oldbin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s101/src/bin/"; cp -R "$root/templates" "$s101/src/templates"
+( cd "$s101" && git init -q . )
+printf 'outside bin\n' > "$out101/oldbin/keep"; mkdir -p "$s101/.harness"; ln -s "$out101/oldbin" "$s101/.harness/bin"
+"$s101/src/bin/harness" install --target "$s101" > "$work/p101-12.out" 2> "$work/p101-12.err"; check "install on a source tree with a linked .harness/bin" "$?" "2"
+has "$work/p101-12.err" "  --> .harness/bin" "the refusal does not name the linked old copy"
+check "the directory behind the old copy's link is kept" "$(ls "$out101/oldbin" | tr '\n' ' ')" "keep "
+[ -L "$s101/.harness/bin" ] && ok || bad "the refused install removed the link"
+# 설정 씨앗 — 대상 없는 harness.toml 링크를 따라 쓰지 않는다
+sd="$work/seed101"; rm -rf "$sd"; mkdir -p "$sd"; ( cd "$sd" && git init -q . )
+ln -s "$out101/seeded.toml" "$sd/harness.toml"
+"$root/bin/harness" install --target "$sd" > "$work/p101-13.out" 2> "$work/p101-13.err"; check "install over a dangling harness.toml link" "$?" "2"
+has "$work/p101-13.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
+has "$work/p101-13.err" "  --> harness.toml" "the refusal does not name harness.toml"
+[ -e "$out101/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
+# uninstall — 지울 경로의 부모가 링크면 아무것도 지우지 않는다
+mv "$m/docs/adr" "$out101/adr"; ln -s "$out101/adr" "$m/docs/adr"
+cp "$m/.harness/managed" "$work/p101-m.mf"; cp "$m/.harness/generated" "$work/p101-m.gen"
+"$root/bin/harness" uninstall --target "$m" > "$work/p101-14.out" 2> "$work/p101-14.err"; check "uninstall through a link" "$?" "2"
+has "$work/p101-14.err" "  --> docs/adr" "the uninstall refusal does not name the link"
+has "$work/p101-14.err" "nothing was changed" "the uninstall refusal does not say nothing was changed"
+has "$work/p101-14.err" "        harness uninstall" "the uninstall refusal does not name the command"
+same101 "$out101/adr/README.md" "$work/p101-adr.copy" "uninstall changed the README behind the link"
+same101 "$m/.harness/managed" "$work/p101-m.mf" "the refused uninstall changed the managed manifest"
+same101 "$m/.harness/generated" "$work/p101-m.gen" "the refused uninstall changed the generated manifest"
+missing101=$(cd "$m" && { cat .harness/generated; sed -E 's/^[0-9a-f]{64}  //' .harness/managed; } | while read -r f; do [ -e "$f" ] || echo "$f"; done)
+check "every manifest path is still there" "$missing101" ""
+rm "$m/docs/adr"; mv "$out101/adr" "$m/docs/adr"
+# uninstall --purge — 소유 파일의 부모가 링크면 확인 목록보다 먼저 멈춘다
+cp -R "$m/.ai/project" "$out101/purge-project"; rm -rf "$m/.ai/project"; ln -s "$out101/purge-project" "$m/.ai/project"
+"$root/bin/harness" uninstall --target "$m" --purge --yes > "$work/p101-15.out" 2> "$work/p101-15.err"; check "uninstall --purge --yes through a linked owned directory" "$?" "2"
+[ -f "$out101/purge-project/scope.md" ] && ok || bad "--purge removed an owned file behind the link"
+"$root/bin/harness" uninstall --target "$m" --purge < /dev/null > "$work/p101-16.out" 2> "$work/p101-16.err"; check "uninstall --purge without --yes through a link" "$?" "2"
+has "$work/p101-16.err" "  --> .ai/project" "the purge refusal does not name the link"
+hasnt "$work/p101-16.out" "purge target:" "the purge listed what it would remove before refusing the link"
+[ -f "$out101/purge-project/scope.md" ] && [ -d "$m/.harness" ] && ok || bad "the refused purge removed something"
+rm "$m/.ai/project"; cp -R "$out101/purge-project" "$m/.ai/project"
+# 링크가 없으면 uninstall 이 하네스 것을 지운다
+cp "$m/.harness/generated" "$work/p101-final.gen"
+"$root/bin/harness" uninstall --target "$m" > "$work/p101-17.out" 2> "$work/p101-17.err"; check "uninstall without links" "$?" "0"
+left101=$(cd "$m" && while read -r f; do [ -e "$f" ] && echo "$f"; done < "$work/p101-final.gen")
+check "the generated files are gone" "$left101" ""
+[ -e "$m/.harness" ] && bad "uninstall left .harness/" || ok
+grep -c 'refuse_link\|linked_component' "$root/bin/harness" > "$work/p101-names" || true
+check "no per-point link check is left in the CLI" "$(cat "$work/p101-names")" "0"
 cat "$work"/p101-*.out "$work"/p101-*.err > "$work/p101-all.log"; no_hangul "$work/p101-all.log" "safe path output"
 
 echo

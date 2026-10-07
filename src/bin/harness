@@ -1338,27 +1338,6 @@ def plan(cfg: dict, target: Path = None, at: Path = None) -> list:
     return sorted(out)
 
 
-def linked_component(root: Path, rel: str, last: bool = True):
-    """root 아래 rel 의 경로 성분 가운데 심볼릭 링크인 첫 것(root 기준 경로). 없으면 None.
-
-    root 자신과 그 위는 보지 않는다. last 가 거짓이면 마지막 성분(파일 자체)은 빼고 부모만 본다.
-    """
-    parts = rel.split("/")
-    for i in range(1, len(parts) + (1 if last else 0)):
-        head = "/".join(parts[:i])
-        if (root / head).is_symlink():
-            return head
-    return None
-
-
-def refuse_link(root: Path, rel: str, verb: str = "write"):
-    """쓰기·지우기·옮기기 직전의 방어 — 링크를 따라 리포 밖을 바꾸지 않는다. 사전 판정이 먼저 막고, 이것은 그 뒤에 바뀐 경우다."""
-    hit = linked_component(root, rel)
-    if hit:
-        die("error: refusing to %s through a symbolic link\n  --> %s\n\n"
-            "help: replace the link with a regular file or directory, then run the command again" % (verb, hit))
-
-
 # 하네스가 대상 리포를 바꾸는 경로의 규칙. 하네스 루트 기준 상대 경로이고, 성분은 `docs.protected` 의
 # 성분(PROTECTED_PATH)과 같은 문자 집합이며, `.` · `..` · 빈 성분이 없고, 루트 아래의 성분에 심볼릭 링크가 없다.
 PATH_COMPONENT = re.compile(r"[\w.-]+")
@@ -1860,9 +1839,9 @@ def seed_config(target: Path):
     dst = target / "harness.toml"
     if dst.exists():
         return
-    refuse_link(target, "harness.toml")   # 대상이 없는 링크 — 따라 쓰면 링크가 가리키는 곳에 설정이 생긴다
     text = DEFAULT_CONFIG.read_text(encoding="utf-8")
-    dst.write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
+    # 대상이 없는 링크면 공용 함수가 멈춘다 — 따라 쓰면 링크가 가리키는 곳에 설정이 생긴다
+    guarded_path(target, "harness.toml", "write").write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
                    encoding="utf-8")
     print("created %s — review the values, then run `harness render`" % dst)
 
@@ -2012,48 +1991,54 @@ def cmd_install(cfg, target, args):
     return rc
 
 
+PINNED_PARTS = (".harness/bin", ".harness/templates", ".harness/VERSION")
+
+
+def clear_dir(d: Path, keep=()):
+    """d 안의 항목을 걷는다. 안의 링크는 링크 자신만 지우고 따라가지 않는다. keep 은 남길 일반 파일 이름이다."""
+    for old in d.iterdir():
+        if old.name in keep and old.is_file() and not old.is_symlink():
+            continue
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
+
+
 def install_registered(cfg, target: Path, args=None) -> bool:
-    """고정 사본을 깔고 등록한다. 등록이 거부되면 아무것도 바꾸지 않고 False."""
-    dst = target / ".harness"
+    """고정 사본을 깔고 등록한다. 등록이 거부되거나 사전 판정이 멈추면 아무것도 바꾸지 않고 False."""
+    pin = PINNED.rstrip("/")
     # 아무것도 바꾸기 전에 등록을 가른다 — 거부되면 대상 리포와 등록부가 그대로여야 한다.
     claim = refuse_taken(cfg, target)
     if claim is None:
         return False
     # 사본을 바꾸기 전에 가른다. 판정은 설치하려는 이 CLI 의 템플릿과 설정으로 한다.
-    if refuse_changes(cfg, target, args):
+    if refuse_changes(cfg, target, args, {rel: "remove" for rel in (pin,) + PINNED_PARTS}):
         return False
     if source_tree(target):
         # 소스 리포는 자기 자신을 고정하지 않는다 — 사본을 두면 템플릿을 고칠 때마다 두 곳이 어긋나고,
         # 생성물이 작업 트리가 아니라 지난 사본을 따라간다. 훅과 검증 스크립트는 `.harness/bin/harness`
         # 가 없으면 `src/bin/harness` 를 쓴다. 옛 방식으로 깔린 사본이 있으면 걷어낸다(매니페스트는 남긴다).
-        refuse_link(target, PINNED.rstrip("/"), "remove")
-        for stale in (dst / "bin", dst / "templates", dst / "VERSION"):
-            if stale.is_symlink():
-                stale.unlink()   # 링크 자체만 걷는다 — 따라가 지우지 않는다
-            elif stale.is_dir():
-                shutil.rmtree(stale)
-            elif stale.is_file():
+        for rel in PINNED_PARTS:
+            stale = guarded_path(target, rel, "remove")
+            if stale.is_dir():
+                shutil.rmtree(stale)   # 안의 링크는 링크 자신만 지운다
+            elif os.path.lexists(stale):
                 stale.unlink()
         print("install: %s is the harness source tree — it runs its own src/bin/harness, nothing to vendor" % target)
         register(cfg, target, claim)
         return True
     # 사본만 갈아 끼운다. 매니페스트가 사라지면 이전에 깐 하네스 파일이 전부 프로젝트 것으로 보인다.
-    keep = {Path(MANIFEST).name, Path(MANIFEST_MANAGED).name}
-    refuse_link(target, PINNED.rstrip("/"), "remove")
+    dst = guarded_path(target, pin, "remove")
     if dst.is_dir():
-        for old in dst.iterdir():
-            if old.name in keep and old.is_file():
-                continue
-            if old.is_dir() and not old.is_symlink():
-                shutil.rmtree(old)
-            else:
-                old.unlink()
-    (dst / "bin").mkdir(parents=True)
-    shutil.copy2(HERE / "harness", dst / "bin" / "harness")
-    shutil.copy2(HERE / "harness_metrics.py", dst / "bin" / "harness_metrics.py")
-    shutil.copytree(TEMPLATES, dst / "templates", ignore=shutil.ignore_patterns("__pycache__"))
+        clear_dir(dst, keep={Path(MANIFEST).name, Path(MANIFEST_MANAGED).name})
+    make_dirs(target, ".harness/bin")
+    shutil.copy2(HERE / "harness", guarded_path(target, ".harness/bin/harness", "write"))
+    shutil.copy2(HERE / "harness_metrics.py", guarded_path(target, ".harness/bin/harness_metrics.py", "write"))
+    shutil.copytree(TEMPLATES, guarded_path(target, ".harness/templates", "create"),
+                    ignore=shutil.ignore_patterns("__pycache__"))
     version = harness_version()
-    (dst / "VERSION").write_text(version + "\n", encoding="utf-8")
+    guarded_path(target, ".harness/VERSION", "write").write_text(version + "\n", encoding="utf-8")
     # 사본을 깐 직후의 해시를 기록한다. 관리 파일 줄은 지난 render 의 것을 그대로 둔다.
     hashes = {rel: h for rel, h in manifest_entries(target) if not rel.startswith(PINNED)}
     hashes.update((PINNED + rel, sha256_of(dst / rel)) for rel in pinned_files(dst))
@@ -2217,18 +2202,11 @@ def cmd_uninstall(_cfg, target, args):
         die("error: no harness manifest at %s\n\n  Nothing was installed here, or it has already been removed." % MANIFEST)
 
     owned = owned_files(target)
-    # 지우기 전에 링크를 본다 — 링크를 따라 지우면 리포 밖의 파일이 사라진다. 하나라도 있으면 아무것도 지우지 않는다
-    doomed = [r for r in set(gen) | set(man) if not r.startswith(PINNED)] + (owned if args.purge else [])
-    links = sorted({h for h in (linked_component(target, r) for r in doomed) if h})
-    if (target / PINNED.rstrip("/")).is_symlink():
-        links.append(PINNED.rstrip("/"))
-    if links:
-        print("error: %d path(s) the harness would remove are symbolic links or lie under one" % len(links), file=sys.stderr)
-        for h in links:
-            print("  --> %s" % h, file=sys.stderr)
-        print("nothing was removed\n\n"
-              "help: replace the links with regular files or directories, then run `harness uninstall` again",
-              file=sys.stderr)
+    # 무엇이든 지우기 전에 지울 경로 전부를 경로 규칙으로 본다 — 링크를 따라 지우면 리포 밖의 파일이 사라진다
+    doomed = {rel: "remove" for rel in set(gen) | set(man) | {PINNED.rstrip("/")}}
+    if args.purge:
+        doomed.update((rel, "remove") for rel in owned)
+    if refuse_unsafe_paths(target, doomed, "uninstall"):
         return 2
     if args.purge:
         rc = confirm_purge(target, sorted(r for r in set(gen) | set(man) if not r.startswith(PINNED)), owned, args)
@@ -2241,21 +2219,22 @@ def cmd_uninstall(_cfg, target, args):
     for rel in sorted(set(gen) | set(man)):
         if rel.startswith(PINNED):
             continue   # 고정 사본은 아래에서 `.harness/` 째로 걷는다
-        f = target / rel
+        f = guarded_path(target, rel, "remove")
         if f.is_file():
             f.unlink()
             removed.append(rel)
 
     if args.purge:
         for rel in owned:
-            f = target / rel
+            f = guarded_path(target, rel, "remove")
             if f.is_file():
                 f.unlink()
                 removed.append(rel)
     else:
         kept = owned
 
-    shutil.rmtree(target / ".harness", ignore_errors=True)
+    # 안의 링크는 링크 자신만 지운다 — rmtree 는 디렉터리 링크를 따라 들어가지 않는다
+    shutil.rmtree(guarded_path(target, PINNED.rstrip("/"), "remove"), ignore_errors=True)
     unregister(target)
 
     # 훅 설정이 사라진 디렉터리를 가리키면 커밋할 때마다 git 이 실패한다.
@@ -2263,10 +2242,14 @@ def cmd_uninstall(_cfg, target, args):
         print("  unset core.hooksPath (it pointed at a directory that is now gone)")
 
     # 하네스가 만든 빈 디렉터리를 정리한다. 작업 산출물이 남아 있으면 그대로 둔다.
-    for d in sorted((target / p).parent for p in removed):
-        while d != target and d.is_dir() and not any(d.iterdir()):
+    for rel_dir in sorted({rel.rsplit("/", 1)[0] for rel in removed if "/" in rel}):
+        parts = rel_dir.split("/")
+        while parts:
+            d = guarded_path(target, "/".join(parts), "remove")
+            if not d.is_dir() or any(d.iterdir()):
+                break
             d.rmdir()
-            d = d.parent
+            parts.pop()
 
     print("uninstall: removed %d files" % len(removed))
     if kept:
