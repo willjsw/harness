@@ -123,11 +123,13 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 
 | 명령 | 하는 일 |
 |---|---|
-| `harness install` | 하네스를 `.harness/` 에 넣고 렌더까지 |
+| `harness install [--create] [--git-init]` | 하네스를 `.harness/` 에 넣고 렌더까지. `--create` 면 없는 대상 디렉터리를 만들고, `--git-init` 이면 `.git` 이 없는 대상에서 git 을 시작한다. 같은 이름이 다른 경로에 등록돼 있으면 아무것도 만들지 않고 멈춘다 |
 | `harness render` | 설정과 프로젝트 사실 → 생성 파일 |
 | `harness check` | 생성 파일이 설정과, 관리 파일이 매니페스트(`.harness/managed`)와 일치하는지. pre-commit 이 `--staged` 로 부른다 |
 | `harness doctor [--remote] [--json]` | 쓸 준비가 됐는지 — 설정·생성물·관리 파일 변조·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅. `--remote` 면 origin·base 브랜치·원격 기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너까지 읽기 전용으로 점검한다. `--json` 이면 결과를 JSON 으로 낸다 |
 | `harness set <절.키> <값> ...` | 설정 값을 (여러 쌍이면 함께) 바꾸고 렌더까지. 성립하지 않으면 되돌린다 |
+| `harness write-doc <이름> -` | 표준 입력의 본문을 `.ai/project/` 문서나 역할·절차 메모(`roles/<역할>` · `workflows/<절차>`)에 쓰고 렌더까지. 렌더가 실패하면 문서를 되돌린다. UI 가 쓰는 명령이고, 에이전트가 보호 문서를 대상으로 부르면 가드가 막는다 |
+| `harness fix hooks\|verify` | Doctor 조치 — `hooks` 는 install 과 같은 판정으로 git 훅 경로를 켜고, `verify` 는 검증을 다시 돌린다 |
 | `harness steps [<절차> <JSON>]` | 절차의 단계를 JSON 으로 보거나, 한 절차의 단계를 통째로 바꾸고 렌더까지. `--dry-run` 이면 검사만 |
 | `harness checks [<JSON>]` | 검증 검사(`[verify]`)를 JSON 으로 보거나 통째로 바꾸고 렌더까지 |
 | `harness run <워크플로> <이슈> [--worktree]` | 설정된 오케스트레이터로 절차를 시작한다. `--worktree` 면 원격 통합 브랜치에서 이슈 번호 이름의 worktree(`worktree.dir` 아래)를 만들거나 남은 것을 열어 그 안에서 띄우고, 끝나면 미커밋 변경·미push 커밋이 없을 때 지운다 |
@@ -135,7 +137,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness stop-server` | `start-server` 가 띄운 웹 UI 를 멈춘다. 기록(`ui.pid`)이 살아 있는 프로세스와 맞을 때만 멈추고, 기록 없이 포트를 쓰는 프로세스는 건드리지 않는다 |
 | `harness server-status` | 웹 UI 가 떠서 응답하는지 한 줄로. 떠 있으면 종료 코드 0, 아니면 1 |
 | `harness tools [--sync]` | 이 기기에 설치된 에이전트 CLI·결정 기록 도구. 결과는 `~/.harness/tools.json` |
-| `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). UI 가 선택지를 그린다 |
+| `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). 문서·원형·절차 문서 경로, 검증 스크립트·훅 경로, 설정 주석, 기본 보호 문서 목록도 낸다. UI 는 선택지와 경로·목록을 이것에서 받는다 |
 | `harness status [--remote]` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git. `--remote` 를 받아 doctor 에 넘긴다 |
 | `harness uninstall` | 하네스가 깐 것만 지운다. `--purge` 면 소유 파일과 설정도 (확인을 받는다) |
 | `harness forge-setup` | 설정의 이슈 라벨(`issues.labels`)을 트래커에 만든다. **원격 쓰기**이고 이미 있는 라벨은 그대로 둔다. 사람이 한 번 부른다 |
@@ -204,13 +206,16 @@ UI 자체를 고칠 때는 `harness start-server --dev` 가 지금 터미널에�
 | 화면 | 무엇을 | 쓰기 경로 |
 |---|---|---|
 | Harness | `harness.toml` 의 한 줄짜리 값. 역할·절차·명령·검증은 각자의 화면이 다룬다 | `harness set` |
-| Project Settings | `.ai/project/` — 항목별 50자 입력 → AI Completion → 검토 → 저장. 명령 탭은 빌드·테스트 명령과 검증 검사 | 파일 쓰기 후 `harness render` · `harness set` · `harness checks` |
-| Workflows | 단계 블럭을 끌어 순서 바꾸기·끼우기·빼기, 고른 블럭 하나를 우측 패널에서 편집 | `harness steps` (편집 중에는 `--dry-run` 으로 검사만) · `harness set` |
-| Agents | 역할 카드를 넘겨 보고, 역할 계약(읽기 전용)과 이 프로젝트의 지시(`.ai/project/roles/<역할>.md`)를 본다·고친다 | 파일 쓰기 후 `harness render` · `harness set` |
+| Project Settings | `.ai/project/` — 항목별 50자 입력 → AI Completion → 검토 → 저장. 명령 탭은 빌드·테스트 명령과 검증 검사 | `harness write-doc` · `harness set` · `harness checks` |
+| Workflows | 단계 블럭을 끌어 순서 바꾸기·끼우기·빼기, 고른 블럭 하나를 우측 패널에서 편집. 절차 끝에 붙는 이 프로젝트의 지시를 고친다 | `harness steps` (편집 중에는 `--dry-run` 으로 검사만) · `harness set` · `harness write-doc` |
+| Agents | 역할 카드를 넘겨 보고, 역할 계약(읽기 전용)과 이 프로젝트의 지시(`.ai/project/roles/<역할>.md`)를 본다·고친다 | `harness write-doc` · `harness set` |
 | Metrics | 토큰·실행 시간·상태·단계별 사용량·실패 로그. 열 때마다 새 대화 기록을 가져온다 | `harness metrics import` (읽기만) |
-| Doctor | `doctor` 결과를 절별로, 막힌 것부터. 정해 둔 조치는 ▷ 로 바로 실행. 원격 점검은 `원격까지 점검` 을 누를 때만 돈다 — 홈은 원격을 점검하지 않는다 | `harness status` · `harness status --remote` · 조치별 명령 |
+| Doctor | `doctor` 결과를 절별로, 막힌 것부터. 정해 둔 조치는 ▷ 로 바로 실행. 원격 점검은 `원격까지 점검` 을 누를 때만 돈다 — 홈은 원격을 점검하지 않는다 | `harness status` · `harness status --remote` · `harness fix` · `harness render` · `harness install` |
 
-UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌림·렌더는 CLI 가 한다.
+UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌림·렌더는 CLI 가 한다. **UI 는 파일을 직접 쓰지 않는다.**
+문서·메모 저장, Doctor 조치, 새 프로젝트 만들기(`harness install --create`)도 CLI 명령이고, 읽는 파일 경로는
+`harness schema` 에서 받는다. 프로젝트에 고정된 사본이 이 명령을 모르는 옛 버전이면 그 화면은 편집 대신
+재설치(`harness install`)를 안내한다.
 
 **문서는 읽기가 기본이다.** 워크플로 노드의 본문과 프로젝트 문서는 마크다운으로 그려 보이고,
 눈·연필 아이콘으로 편집 모드를 켜야 원문(`#`·`-` 등)을 고칠 수 있다. 노드에서 고치는 것은 덧붙인 지시(`text`)뿐이다 —
