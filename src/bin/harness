@@ -126,6 +126,9 @@ INCLUDE_PATH = re.compile(r"(?!/)(?!(.*/)?\.\.(/|$))[^\s*?\[]+")
 # Claude Code 권한. 허용 목록 자체는 settings_json() 이 만든다 — 여기는 프로젝트가 고르는 값뿐이다.
 PERMISSIONS_DEFAULTS = {"allow_push": False}
 
+# forge 가 읽는 이슈·리뷰 요청 템플릿을 만들지. 끄면 리포가 자기 템플릿(사내 표준 등)을 그대로 쓴다.
+FORGE_DEFAULTS = {"templates": True}
+
 # 준비 점검. remote_timeout 은 원격 점검의 호출 하나에 주는 시간(초)이다 — 넘으면 그 항목은 확인하지 못한 것이다.
 DOCTOR_DEFAULTS = {"remote_timeout": 30}
 # remote_timeout 의 상한(초). 원격 점검은 호출을 순차로 하므로 이보다 길면 한 번의 점검이 끝나지 않는 것처럼 보인다.
@@ -303,6 +306,8 @@ def normalize(cfg: dict):
         cfg.setdefault("permissions", {}).setdefault(k, x)
     for k, x in DOCTOR_DEFAULTS.items():   # 준비 점검 — 옛 설정에는 없다
         cfg.setdefault("doctor", {}).setdefault(k, x)
+    for k, x in FORGE_DEFAULTS.items():   # forge 템플릿 생성 여부 — 옛 설정에는 없다
+        cfg["forge"].setdefault(k, x)
     b = cfg["branches"]
     if b["base"] not in b["protected"]:
         b["protected"] = b["protected"] + [b["base"]]
@@ -456,6 +461,9 @@ def validate(cfg: dict):
             "        harness set forge.tracker jira\n"
             "        harness set forge.review_host <gitlab|github>"
             % cfg["forge"]["review_host"])
+
+    if not isinstance(cfg["forge"]["templates"], bool):
+        die("error: forge.templates must be true or false (got %r)" % (cfg["forge"]["templates"],))
 
     if cfg["harness"]["orchestrator"] not in ORCHESTRATORS:
         die("error: harness.orchestrator must be one of %s (got %r)"
@@ -1247,8 +1255,9 @@ def forge_templates(cfg: dict, at: Path = None) -> list:
     """forge 가 읽는 이슈·리뷰 요청 템플릿. 본문은 `.ai/templates/` 양식 그대로이고 forge 가 읽는 머리·꼬리만 더한다.
 
     forge 는 리포 루트의 템플릿만 읽으므로, 하네스 루트가 작업 트리 최상위가 아닌 서브프로젝트면 만들지 않는다.
+    `forge.templates` 가 거짓이어도 만들지 않는다 — 지난 렌더가 만든 것은 정리가 지운다.
     """
-    if at is not None and repo_prefix(at):
+    if not cfg["forge"]["templates"] or (at is not None and repo_prefix(at)):
         return []
     forms = TEMPLATES / "managed" / ".ai" / "templates"
     labels = cfg["issues"]["labels"]
