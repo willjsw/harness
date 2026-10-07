@@ -3789,6 +3789,7 @@ has "$work/p101-1.err" "go through a symbolic link" "the refusal does not say th
 has "$work/p101-1.err" "  --> script/review-mr.sh" "the refusal does not name the linked managed file"
 has "$work/p101-1.err" "nothing was changed" "the refusal does not say nothing was changed"
 has "$work/p101-1.err" "        harness render" "the refusal does not name the command to run again"
+hasnt "$work/p101-1.err" "not safe paths" "a linked manifest path was reported as a bad manifest line"
 same101 "$out101/file.sh" "$work/p101-file.copy" "render changed the file behind the link"
 same101 "$m/.harness/managed" "$work/p101-m.mf" "the refused render rewrote the managed manifest"
 same101 "$m/.harness/generated" "$work/p101-m.gen" "the refused render rewrote the generated manifest"
@@ -3904,6 +3905,73 @@ check "the generated files are gone" "$left101" ""
 [ -e "$m/.harness" ] && bad "uninstall left .harness/" || ok
 grep -c 'refuse_link\|linked_component' "$root/bin/harness" > "$work/p101-names" || true
 check "no per-point link check is left in the CLI" "$(cat "$work/p101-names")" "0"
+
+# 매니페스트는 신뢰하지 않는 입력이다 — 어긋난 줄이 하나라도 있으면 바꾸는 명령은 아무것도 바꾸지 않는다
+mf="$work/mf101/repo"; rm -rf "$work/mf101"; mkdir -p "$mf"; ( cd "$mf" && git init -q . )
+"$root/bin/harness" install --target "$mf" >/dev/null 2>&1 || bad "could not install the manifest repo"
+printf 'victim\n' > "$work/mf101/victim.md"; cp "$work/mf101/victim.md" "$work/p101-victim.copy"
+printf 'outside file\n' > "$out101/abs.md"; cp "$out101/abs.md" "$work/p101-abs.copy"
+cp "$mf/.harness/generated" "$work/p101-mf.gen"; cp "$mf/.harness/managed" "$work/p101-mf.mf"; cp "$mf/harness.toml" "$work/p101-mf.toml"
+restore101() { cp "$work/p101-mf.gen" "$mf/.harness/generated"; cp "$work/p101-mf.mf" "$mf/.harness/managed"; }
+# 상위 경로 줄 — 리포 밖 파일을 지우지 않고, 고친 관리 · 생성 파일도 되돌리지 않는다
+printf '\n# edited\n' >> "$mf/script/review-mr.sh"; printf '\nedited\n' >> "$mf/AGENTS.md"
+cp "$mf/script/review-mr.sh" "$work/p101-mf.review"; cp "$mf/AGENTS.md" "$work/p101-mf.agents"
+printf '../victim.md\n' >> "$mf/.harness/generated"; n101=$(wc -l < "$mf/.harness/generated" | tr -d ' ')
+cp "$mf/.harness/generated" "$work/p101-mf.gen-bad"
+"$root/bin/harness" render --target "$mf" > "$work/p101-20.out" 2> "$work/p101-20.err"; check "render with a .. manifest line" "$?" "2"
+has "$work/p101-20.err" "  --> .harness/generated:$n101 (has a .. component)" "the refusal does not name the manifest line and its reason"
+has "$work/p101-20.err" "the harness manifest has 1 line(s) that are not safe paths under the harness root" "the refusal does not count the bad lines"
+has "$work/p101-20.err" "nothing was changed" "the refusal does not say nothing was changed"
+same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "render changed the file outside the harness root"
+same101 "$mf/.harness/generated" "$work/p101-mf.gen-bad" "the refused render rewrote the generated manifest"
+same101 "$mf/.harness/managed" "$work/p101-mf.mf" "the refused render rewrote the managed manifest"
+same101 "$mf/script/review-mr.sh" "$work/p101-mf.review" "the refused render put a managed file back"
+same101 "$mf/AGENTS.md" "$work/p101-mf.agents" "the refused render regenerated a file"
+# 설정을 바꾸는 명령은 설정을 쓰기 전에 멈춘다
+"$root/bin/harness" set --target "$mf" branches.base trunk > "$work/p101-21.out" 2> "$work/p101-21.err"; check "set with a bad manifest line" "$?" "2"
+"$root/bin/harness" steps --target "$mf" ship '{"title":"ship it","steps":[{"id":"a","type":"gate","title":"t"}]}' \
+  > "$work/p101-22.out" 2> "$work/p101-22.err"; check "steps with a bad manifest line" "$?" "2"
+"$root/bin/harness" checks --target "$mf" '[{"name":"lint","run":"true"}]' > "$work/p101-23.out" 2> "$work/p101-23.err"; check "checks with a bad manifest line" "$?" "2"
+for i in 21 22 23; do has "$work/p101-$i.err" "not safe paths under the harness root" "command $i did not name the bad manifest"; done
+same101 "$mf/harness.toml" "$work/p101-mf.toml" "a config command changed the config over a bad manifest"
+same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "a config command changed the file outside the harness root"
+restore101
+# 절대 경로 줄 — render · install · uninstall 모두 멈추고, 줄의 내용을 출력하지 않는다
+printf '%s  %s\n' "$(printf x | shasum -a 256 | cut -c1-64)" "$out101/abs.md" >> "$mf/.harness/managed"
+for c in render install uninstall; do
+  "$root/bin/harness" $c --target "$mf" > "$work/p101-24-$c.out" 2> "$work/p101-24-$c.err"; check "$c with an absolute manifest line" "$?" "2"
+  has "$work/p101-24-$c.err" "(an absolute path)" "$c does not give the absolute path reason"
+  cat "$work/p101-24-$c.out" "$work/p101-24-$c.err" | grep -qF "$out101/abs.md" && bad "$c printed the bad line's path" || ok
+done
+same101 "$out101/abs.md" "$work/p101-abs.copy" "a command changed the file the bad line names"
+[ -f "$mf/.harness/bin/harness" ] && [ -f "$mf/CLAUDE.md" ] && [ -f "$mf/script/review-mr.sh" ] && ok || bad "the refused uninstall removed harness files"
+restore101
+# 형식이 어긋난 줄
+for l in 'script/my file.sh' 'script//x.sh' './CLAUDE.md' 'script/'; do
+  printf '%s\n' "$l" >> "$mf/.harness/generated"
+  "$root/bin/harness" render --target "$mf" > "$work/p101-25.out" 2> "$work/p101-25.err"; check "render with the manifest line '$l'" "$?" "2"
+  has "$work/p101-25.err" "(not a path)" "the line '$l' is not reported as not a path"
+  cat "$work/p101-25.out" "$work/p101-25.err" >> "$work/p101-25-all.log"
+  restore101
+done
+# 병합 충돌 표지 — 표지 줄을 지우면 install 이 다시 쓴다
+printf '<<<<<<< HEAD\n=======\n>>>>>>> other\n' >> "$mf/.harness/managed"
+"$root/bin/harness" render --target "$mf" > "$work/p101-26.out" 2> "$work/p101-26.err"; check "render with conflict markers" "$?" "2"
+check "every marker line is reported" "$(grep -c '(a merge conflict marker)$' "$work/p101-26.err")" "3"
+has "$work/p101-26.err" "a merge left conflict markers in it" "the help does not explain the conflict markers"
+has "$work/p101-26.err" "        harness install" "the help does not name harness install"
+grep -vE '^(<<<<<<< |=======$|>>>>>>> )' "$mf/.harness/managed" > "$work/p101-unmarked"; cp "$work/p101-unmarked" "$mf/.harness/managed"
+same101 "$mf/.harness/managed" "$work/p101-mf.mf" "the marker lines were not removed"
+"$root/bin/harness" install --target "$mf" > "$work/p101-27.out" 2> "$work/p101-27.err"; check "install once the marker lines are gone" "$?" "0"
+# CR 줄 끝은 받는다
+for f in generated managed; do python3 -c 'import sys; p = sys.argv[1]; d = open(p, "rb").read(); open(p, "wb").write(d.replace(b"\n", b"\r\n"))' "$mf/.harness/$f"; done
+"$root/bin/harness" render --target "$mf" > "$work/p101-28.out" 2> "$work/p101-28.err"; check "render over CRLF manifests" "$?" "0"
+# uninstall 은 매니페스트가 없다고 판정하기 전에 본다
+rm "$mf/.harness/generated"; printf '../victim.md\n' > "$mf/.harness/managed"
+"$root/bin/harness" uninstall --target "$mf" > "$work/p101-29.out" 2> "$work/p101-29.err"; check "uninstall over a manifest of bad lines only" "$?" "2"
+has "$work/p101-29.err" "not safe paths under the harness root" "uninstall did not name the bad manifest"
+hasnt "$work/p101-29.err" "no harness manifest" "uninstall took a bad manifest for none"
+same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "uninstall changed the file outside the harness root"
 cat "$work"/p101-*.out "$work"/p101-*.err > "$work/p101-all.log"; no_hangul "$work/p101-all.log" "safe path output"
 
 echo
