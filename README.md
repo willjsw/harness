@@ -33,12 +33,21 @@ brew upgrade --fetch-HEAD harness     # 하네스 리포 main 의 최신 커밋�
 harness version
 ```
 
+포뮬러는 이 리포의 `main` 을 설치한다. `develop` 의 변경은 `develop → main` 릴리스 PR 을 **merge commit 으로**
+머지해야 전역 설치에 닿는다(squash 로 합치면 다음 릴리스 PR 에 이미 반영된 변경이 다시 섞인다). `main` 에 push 되면
+CI 가 검증을 통과한 커밋을 `v<번호>+<커밋 7자리>` 태그의 GitHub Release 로 낸다.
+
 `--HEAD` 설치는 버전 번호가 없어 `brew upgrade` 만으로는 새 커밋을 보지 못한다 —
 `--fetch-HEAD` 가 있어야 원격 main 을 다시 받는다. UI 의 `node_modules` 는 새 설치에 없으므로
 다음 `harness start-server` 가 `npm install` 을 한 번 다시 한다.
 
 **전역 CLI 를 올려도 프로젝트는 따라오지 않는다**(아래 "시작하기" 참고). 프로젝트의 사본까지
 올리려면 그 리포에서 다시 설치하고 생성물 변경을 커밋한다.
+
+버전은 번호에 소스 커밋을 붙인 `0.1.0+d5d3b93` 형식이다. Homebrew 설치본은 설치 영수증에서, 소스
+체크아웃은 git 에서 커밋을 읽는다(`src/` 에 커밋하지 않은 변경이 있으면 `-dirty`). `install` 이 이 값을
+`.harness/VERSION` 에 남기므로, 프로젝트가 고정한 커밋이 전역과 다르면 그 리포에서 도는 명령마다
+`note: this project is pinned to harness …` 와 올리는 명령이 나온다.
 
 ```bash
 cd <내-프로젝트>

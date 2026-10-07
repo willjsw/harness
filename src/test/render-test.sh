@@ -3293,6 +3293,34 @@ hasnt "$work/p89-9.err" "warning:" "the source tree raised a warning"
 hasnt "$work/p89-9.err" "cannot verify" "the source tree printed a cannot-verify line"
 cat "$work"/p89-*.out "$work"/p89-*.err > "$work/p89-all.log"; no_hangul "$work/p89-all.log" "pinned copy comparison output"
 
+echo "UT-102 the harness version carries the source commit, from git in a checkout and from the Homebrew receipt in a keg"
+# 번호만으로는 프로젝트가 고정한 사본이 전역보다 뒤처졌는지 알 수 없다 — 번호가 커밋마다 바뀌지 않는다.
+base=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/templates/harness.toml" | head -1)
+want="$base+$(git -C "$root/.." rev-parse --short=7 HEAD)"
+[ -n "$(git -C "$root/.." status --porcelain -- src)" ] && want="$want-dirty"
+check "the checkout's version" "$("$root/bin/harness" version)" "harness $want"
+p="$work/ver102"; rm -rf "$p"; mkdir -p "$p"; ( cd "$p" && git init -q . )
+"$root/bin/harness" install --target "$p" >/dev/null 2>&1; check "install from the checkout exits 0" "$?" "0"
+check "install pins the checkout's version" "$(cat "$p/.harness/VERSION")" "$want"
+# Homebrew 설치본 — 영수증의 커밋을 쓴다
+k="$work/keg102"; rm -rf "$k"; mkdir -p "$k/libexec" "$k/bin"
+cp -R "$root/bin" "$root/templates" "$k/libexec/"; ln -s "$k/libexec/bin/harness" "$k/bin/harness"
+printf '{"source": {"scm_revision": "d5d3b93b63d60e53f56993f72e3798a84cefb27d"}}\n' > "$k/INSTALL_RECEIPT.json"
+check "the keg's version" "$("$k/bin/harness" version)" "harness $base+d5d3b93"
+q="$work/ver102-keg"; rm -rf "$q"; mkdir -p "$q"; ( cd "$q" && git init -q . )
+"$k/bin/harness" install --target "$q" >/dev/null 2>&1; check "install from the keg exits 0" "$?" "0"
+check "install pins the keg's version" "$(cat "$q/.harness/VERSION")" "$base+d5d3b93"
+# 영수증이 없거나 커밋이 아닌 값이면 번호만 낸다
+printf '{"source": {"scm_revision": "../../etc"}}\n' > "$k/INSTALL_RECEIPT.json"
+check "a receipt without a commit gives the bare number" "$("$k/bin/harness" version)" "harness $base"
+rm "$k/INSTALL_RECEIPT.json"
+check "no receipt gives the bare number" "$("$k/bin/harness" version)" "harness $base"
+# 다른 커밋을 고정한 프로젝트는 넘길 때 그 사실과 올리는 명령을 알린다
+echo "$base+0000000" > "$p/.harness/VERSION"
+"$root/bin/harness" doctor --target "$p" > "$work/ver102-old.out" 2> "$work/ver102-old.err"
+has "$work/ver102-old.err" "this project is pinned to harness $base+0000000 (global is $want)" "an older pinned commit is not reported"
+has "$work/ver102-old.err" "to upgrade the project, run: harness install" "the note does not say how to upgrade"
+
 echo "UT-95 a block that never finishes is stopped and named with what was still running, instead of hanging the run"
 # 어느 블록의 어느 명령이 멈추든 이 테스트 전체가 진행 없이 기다린다. 블록 감시가 그것을 실패와 위치로 바꾼다.
 # 실제 시각에 기대지 않는다 — 판정은 시각을 넘겨받는 Blocks 로, 종료 절차는 바꿔 끼운 시계로 본다.
