@@ -1,15 +1,17 @@
-import { globalVersion } from "@/lib/harness";
+import { getProject, globalVersion, readSchema } from "@/lib/harness";
 import DoctorView from "@/components/DoctorView";
 
 export default async function Doctor({ params }) {
-  const { project } = await params;
+  const project = decodeURIComponent((await params).project);
+  const { path } = await getProject(project);
+  const [global, schema] = await Promise.all([globalVersion(), readSchema(path)]);
   return (
     <>
       <header className="page-head">
         <h1>Doctor</h1>
         <p className="page-intro"><span>프로젝트에서 하네스를 사용할 준비가 되었는지 점검합니다.</span></p>
       </header>
-      <DoctorView project={decodeURIComponent(project)} global={await globalVersion()} />
+      <DoctorView project={project} global={global} schema={schema} />
     </>
   );
 }

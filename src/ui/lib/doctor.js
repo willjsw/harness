@@ -104,10 +104,17 @@ function explainManaged(i) {
   return null;
 }
 
+// ▷ 조치의 보일 명령. 경로는 schema 가 낸 값만 쓴다 — schema 가 없으면(옛 사본) 비운다.
+const verifyRun = (schema) => ({ kind: "verify", cmd: schema?.verify_script ? `bash ${schema.verify_script}` : "" });
+const hooksRun = (schema) => ({ kind: "hooks", cmd: schema?.hooks_path ? `git config core.hooksPath ${schema.hooks_path}` : "" });
+const RENDER_RUN = { kind: "render", cmd: "harness render" };
+
 // label 을 주면 상태 대신 그 글자를 보인다 — 아직 설정하지 않은 것(SETUP)은 고장(FAIL)과 다르게 읽혀야 한다.
 // 조치: run = ▷ 로 바로 실행(doctorFix 의 종류와 보일 명령), href = 고칠 화면, cmd = 직접 돌릴 명령(실행 버튼 없음)
-export function explain(i, base) {
+// ▷ 조치는 doctor 항목의 section · what · state · detail 로 고른다. section 까지 맞아야 붙는다 — 다른 절의 같은 문구에는 붙지 않는다.
+export function explain(i, base, schema) {
   const w = i.what, d = i.detail || "";
+  const at = (s, run) => (i.section === s ? { run } : {});
   let m;
   if (i.section === "remote" && i.state !== "ok") {
     const r = explainRemote(i, base);
@@ -127,11 +134,11 @@ export function explain(i, base) {
     const step = d.match(/^fails at (.+)$/)?.[1];
     return { title: step ? `검증이 실패합니다: ${step}` : "검증이 실패합니다",
       body: `${step ? `'${step}' 단계의 명령이 실패했습니다. ` : ""}▷ 로 다시 돌려 출력을 확인하고, 명령이 틀렸다면 명령 탭에서 고칩니다.`,
-      run: { kind: "verify", cmd: "bash script/harness-verify.sh" }, href: `${base}/project/commands` };
+      ...at("verification", verifyRun(schema)), href: `${base}/project/commands` };
   }
   if (w === "script/verify-project.sh (hand-written)" && i.state !== "ok")
     return { title: "손으로 쓴 검증 스크립트가 실패합니다", body: "script/verify-project.sh 가 검증을 맡고 있습니다. ▷ 로 다시 돌려 출력을 확인합니다.",
-      run: { kind: "verify", cmd: "bash script/verify-project.sh" } };
+      ...at("verification", verifyRun(schema)) };
   if (w === "script/verify-project.sh runs instead of [commands] and [verify]")
     return { title: "손으로 쓴 검증 스크립트가 명령 탭 설정을 가리고 있습니다",
       body: "script/verify-project.sh 가 있으면 그것만 돌고, 명령 탭에 적은 명령은 돌지 않습니다. 검사를 명령 탭으로 옮긴 뒤 이 파일을 지웁니다.",
@@ -142,16 +149,13 @@ export function explain(i, base) {
   if (w === "script/verify-project.sh" && i.state !== "ok")
     return { title: "프로젝트 검증이 아직 통과하지 않습니다",
       body: "script/verify-project.sh 는 이 프로젝트의 린트·테스트를 돌리는 스크립트입니다. Project Settings 의 명령 탭에 적은 명령을 이 스크립트에도 넣어야 통과합니다.",
-      run: { kind: "verify", cmd: "sh script/verify-project.sh" } };
-  if (w === "git hooks enabled" && i.state !== "ok") {
-    // 켜는 명령은 doctor 가 detail 에 백틱으로 싣는다 — 서브프로젝트면 그 경로가 앞에 붙는다
-    const cmd = d.match(/`([^`]+)`/)?.[1];
-    const hooks = { title: "git 훅이 꺼져 있습니다", body: "커밋·push 할 때 하네스 검사(생성 파일 일치, 보호 브랜치)가 돌지 않습니다." };
-    return cmd ? { ...hooks, run: { kind: "hooks", cmd } } : hooks;
-  }
+      ...at("verification", verifyRun(schema)) };
+  // 켜는 값(서브프로젝트면 그 경로가 앞에 붙는다)은 schema 의 hooks_path 다
+  if (w === "git hooks enabled" && i.state !== "ok")
+    return { title: "git 훅이 꺼져 있습니다", body: "커밋·push 할 때 하네스 검사(생성 파일 일치, 보호 브랜치)가 돌지 않습니다.", ...at("git", hooksRun(schema)) };
   if ((m = w.match(/^(\d+) files differ from the config$/)))
     return { title: "생성 파일이 설정과 다릅니다", body: `${m[1]}개 파일이 harness.toml 과 맞지 않습니다. 다시 생성하지 않으면 커밋이 막힙니다.`,
-      run: { kind: "render", cmd: "harness render" } };
+      ...at("generated files", RENDER_RUN) };
   // 하네스 기록(매니페스트)의 줄 — 조치 버튼이 없다. 파일을 손으로 고친다
   if (w === "unsafe manifest line") {
     const where = d.replace(/ \(.*\)$/, "");
@@ -188,7 +192,7 @@ export function explain(i, base) {
     return { title: `${m[1]} CLI 가 설치되어 있지 않습니다`, body: "이슈와 리뷰 요청을 만들 때 씁니다." };
   if ((m = w.match(/^adapter `(.+)`$/)) && i.state !== "ok")
     return d === "file is missing"
-      ? { title: `${m[1]} 연결 스크립트가 없습니다`, body: "harness render 로 다시 만듭니다.", run: { kind: "render", cmd: "harness render" } }
+      ? { title: `${m[1]} 연결 스크립트가 없습니다`, body: "harness render 로 다시 만듭니다.", ...at("tools and connections", RENDER_RUN) }
       : { title: `${m[1]} 연결이 아직 검증되지 않았습니다`, body: "실제 저장소에 대고 한 번 돌려 확인합니다.", cmd: "script/forge-selftest.sh" };
   if ((m = w.match(/^decision-record tool `(.+)`$/)) && i.state !== "ok")
     return { title: `ADR 도구(${m[1]})가 설치되어 있지 않습니다`, body: "결정 기록(ADR)을 만들 때 씁니다." };

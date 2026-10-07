@@ -205,12 +205,6 @@ export async function projectStatus(project, remote = false) {
   return readStatus(path, remote);
 }
 
-// 손으로 쓴 옛 검증 스크립트가 있는가 — 있으면 run-lint-test.sh 가 그것을 돈다(CLI 의 legacy_verify 와 같은 기준)
-async function legacyVerify(dir) {
-  try { return !(await fs.readFile(nodePath.join(dir, "script/verify-project.sh"), "utf8")).includes("verify-project: not filled in yet"); }
-  catch { return false; }
-}
-
 // 명령 탭의 ▷ — 적은 명령이 이 리포에서 실제로 도는지 저장 전에 돌려 본다.
 // 사람이 이 컴퓨터에서 직접 적은 명령을 그 리포에서 돌린다 — 터미널에서 치는 것과 같은 권한이다(UI 는 127.0.0.1 에서만 뜬다).
 export async function runCommand(project, cmd) {
@@ -276,23 +270,13 @@ export async function metricsData(project, range, trace) {
   try { return JSON.parse(r.out); } catch { return { error: "지표를 읽지 못했습니다." }; }
 }
 
-// Doctor 화면의 ▷ 실행. 정해 둔 조치만 받는다 — 화면에서 임의 명령을 넘기지 못한다.
+// Doctor 화면의 ▷ 조치 → 하네스 명령. 정해 둔 조치만 받는다 — 화면에서 임의 명령을 넘기지 못한다.
+const DOCTOR_FIXES = new Map([["hooks", ["fix", "hooks"]], ["verify", ["fix", "verify"]], ["render", ["render"]], ["upgrade", ["install"]]]);
 export async function doctorFix(project, kind) {
   const { path } = await getProject(project);
-  const run = async (cmd, args) => {
-    try {
-      const { stdout, stderr } = await promisify(execFile)(cmd, args, { cwd: path, timeout: 300000, maxBuffer: 8 << 20 });
-      return { ok: true, out: (stdout + stderr).trim() };
-    } catch (e) {
-      return { ok: false, out: `${e.stdout || ""}${e.stderr || ""}`.trim() || String(e.message) };
-    }
-  };
-  let r;
-  if (kind === "hooks") r = await run("git", ["config", "core.hooksPath", "script/githooks"]);
-  else if (kind === "verify") r = await run("bash", [(await legacyVerify(path)) ? "script/verify-project.sh" : "script/harness-verify.sh"]);
-  else if (kind === "render") r = await harness(path, ["render"]);
-  else if (kind === "upgrade") r = await harness(path, ["install"]);
-  else return { ok: false, out: `unknown fix: ${kind}` };
+  const args = DOCTOR_FIXES.get(kind);
+  if (!args) return { ok: false, out: `unknown fix: ${kind}` };
+  const r = await harness(path, args, { timeout: 300000 });   // 검증은 테스트를 돌리므로 오래 걸릴 수 있다
   revalidatePath("/");
   return { ...r, out: (r.out || "").slice(-4000) };   // 긴 테스트 출력은 끝부분만
 }
