@@ -38,6 +38,8 @@ export default async function Settings({ params }) {
   }
   // 준비 점검 설정은 옛 설정에 절이 없다 — schema 가 기본값을 채워 준 값으로 그린다(이 키를 아는 하네스 버전일 때만)
   if (schema?.doctor && !cfg.doctor) cfg.doctor = schema.doctor;
+  // forge 의 기본값 있는 키(templates)도 옛 설정에는 없다 — 같은 방식으로 채운다
+  if (schema?.forge && cfg.forge) for (const [k, v] of Object.entries(schema.forge)) if (!(k in cfg.forge)) cfg.forge[k] = v;
   // 오케스트레이터를 바꾸면 모델은 새 벤더의 기본 모델로 — 전 벤더의 모델 이름은 새 벤더에 없다.
   // 서브에이전트 역할도 실행 주체가 따라 바뀌므로 함께 비운다
   const resetModel = [...(cfg.harness.model ? [["harness.model", ""]] : []),

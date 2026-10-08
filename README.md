@@ -265,6 +265,7 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `review.max_rounds` · `repeat_file_max` · `round_label` | 리뷰·등록·집계 스크립트가 읽는 상수 |
 | `roles.<역할>.runner` · `model` · `access` | 역할마다 에이전트 정의(Claude·Codex 양쪽)와 그 역할 전용 커맨드, 리뷰 실행 명령 |
 | `forge.tracker` · `review_host` | 어댑터 선택, forge 명령 사전, 권한 허용 목록의 forge 명령, 이슈·리뷰 요청 템플릿(`tracker` 가 이슈 템플릿, `review_host` 가 리뷰 요청 템플릿. Jira 트래커는 이슈 템플릿이 없다) |
+| `forge.templates` | 이슈·리뷰 요청 템플릿을 만드는지(기본 `true`). `false` 면 그 경로를 건드리지 않아 리포가 둔 템플릿(사내 표준 등)이 그대로 남고, 지난 렌더가 만든 템플릿은 지운다. 손으로 바꾼 템플릿은 지우지 않고 매니페스트에서 빼 리포의 파일로 넘긴다(forge 를 바꿀 때도 같다) |
 | `issues.labels` · `required_fields` · `deletion_forbidden` | 이슈 생성 스크립트, 삭제 가드, 규칙 문서, 이슈 템플릿의 라벨, `harness forge-setup` 이 만드는 라벨 |
 | `mr.default_assignee` · `default_reviewer` | forge 명령 사전, 작성 요령 |
 | `adr.style` · `tool` · `dir` | 결정 기록 사전·양식·디렉터리 |

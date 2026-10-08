@@ -298,6 +298,7 @@ s = in_section(s, "metrics", r'^dir = .*$', 'dir = "%s/metrics"' % rec)
 s = in_section(s, "usage", r'^log_path = .*$', 'log_path = "%s/usage.log"' % rec)
 s = in_section(s, "permissions", r'^allow_push = .*$', 'allow_push = false')
 s = in_section(s, "doctor", r'^remote_timeout = .*$', 'remote_timeout = 30')
+s = in_section(s, "forge", r'^templates = .*$', 'templates = true')
 p.write_text(s, encoding="utf-8")
 PY
   "$root/bin/harness" render --target "$1" >/dev/null
@@ -3516,7 +3517,7 @@ labels97 "$t" Req-pinned Task-pinned invalid-pinned
 "$root/bin/harness" set --target "$t" forge.tracker github forge.review_host github >/dev/null 2>&1; check "render with GitHub exits 0" "$?" "0"
 for f in .github/ISSUE_TEMPLATE/requirement.md .github/ISSUE_TEMPLATE/task.md .github/pull_request_template.md; do
   [ -f "$t/$f" ] && ok || bad "GitHub template missing: $f"
-  grep -qxF "$f" "$t/.harness/generated" && ok || bad "GitHub template not in the manifest: $f"
+  grep -qE "(^|  )$f\$" "$t/.harness/generated" && ok || bad "GitHub template not in the manifest: $f"
 done
 check "the requirement template head" "$(sed -n 1,6p "$t/.github/ISSUE_TEMPLATE/requirement.md")" '---
 name: Requirement
@@ -3581,7 +3582,7 @@ has "$work/ftpl-adopt.log" "--adopt" "the refusal does not mention --adopt"
 "$root/bin/harness" render --target "$a" --adopt > "$work/ftpl-adopt2.log" 2>&1; check "render --adopt exits 0" "$?" "0"
 check "the hand-made template moved aside" "$(cat "$a/.github/pull_request_template.md.orig")" "my own template"
 cmp -s "$a/.github/pull_request_template.md" "$a/.ai/templates/mr.md" && ok || bad "the adopted path is not the generated template"
-grep -qxF ".github/pull_request_template.md" "$a/.harness/generated" && ok || bad "the adopted template is not in the manifest"
+grep -qE "(^|  )\.github/pull_request_template\.md\$" "$a/.harness/generated" && ok || bad "the adopted template is not in the manifest"
 grep -qF ".orig" "$a/.harness/generated" "$a/.harness/managed" && bad "the .orig file is in a manifest" || ok
 has "$work/ftpl-adopt2.log" "render: adopted .github/pull_request_template.md — yours is at .github/pull_request_template.md.orig" "render --adopt does not say what it took over"
 # 제거 — 템플릿은 지우고 CI 골격은 남긴다
@@ -3885,7 +3886,7 @@ has "$work/p101-14.err" "        harness uninstall" "the uninstall refusal does 
 same101 "$out101/adr/README.md" "$work/p101-adr.copy" "uninstall changed the README behind the link"
 same101 "$m/.harness/managed" "$work/p101-m.mf" "the refused uninstall changed the managed manifest"
 same101 "$m/.harness/generated" "$work/p101-m.gen" "the refused uninstall changed the generated manifest"
-missing101=$(cd "$m" && { cat .harness/generated; sed -E 's/^[0-9a-f]{64}  //' .harness/managed; } | while read -r f; do [ -e "$f" ] || echo "$f"; done)
+missing101=$(cd "$m" && sed -E 's/^[0-9a-f]{64}  //' .harness/generated .harness/managed | while read -r f; do [ -e "$f" ] || echo "$f"; done)
 check "every manifest path is still there" "$missing101" ""
 rm "$m/docs/adr"; mv "$out101/adr" "$m/docs/adr"
 # uninstall --purge — 소유 파일의 부모가 링크면 확인 목록보다 먼저 멈춘다
@@ -4061,6 +4062,59 @@ same101 "$wd/quickfix.md" "$work/p101-rn.hot" "the notes did not move to the new
 "$root/bin/harness" steps --target "$rn" quickfix --delete > "$work/p101-45.out" 2> "$work/p101-45.err"; check "delete a renamed workflow" "$?" "0"
 [ -f "$wd/quickfix.md" ] && ok || bad "delete removed the person's notes"
 cat "$work"/p101-*.out "$work"/p101-*.err > "$work/p101-all.log"; no_hangul "$work/p101-all.log" "safe path output"
+
+echo "UT-103 forge.templates = false leaves the forge's issue and review request template paths to the repository"
+# 사내 표준 템플릿을 두는 리포는 하네스 양식으로 덮이면 안 된다. 끄기 전에 만든 것은 하네스 것이므로 정리한다.
+t="$work/ftoff"; setup "$t"
+for f in .gitlab/issue_templates/Requirement.md .gitlab/issue_templates/Task.md .gitlab/merge_request_templates/Default.md; do
+  [ -f "$t/$f" ] && ok || bad "GitLab template missing before turning it off: $f"
+done
+"$root/bin/harness" set --target "$t" forge.templates false > "$work/ftoff-set.log" 2>&1; check "set forge.templates false exits 0" "$?" "0"
+for f in .gitlab/issue_templates/Requirement.md .gitlab/issue_templates/Task.md .gitlab/merge_request_templates/Default.md; do
+  [ -e "$t/$f" ] && bad "a template the harness made is left after turning it off: $f" || ok
+  grep -qE "(^|  )$f\$" "$t/.harness/generated" && bad "a template is still in the manifest after turning it off: $f" || ok
+done
+[ -f "$t/.ai/templates/mr.md" ] && ok || bad "turning templates off removed the mr.md form agents use"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check passes with templates off" "$?" "0"
+# 리포가 둔 템플릿은 덮지도, 사용자 파일로 멈추지도 않는다
+mkdir -p "$t/.gitlab/merge_request_templates" "$t/.gitlab/issue_templates"
+printf 'company template\n' > "$t/.gitlab/merge_request_templates/Default.md"
+printf 'company issue\n' > "$t/.gitlab/issue_templates/Requirement.md"
+"$root/bin/harness" render --target "$t" > "$work/ftoff-render.log" 2>&1; check "render over the repository's own templates exits 0" "$?" "0"
+check "the repository's merge request template is untouched" "$(cat "$t/.gitlab/merge_request_templates/Default.md")" "company template"
+check "the repository's issue template is untouched" "$(cat "$t/.gitlab/issue_templates/Requirement.md")" "company issue"
+[ -e "$t/.gitlab/merge_request_templates/Default.md.orig" ] && bad "render moved the repository's template aside" || ok
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check passes over the repository's own templates" "$?" "0"
+# 옛 설정(키 없음)은 지금처럼 만든다
+o="$work/ftoff-old"; setup "$o"
+sedi '/^templates = /d' "$o/harness.toml"
+grep -q '^templates' "$o/harness.toml" && bad "the old config still has the key" || ok
+"$root/bin/harness" render --target "$o" >/dev/null 2>&1; check "render without forge.templates exits 0" "$?" "0"
+[ -f "$o/.gitlab/merge_request_templates/Default.md" ] && ok || bad "a config without forge.templates did not make the templates"
+# 옛 설정에서도 set 으로 끌 수 있고, 손으로 바꾼 템플릿은 끌 때 지우지 않고 리포의 것으로 넘긴다
+printf 'company mr\n' > "$o/.gitlab/merge_request_templates/Default.md"
+"$root/bin/harness" set --target "$o" forge.templates false > "$work/ftoff-oldset.log" 2>&1; check "set forge.templates on a config without the key" "$?" "0"
+grep -q '^templates = false' "$o/harness.toml" && ok || bad "set did not add forge.templates to the old config"
+check "a hand-edited template is kept when turning templates off" "$(cat "$o/.gitlab/merge_request_templates/Default.md" 2>/dev/null)" "company mr"
+[ -e "$o/.gitlab/issue_templates/Task.md" ] && bad "an unedited template is left after turning templates off" || ok
+grep -qE "(^|  )\.gitlab/merge_request_templates/Default\.md\$" "$o/.harness/generated" && bad "the kept template is still in the manifest" || ok
+"$root/bin/harness" check --target "$o" >/dev/null 2>&1; check "check passes after keeping a hand-edited template" "$?" "0"
+"$root/bin/harness" schema --target "$o" | python3 -c 'import json,sys; print(json.load(sys.stdin)["forge"])' > "$work/ftoff-schema.txt"
+has "$work/ftoff-schema.txt" "'templates': False" "schema does not carry forge.templates for the settings screen"
+# forge 를 바꾸면서 끄면 옛 forge 자리의 템플릿도 같은 기준으로 가른다 — 손으로 바꾼 것은 남고 바꾸지 않은 것은 지운다
+q="$work/ftoff-switch"; setup "$q"
+printf 'company mr\n' > "$q/.gitlab/merge_request_templates/Default.md"
+"$root/bin/harness" set --target "$q" forge.review_host github forge.tracker github forge.templates false > "$work/ftoff-switch.log" 2>&1
+check "switch the forge and turn templates off together" "$?" "0"
+check "a hand-edited template at the old forge's path is kept" "$(cat "$q/.gitlab/merge_request_templates/Default.md" 2>/dev/null)" "company mr"
+[ -e "$q/.gitlab/issue_templates/Task.md" ] && bad "an unedited template at the old forge's path is left" || ok
+[ -e "$q/.github/pull_request_template.md" ] && bad "a template was made while templates are off" || ok
+"$root/bin/harness" check --target "$q" >/dev/null 2>&1; check "check passes after switching the forge" "$?" "0"
+# 참·거짓이 아닌 값은 거부한다
+sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
+"$root/bin/harness" render --target "$t" > "$work/ftoff-bad.log" 2>&1; check "render with a non-boolean forge.templates exits 2" "$?" "2"
+has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
+cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
 
 echo
 if [ "$fail" -eq 0 ]; then
