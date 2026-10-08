@@ -146,6 +146,13 @@ def worktree_dir(cfg: dict, target: Path) -> str:
     return os.path.expandvars(os.path.expanduser(expand_key(cfg["worktree"]["dir"], target)))
 
 
+def old_alias_keys(cfg: dict) -> list:
+    """자리표시를 푸는 설정 값 중 옛 별칭 `{project}` 를 쓰는 키(점으로 이은 이름)."""
+    vals = (("metrics.dir", cfg["metrics"]["dir"]), ("usage.log_path", cfg["usage"]["log_path"]),
+            ("worktree.dir", cfg["worktree"]["dir"]))
+    return [k for k, v in vals if isinstance(v, str) and "{project}" in v]
+
+
 def metrics_cfg(cfg: dict, target: Path) -> dict:
     """[metrics] 의 dir 자리표시를 이 클론의 키로 푼 것. 환경 변수는 풀지 않는다. dir 이 "off" 면 기록하지 않는다."""
     m = dict(cfg["metrics"])
@@ -1857,6 +1864,8 @@ def cmd_render(cfg, target, args):
                 for rel in sorted(made)), encoding="utf-8")
     write_manifest_hashes(target, hashes)
 
+    for k in old_alias_keys(cfg):
+        print("note: %s uses {project}, an old alias of {clone} — replace it with {clone} in harness.toml" % k, file=sys.stderr)
     print("render: %d generated (%d updated, %d removed) · %d managed updated · %d owned created"
           % (len(items), written, removed, managed, owned))
     return 0
@@ -2695,6 +2704,8 @@ def doctor_items(cfg, target, remote=False):
         if model_ok(cfg, n, tools) is False:
             line("warn", "roles.%s.model = %s" % (n, cfg["roles"][n]["model"]),
                  "not a model of %s on this machine (harness tools --sync to refresh)" % vendor(cfg, n))
+    for k in old_alias_keys(cfg):
+        line("warn", "`%s` uses `{project}`" % k, "an old alias of {clone} — replace it with {clone} in harness.toml")
 
     section("generated files")
     diff = drift(cfg, target)

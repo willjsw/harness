@@ -4473,7 +4473,7 @@ check "no generated file carries the clone key" "$(cat "$work/ck106-gen.txt")" "
 no_hangul "$work/ck106-name.err" "the clone key refusal"
 unset -f kg106 plant106 ck106 name106
 
-echo "UT-107 {clone} in the record and worktree paths resolves to the clone key when used, {project} resolves the same, and generated files keep the value"
+echo "UT-107 {clone} in the record and worktree paths resolves to the clone key when used, {project} resolves the same and is noted, and generated files keep the value"
 # 기본값 — 세 값이 {clone} 을 담고 {project} 를 담지 않는다
 python3 - "$root/templates/harness.toml" > "$work/ph107-defaults.txt" <<'PY'
 import sys, tomllib
@@ -4520,6 +4520,36 @@ for ph in '{clone}' '{project}'; do
   check "metrics names the resolved dir with $ph" \
     "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnostics"]["dir"])' "$work/ph107-metrics.json")" "$p107/$key107/metrics"
 done
+# 옛 별칭 안내 — render 는 키마다 note 한 줄(결과와 종료 코드는 그대로), doctor 는 config 절에 키마다 warn
+alias107() { # alias107 <이름> — render 의 표준 오류와 doctor 의 config 절 항목을 남긴다
+  "$root/bin/harness" render --target "$t" > "$work/ph107-$1.out" 2> "$work/ph107-$1.err"; echo "$?" > "$work/ph107-$1.rc"
+  "$root/bin/harness" doctor --json --target "$t" 2>/dev/null | python3 -c '
+import json, sys
+items = [i for i in json.load(sys.stdin)["items"] if i["section"] == "config"]
+for i in items:
+    if "{project}" in i["what"]:
+        print("%s|%s|%s" % (i["state"], i["what"], i["detail"]))
+print("bad-in-config" if any(i["state"] == "bad" for i in items) else "no-bad-in-config")' > "$work/ph107-$1.doctor"
+}
+alias107 project
+check "render with {project} exits 0" "$(cat "$work/ph107-project.rc")" "0"
+for k in metrics.dir usage.log_path worktree.dir; do
+  has "$work/ph107-project.err" "note: $k uses {project}, an old alias of {clone} — replace it with {clone} in harness.toml" "render does not note $k"
+  has "$work/ph107-project.doctor" "warn|\`$k\` uses \`{project}\`|an old alias of {clone} — replace it with {clone} in harness.toml" "doctor does not warn about $k"
+done
+check "render notes once per key" "$(grep -c '^note: ' "$work/ph107-project.err")" "3"
+check "doctor warns once per key" "$(grep -c '^warn|' "$work/ph107-project.doctor")" "3"
+has "$work/ph107-project.doctor" "no-bad-in-config" "doctor fails the config section for {project}"
+check "the plan with {project} keeps the value" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$t/script/harness.plan.json")" "$p107/{project}/metrics"
+"$root/bin/harness" set --target "$t" metrics.dir "$p107/{clone}/metrics" usage.log_path "$p107/{clone}/usage.log" worktree.dir "$p107/{clone}/trees" >/dev/null 2>&1 \
+  || bad "could not set the three paths back to {clone}"
+alias107 clone
+check "render with {clone} exits 0" "$(cat "$work/ph107-clone.rc")" "0"
+hasnt "$work/ph107-clone.err" "note:" "render notes a config that uses {clone}"
+check "doctor has no {project} item for a config that uses {clone}" "$(grep -c '|' "$work/ph107-clone.doctor")" "0"
+cat "$work/ph107-project.err" "$work/ph107-project.out" > "$work/ph107-alias.log"
+no_hangul "$work/ph107-alias.log" "the {project} notes"
 check "the spans of both placeholders are under the clone key" "$(cat "$p107/$key107"/metrics/spans-*.jsonl 2>/dev/null | grep -c '"name":"ph107"')" "2"
 check "the usage lines of both placeholders are under the clone key" "$(grep -c '|note|test-caller|' "$p107/$key107/usage.log" 2>/dev/null)" "2"
 [ ! -e "$p107/{clone}" ] && [ ! -e "$p107/{project}" ] && ok || bad "a placeholder was written into a path as it is"
@@ -4534,7 +4564,7 @@ printf '{"metrics": {"dir": "%s/{clone}/metrics", "retention_days": 30, "max_fil
 python3 "$nk107/script/metric.py" start --name ph107 --kind script > /dev/null; check "metric.py without the key module still exits 0" "$?" "0"
 check "metric.py records nothing when it cannot compute the key" "$(find "$nk107" -name 'spans-*' | wc -l | tr -d ' ')" "0"
 no_hangul "$work/ph107-run.log" "run --worktree --dry-run output"
-unset -f dry107 rec107
+unset -f dry107 rec107 alias107
 
 echo
 if [ "$fail" -eq 0 ]; then
