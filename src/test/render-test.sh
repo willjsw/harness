@@ -266,6 +266,21 @@ isolate_records() { # isolate_records <리포> — install 한 리포의 기록 
   records_under_work "$1"
 }
 
+regs_for() { # regs_for <하네스 루트> [등록부] — 그 루트를 가리키는 project.json 을 등록부 기준 경로로 한 줄에 하나씩 찍는다
+  python3 - "${2:-$HARNESS_HOME}" "$1" <<'PY'
+import json, os, sys
+home, root = sys.argv[1], os.path.realpath(sys.argv[2])
+for d in sorted(os.listdir(home)) if os.path.isdir(home) else []:
+    f = os.path.join(home, d, "project.json")
+    try:
+        data = json.load(open(f, encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if isinstance(data, dict) and data.get("path") == root:
+        print("%s/project.json" % d)
+PY
+}
+
 setup() {          # setup <대상> — 기본 설정으로 렌더한 대상 하나를 만든다
   rm -rf "$1"; mkdir -p "$1"
   cp "$root/templates/harness.toml" "$1/harness.toml"
@@ -468,7 +483,7 @@ cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$r
 [ -e "$src/.harness/bin" ] && bad "the source tree vendored a copy of itself" || ok
 [ -f "$src/.ai/AI_AGENT.md" ] && ok || bad "the source tree did not render"
 has "$src/harness.toml" 'name = "source"' "the seeded config is not the source tree's own"
-[ -f "$HARNESS_HOME/source/project.json" ] && ok || bad "the source tree was not registered"
+check "the source tree is registered under its clone key" "$(regs_for "$src")" "$(python3 "$src/script/_clone_key.py" expand '{clone}')/project.json"
 "$src/src/bin/harness" check --target "$src" >/dev/null 2>&1; check "check on the source tree" "$?" "0"
 "$src/src/bin/harness" metrics --target "$src" >"$work/source-metrics.out" 2>&1; check "metrics on the source tree" "$?" "0"
 [ -e "$src/src/bin/__pycache__" ] && bad "the metrics module left bytecode in src/bin" || ok
@@ -1228,9 +1243,11 @@ hasnt "$t/harness.toml" "workflows.quickfix" "delete left the section in the con
 echo "UT-36 install registers the project for the UI, uninstall drops it"
 t="$work/reg/demo"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q )
 "$root/bin/harness" install --target "$t" >/dev/null 2>&1
-has "$HARNESS_HOME/demo/project.json" "\"$(cd "$t" && pwd -P)\"" "install did not record the project path"
+k36=$(python3 "$t/script/_clone_key.py" expand '{clone}')
+has "$HARNESS_HOME/$k36/project.json" "\"$(cd "$t" && pwd -P)\"" "install did not record the project path under the clone key"
+has "$HARNESS_HOME/$k36/project.json" '"name": "demo"' "install did not record the project name"
 "$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1
-[ ! -f "$HARNESS_HOME/demo/project.json" ] && ok || bad "uninstall left the registry entry"
+[ ! -f "$HARNESS_HOME/$k36/project.json" ] && ok || bad "uninstall left the registry entry"
 
 echo "UT-53 commands and checks live in harness.toml; verification is generated from them"
 t="$work/verify"; setup "$t"
@@ -1808,177 +1825,6 @@ hasnt "$work/wtdoc.log" "worktree" "doctor looked at worktrees outside a git rep
 hasnt "$work/wtdoc.log" "Traceback" "doctor failed outside a git repository"
 "$root/bin/harness" set --target "$work/wt-base" worktree.dir "$work/base-trees" >/dev/null 2>&1
 doc "$work/wt-base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
-
-echo "UT-62 one project name points to one path: install refuses a name still in use elsewhere"
-# 이름이 등록부의 키다. 같은 이름의 두 번째 클론이 등록을 덮으면 UI 와 실행 기록이 조용히 다른 리포를 가리킨다.
-dup="$work/dup"; A="$dup/a/twin"; B="$dup/b/twin"
-mkrepo() { rm -rf "$1"; mkdir -p "$1"; ( cd "$1" && git init -q . ); }
-regpath() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$HARNESS_HOME/$1/project.json" 2>/dev/null || echo "(none)"; }
-real() { ( cd "$1" && pwd -P ); }
-n=0
-inst() { n=$((n + 1)); "$1" install --target "$2" >"$work/dup-$n.out" 2>"$work/dup-$n.err"; }
-fresh() { # A 를 twin 으로 설치하고, B 에 같은 이름의 설정만 둔다
-  rm -rf "$dup" "$HARNESS_HOME"/twin*
-  mkrepo "$A"; mkrepo "$B"
-  inst "$root/bin/harness" "$A" || bad "could not install A"
-  cp "$A/harness.toml" "$B/harness.toml"
-  rA=$(real "$A"); rB=$(real "$B")
-}
-
-fresh
-inst "$root/bin/harness" "$B"; check "same name at another path" "$?" "2"
-has "$work/dup-$n.err" "error:" "the refusal is not an error line"
-has "$work/dup-$n.err" "$rA" "the refusal does not name the registered path"
-has "$work/dup-$n.err" "harness uninstall" "the refusal does not suggest uninstalling there"
-has "$work/dup-$n.err" "project.name" "the refusal does not suggest renaming"
-check "registry after the refusal" "$(regpath twin)" "$rA"
-[ -e "$B/.harness" ] && bad "the refused install left .harness/" || ok
-[ -e "$B/.ai/AI_AGENT.md" ] && bad "the refused install rendered" || ok
-
-inst "$root/bin/harness" "$A"; check "reinstall at the same path" "$?" "0"
-check "registry after the reinstall" "$(regpath twin)" "$rA"
-
-sedi 's/^name = "twin"$/name = "twin-b"/' "$B/harness.toml"
-inst "$root/bin/harness" "$B"; check "a second clone under another name" "$?" "0"
-check "the first name keeps its path" "$(regpath twin)" "$rA"
-check "the second name points to the clone" "$(regpath twin-b)" "$rB"
-
-fresh
-echo keep > "$HARNESS_HOME/twin/marker"
-rm "$A/harness.toml"
-inst "$root/bin/harness" "$B"; check "old path without a config" "$?" "0"
-check "registry after taking over" "$(regpath twin)" "$rB"
-has "$work/dup-$n.out" "which no longer holds this project" "the takeover was not reported"
-[ -f "$HARNESS_HOME/twin/marker" ] && ok || bad "taking over removed the records under the name"
-
-fresh
-rm -rf "$A"
-inst "$root/bin/harness" "$B"; check "old path gone" "$?" "0"
-check "registry after the old path is gone" "$(regpath twin)" "$rB"
-
-fresh
-sedi 's/^name = "twin"$/name = "twin-renamed"/' "$A/harness.toml"
-inst "$root/bin/harness" "$B"; check "old path now under another name" "$?" "0"
-check "registry after the old path was renamed" "$(regpath twin)" "$rB"
-
-fresh
-printf 'this is = [not toml\n' >> "$A/harness.toml"
-inst "$root/bin/harness" "$B"; check "old config unreadable" "$?" "2"
-has "$work/dup-$n.err" "could not be read" "the refusal does not say the config could not be read"
-has "$work/dup-$n.err" "$rA/harness.toml" "the refusal does not name the unreadable config"
-check "registry after the unreadable refusal" "$(regpath twin)" "$rA"
-
-# 권한으로 막힌 설정은 없는 설정이 아니다. root 는 권한을 무시하므로 이 두 경우를 만들 수 없다.
-if [ "$(id -u)" != 0 ]; then
-  fresh
-  chmod 000 "$A/harness.toml"
-  inst "$root/bin/harness" "$B"; check "old config without read permission" "$?" "2"
-  has "$work/dup-$n.err" "could not be read" "a config without read permission was not refused as unreadable"
-  check "registry after the permission refusal" "$(regpath twin)" "$rA"
-  chmod 644 "$A/harness.toml"
-
-  fresh
-  chmod 000 "$A"
-  inst "$root/bin/harness" "$B"; check "old path that cannot be searched" "$?" "2"
-  has "$work/dup-$n.err" "could not be read" "a path that cannot be searched was taken over as stale"
-  check "registry after the search-permission refusal" "$(regpath twin)" "$rA"
-  chmod 755 "$A"
-fi
-
-# 같은 이름의 두 설치가 동시에 돌면 하나만 등록되고 다른 하나는 거부된다.
-fresh
-# 판에서 하네스 파일을 남긴 채 매니페스트만 지우면 그 파일이 사용자 파일로 보인다 — 판마다 빈 리포에서 시작한다
-cp "$A/harness.toml" "$dup/twin.toml"
-race=0; for i in 1 2 3 4 5; do
-  rm -rf "$HARNESS_HOME"/twin*
-  mkrepo "$A"; mkrepo "$B"; cp "$dup/twin.toml" "$A/harness.toml"; cp "$dup/twin.toml" "$B/harness.toml"
-  "$root/bin/harness" install --target "$A" >"$work/race-a.out" 2>&1 & pa=$!
-  "$root/bin/harness" install --target "$B" >"$work/race-b.out" 2>&1 & pb=$!
-  wait "$pa"; ca=$?; wait "$pb"; cb=$?
-  got=$(regpath twin)
-  case "$ca $cb" in
-    "0 2") [ "$got" = "$rA" ] || race=1 ;;
-    "2 0") [ "$got" = "$rB" ] || race=1 ;;
-    *) race=1 ;;
-  esac
-done
-check "concurrent installs of one name: one succeeds, the other is refused" "$race" "0"
-
-fresh
-echo '{}' > "$HARNESS_HOME/twin/project.json"
-inst "$root/bin/harness" "$B"; check "a registration without a path" "$?" "0"
-check "registry after an empty registration" "$(regpath twin)" "$rB"
-
-fresh
-sedi 's/^name = "twin"$/name = "twin-new"/' "$A/harness.toml"
-inst "$root/bin/harness" "$A"; check "reinstall under a new name" "$?" "0"
-[ -e "$HARNESS_HOME/twin/project.json" ] && bad "the old name still points to the renamed repo" || ok
-check "the new name points to the repo" "$(regpath twin-new)" "$rA"
-
-# doctor 는 등록 상태를 보고만 한다. 경고는 두 가지이고 FAIL 은 없다.
-regsec() { awk '/^registry$/{f=1; next} /^$/{f=0} f' "$1"; }
-doc() { n=$((n + 1)); "$root/bin/harness" doctor --target "$1" >"$work/dup-$n.out" 2>"$work/dup-$n.err"; regsec "$work/dup-$n.out" > "$work/dup-reg-$n.txt"; }
-fresh
-doc "$A"
-has "$work/dup-reg-$n.txt" "ok   registered as \`twin\`" "doctor: a registered repo is not ok"
-grep -E "^(tools and connections|registry|git)$" "$work/dup-$n.out" | tr '\n' ' ' > "$work/dup-order.txt"
-check "doctor: the registry section sits between tools and git" "$(cat "$work/dup-order.txt")" "tools and connections registry git "
-# 등록하지 않은 채 생성물만 둔 같은 이름의 리포 — doctor 는 렌더된 리포에서 끝까지 돈다.
-"$root/bin/harness" render --target "$B" >/dev/null 2>&1 || bad "could not render B"
-cp "$HARNESS_HOME/twin/project.json" "$work/dup-before.json"
-doc "$B"
-has "$work/dup-reg-$n.txt" "warn \`twin\` is registered to another path" "doctor: another path is not a warning"
-has "$work/dup-reg-$n.txt" "$rA" "doctor: the warning does not name the registered path"
-hasnt "$work/dup-reg-$n.txt" "FAIL" "doctor: the registry section failed on another path"
-cmp -s "$HARNESS_HOME/twin/project.json" "$work/dup-before.json" && ok || bad "doctor changed the registry"
-rm "$HARNESS_HOME/twin/project.json"
-doc "$A"
-has "$work/dup-reg-$n.txt" "warn this repository is not registered" "doctor: a missing registration is not a warning"
-hasnt "$work/dup-reg-$n.txt" "FAIL" "doctor: the registry section failed on a missing registration"
-[ -e "$HARNESS_HOME/twin/project.json" ] && bad "doctor registered the repo" || ok
-
-# 같은 리포의 linked worktree 는 같은 프로젝트다. 같은 리포의 다른 서브디렉터리는 아니다.
-fresh
-rm "$B/harness.toml"
-git -C "$A" add -A && git -C "$A" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.invalid commit -q -m init \
-  && git -C "$A" worktree add -q -b side "$dup/a/twin-wt" || bad "could not set up the linked worktree"
-doc "$dup/a/twin-wt"
-has "$work/dup-reg-$n.txt" "ok   registered as \`twin\`" "doctor: a linked worktree of the registered repo is not ok"
-hasnt "$work/dup-reg-$n.txt" "warn" "doctor: a linked worktree of the registered repo warned"
-mkdir -p "$A/sub"; cp "$A/harness.toml" "$A/sub/harness.toml"
-"$root/bin/harness" render --target "$A/sub" >/dev/null 2>&1 || bad "could not render the subdirectory"
-doc "$A/sub"
-has "$work/dup-reg-$n.txt" "warn \`twin\` is registered to another path" "doctor: another subdirectory of the same repo is not a warning"
-unset -f regsec doc
-
-# 소스 리포 분기도 옛 사본을 걷어내기 전에 같은 판정을 거친다.
-rm -rf "$HARNESS_HOME"/srcdup
-for s in "$dup/s1/srcdup" "$dup/s2/srcdup"; do
-  rm -rf "$s"; mkdir -p "$s/src/bin"
-  cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s/src/bin/"; cp -R "$root/templates" "$s/src/templates"
-  ( cd "$s" && git init -q . )
-done
-s2="$dup/s2/srcdup"
-inst "$dup/s1/srcdup/src/bin/harness" "$dup/s1/srcdup"; check "first source tree install" "$?" "0"
-mkdir -p "$s2/.harness/bin"; echo 0.0.1 > "$s2/.harness/VERSION"
-inst "$s2/src/bin/harness" "$s2"; check "second source tree under the same name" "$?" "2"
-[ -d "$s2/.harness/bin" ] && [ -f "$s2/.harness/VERSION" ] && ok || bad "the refused source install cleared the old copy"
-[ -e "$s2/.ai/AI_AGENT.md" ] && bad "the refused source install rendered" || ok
-
-cat "$work"/dup-*.out "$work"/dup-*.err > "$work/dup.log"
-python3 - "$work/dup.log" > "$work/dup.hits" <<'HANGUL'
-import re, sys
-for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
-    if re.search(r"[가-힣]", line):
-        print(f"{n}: {line.rstrip()}")
-HANGUL
-if [ -s "$work/dup.hits" ]; then
-  bad "Korean is in the registry output"
-  head -3 "$work/dup.hits" >&2
-else
-  ok
-fi
-unset -f mkrepo regpath real inst fresh
 
 echo "UT-75 the permission allow list: managed scripts, the configured forge's commands and git"
 t="$work/allow"; setup "$t"
@@ -3020,7 +2866,7 @@ check "the user script is untouched" "$(sed -n 2p "$u/script/review-mr.sh")" "ec
 for f in .harness .ai/AI_AGENT.md script/project/README.md; do
   [ -e "$u/$f" ] && bad "the refused install wrote $f" || ok
 done
-[ -e "$HARNESS_HOME/user87/project.json" ] && bad "the refused install registered the project" || ok
+check "the refused install registered nothing" "$(regs_for "$u")" ""
 # 넘겨받기 — 원래 파일은 <경로>.orig 로 남고 매니페스트에는 들지 않는다
 "$root/bin/harness" install --target "$u" --adopt > "$work/u87-2.out" 2> "$work/u87-2.err"; check "install --adopt" "$?" "0"
 check "CLAUDE.md.orig keeps the user's content" "$(cat "$u/CLAUDE.md.orig")" "my own agent notes"
@@ -3094,7 +2940,7 @@ check "the user file named script is untouched" "$(cat "$pf87/script")" "not a d
 for f in .harness .ai/AI_AGENT.md .ai/project/scope.md; do
   [ -e "$pf87/$f" ] && bad "the refused install wrote $f" || ok
 done
-[ -e "$HARNESS_HOME/parent87/project.json" ] && bad "the refused install registered the project" || ok
+check "the refused install registered nothing" "$(regs_for "$pf87")" ""
 # 매니페스트에 있던 관리 파일 자리에 디렉터리가 생겨도 쓰기 전에 멈춘다
 rm "$u/script/review-mr.sh"; mkdir "$u/script/review-mr.sh"; cp "$u/.harness/managed" "$work/u87-mf2"
 "$root/bin/harness" render --target "$u" > "$work/u87-14.out" 2> "$work/u87-14.err"; check "render where a managed file became a directory" "$?" "2"
@@ -3865,12 +3711,13 @@ has "$work/p101-10.err" "  --> .harness" "the refusal does not name the linked .
 check "the link target's file is kept" "$(cat "$out101/pin/keep.txt")" "outside"
 check "the link target's nested file is kept" "$(cat "$out101/pin/keep-dir/nested.txt")" "nested"
 check "nothing was written behind the link" "$(ls "$out101/pin" | tr '\n' ' ')" "keep-dir keep.txt "
-[ -e "$HARNESS_HOME/hlink101/project.json" ] && bad "the refused install registered the project" || ok
-cp "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy"
+check "the refused install registered nothing" "$(regs_for "$hl")" ""
+reg101m=$(regs_for "$m")
+cp "$HARNESS_HOME/$reg101m" "$work/p101-reg.copy" || bad "the linked-manifest repo is not registered"
 cp -R "$m/.harness" "$out101/pinned"; mv "$m/.harness" "$m/.harness.real"; ln -s "$out101/pinned" "$m/.harness"
 "$root/bin/harness" install --target "$m" > "$work/p101-11.out" 2> "$work/p101-11.err"; check "reinstall with a linked .harness" "$?" "2"
 [ -f "$out101/pinned/bin/harness" ] && [ -f "$out101/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
-same101 "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy" "the refused reinstall changed the registry"
+same101 "$HARNESS_HOME/$reg101m" "$work/p101-reg.copy" "the refused reinstall changed the registry"
 rm "$m/.harness"; mv "$m/.harness.real" "$m/.harness"
 # 소스 리포의 옛 사본 정리 — .harness/bin 이 바깥 디렉터리 링크면 멈춘다
 s101="$work/source101"; rm -rf "$s101"; mkdir -p "$s101/src/bin" "$out101/oldbin"
@@ -4282,23 +4129,23 @@ unset -f fix101
 # install --create · --git-init — 새 프로젝트 만들기가 CLI 한 번이다. 거부되면 아무것도 만들지 않는다
 c101="$work/create101"; rm -rf "$c101" "$work/home101"
 in101() { HARNESS_HOME="$work/home101" "$root/bin/harness" install "$@" > "$work/in101.out" 2> "$work/in101.err"; }
-reg101() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$work/home101/$1/project.json" 2>/dev/null || echo "(none)"; }
+reg101() { regs_for "$1" "$work/home101"; }
 in101 --create --git-init --target "$c101/a/fresh101"; check "install --create --git-init into a missing path" "$?" "0"
 [ -d "$c101/a/fresh101/.git" ] && ok || bad "install --git-init did not start a git repository"
 [ -f "$c101/a/fresh101/harness.toml" ] && ok || bad "install --create did not lay down the config"
-check "the new path is registered" "$(reg101 fresh101)" "$(cd "$c101/a/fresh101" && pwd -P)"
+check "the new path is registered under its clone key" "$(reg101 "$c101/a/fresh101")" \
+  "$(python3 "$c101/a/fresh101/script/_clone_key.py" expand '{clone}')/project.json"
 cat "$work/in101.out" "$work/in101.err" > "$work/in101-all.log"
 in101 --target "$c101/b/missing101"; check "install into a missing path without --create" "$?" "2"
 [ ! -e "$c101/b" ] && ok || bad "install without --create made the path"
 has "$work/in101.err" "error: target directory does not exist" "the refusal does not say the directory is missing"
 has "$work/in101.err" "--create" "the refusal does not point at --create"
 cat "$work/in101.err" >> "$work/in101-all.log"
-before=$(cat "$work/home101/fresh101/project.json")
-in101 --create --git-init --target "$c101/c/fresh101"; check "install --create under a name in use elsewhere" "$?" "2"
-[ ! -e "$c101/c" ] && ok || bad "a refused install --create made the path"
-check "a refused install --create leaves the registry" "$(cat "$work/home101/fresh101/project.json")" "$before"
-has "$work/in101.err" "is already registered to another repository" "the refusal is not the registry's"
-cat "$work/in101.err" >> "$work/in101-all.log"
+# 같은 이름의 두 번째 클론도 등록된다 — 거부하지 않고 알리기만 한다
+in101 --create --git-init --target "$c101/c/fresh101"; check "install --create of a second clone under the same name" "$?" "0"
+check "both clones are registered" "$(reg101 "$c101/a/fresh101" | wc -l | tr -d ' ') $(reg101 "$c101/c/fresh101" | wc -l | tr -d ' ')" "1 1"
+has "$work/in101.out" "install: \`fresh101\` is also registered at $(cd "$c101/a/fresh101" && pwd -P)" "the second install does not name the first clone"
+cat "$work/in101.out" "$work/in101.err" >> "$work/in101-all.log"
 # 있는 대상에서 install 이 바꿀 경로가 판정에서 멈추면 .git 도 설정도 생기지 않는다 — 설정이 없을 때와 있을 때
 mkdir -p "$work/outside105"
 for e in noconf conf; do
@@ -4327,7 +4174,9 @@ if [ "\$1" = init ]; then echo note > "$c101/i/notes109.txt"; echo "fatal: canno
 exec "$(command -v git)" "\$@"
 SH
 chmod +x "$fg109/git"
+before=$(cat "$work"/home101/*/project.json 2>/dev/null | sort)
 PATH="$fg109:$PATH" in101 --create --git-init --target "$c101/i/repo109"; check "install --create --git-init when git init fails" "$?" "2"
+check "a failed install --create leaves the registry" "$(cat "$work"/home101/*/project.json 2>/dev/null | sort)" "$before"
 check "a file another process made in the new directory is kept" "$(cat "$c101/i/notes109.txt" 2>/dev/null)" "note"
 [ ! -e "$c101/i/repo109" ] && ok || bad "the empty directory this run made is left"
 has "$work/in101.out" "something else is in it now" "install does not say it kept a directory that is no longer empty"
@@ -4565,6 +4414,151 @@ python3 "$nk107/script/metric.py" start --name ph107 --kind script > /dev/null; 
 check "metric.py records nothing when it cannot compute the key" "$(find "$nk107" -name 'spans-*' | wc -l | tr -d ' ')" "0"
 no_hangul "$work/ph107-run.log" "run --worktree --dry-run output"
 unset -f dry107 rec107 alias107
+
+echo "UT-108 two clones of one repository live side by side: each its own registration and records, the same generated files, and a worktree with its clone"
+cl108="$work/clones108"; rm -rf "$cl108"; mkdir -p "$cl108"
+g108() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+key108() { python3 "$1/script/_clone_key.py" expand '{clone}'; }
+in108() { "$root/bin/harness" install --target "$2" > "$work/in108-$1.out" 2> "$work/in108-$1.err"; }
+pj108() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("name"), d.get("path"))' "$HARNESS_HOME/$1/project.json" 2>&1; }
+spans108() { cat "$cl108/rec/$1"/metrics/spans-*.jsonl 2>/dev/null | grep -c '"name":"rec108"'; }
+rec108() { # rec108 <루트> — 스팬 하나와 사용 기록 한 줄. 기록 경로가 테스트 작업 디렉터리 밖이면 남기지 않는다
+  in_work_records "$1" || { bad "the record paths of $1 are not under the test work directory"; return 1; }
+  ( cd "$1" && python3 script/metric.py start --name rec108 --kind script >/dev/null && env -u HARNESS_USAGE_LOG script/usage-log.sh note test-caller )
+}
+# 두 클론이 나눠 갖는 커밋된 설정 하나 — 기록 경로는 {clone} 을 담은 채 테스트 작업 디렉터리 아래로 둔다
+o108="$cl108/origin"; mkdir -p "$o108"; cp "$root/templates/harness.toml" "$o108/harness.toml"
+python3 - "$o108/harness.toml" "$cl108/rec" <<'PY'
+import re, sys
+p, rec = sys.argv[1], sys.argv[2]; s = open(p, encoding="utf-8").read()
+for pat, repl in ((r'(?m)^(\[project\]\nname = ).*$', lambda m: m.group(1) + '"twin"'),
+                  (r'(?m)^(\[metrics\]\n(?:#.*\n)*)dir = .*$', lambda m: m.group(1) + 'dir = "%s/{clone}/metrics"' % rec),
+                  (r'(?m)^log_path = .*$', lambda m: 'log_path = "%s/{clone}/usage.log"' % rec)):
+    s, n = re.subn(pat, repl, s, count=1)
+    assert n == 1, pat
+open(p, "w", encoding="utf-8").write(s)
+PY
+git init -q "$o108" && g108 "$o108" add -A && g108 "$o108" commit -q -m init || bad "could not set up the shared repository"
+A108="$cl108/a/twin"; B108="$cl108/b/twin"
+git clone -q "$o108" "$A108" && git clone -q "$o108" "$B108" || bad "could not clone the repository twice"
+# 등록 — 같은 이름의 두 클론이 둘 다 설치되고 각자의 키로 등록된다. 두 번째는 첫 번째를 알린다
+in108 a "$A108"; check "install the first clone" "$?" "0"
+in108 b "$B108"; check "install a second clone under the same name" "$?" "0"
+rA108=$(cd "$A108" && pwd -P); rB108=$(cd "$B108" && pwd -P); kA108=$(key108 "$A108"); kB108=$(key108 "$B108")
+[ "$kA108" != "$kB108" ] && ok || bad "two clones got one key"
+check "the first clone is registered under its key" "$(regs_for "$A108")" "$kA108/project.json"
+check "the second clone is registered under its key" "$(regs_for "$B108")" "$kB108/project.json"
+check "the first registration holds the name and the path" "$(pj108 "$kA108")" "twin $rA108"
+check "the second registration holds the name and the path" "$(pj108 "$kB108")" "twin $rB108"
+has "$work/in108-b.out" "install: \`twin\` is also registered at $rA108" "the second install does not name the first clone"
+hasnt "$work/in108-a.out" "is also registered" "the first install names a clone that is not there"
+# 생성 파일 — 두 클론에서 같고 키가 없으며, 한쪽 것을 다른 쪽에 둬도 check 가 통과한다
+cmp -s "$A108/script/harness.plan.json" "$B108/script/harness.plan.json" && cmp -s "$A108/script/harness.env" "$B108/script/harness.env" \
+  && ok || bad "two clones have different generated files"
+cat "$A108/script/harness.plan.json" "$A108/script/harness.env" > "$work/gen108.txt"
+hasnt "$work/gen108.txt" "$kA108" "a generated file carries the first clone's key"
+hasnt "$work/gen108.txt" "$kB108" "a generated file carries the second clone's key"
+cp "$A108/script/harness.plan.json" "$A108/script/harness.env" "$B108/script/"
+"$root/bin/harness" check --target "$B108" >/dev/null 2>&1; check "check passes with the other clone's generated files" "$?" "0"
+# 기록 경로 — 클론마다 자기 키 아래에 쌓인다
+rec108 "$A108"; rec108 "$B108"
+check "the first clone's span is under its key" "$(spans108 "$kA108")" "1"
+check "the second clone's span is under its key" "$(spans108 "$kB108")" "1"
+check "the first clone's usage line is under its key" "$(grep -c . "$cl108/rec/$kA108/usage.log" 2>&1)" "1"
+check "the second clone's usage line is under its key" "$(grep -c . "$cl108/rec/$kB108/usage.log" 2>&1)" "1"
+# worktree — 한 클론의 worktree 에서 남긴 기록은 그 클론의 키 아래에 쌓이고, worktree 는 등록되지 않는다
+g108 "$A108" add -A && g108 "$A108" commit -q -m harness && g108 "$A108" worktree add -q --detach "$cl108/a-wt" \
+  || bad "could not add a worktree to the first clone"
+rec108 "$cl108/a-wt"
+check "a worktree's span lands with its clone" "$(spans108 "$kA108")" "2"
+check "a worktree's span does not reach the other clone" "$(spans108 "$kB108")" "1"
+check "the worktree is not registered on its own" "$(regs_for "$cl108/a-wt")" ""
+# 재설치 — 등록은 하나 그대로, 이름을 바꾸면 같은 키의 이름만 바뀌고 키 아래 기록은 남는다
+in108 a2 "$A108"; check "reinstall the first clone" "$?" "0"
+check "a reinstall keeps one registration" "$(regs_for "$A108")" "$kA108/project.json"
+echo keep > "$HARNESS_HOME/$kA108/marker"; echo keep > "$cl108/rec/$kA108/metrics/marker"
+sedi 's/^name = "twin"$/name = "twin-renamed"/' "$A108/harness.toml"
+in108 a3 "$A108"; check "reinstall under a new name" "$?" "0"
+check "a rename keeps the key and changes the name" "$(regs_for "$A108") $(pj108 "$kA108")" "$kA108/project.json twin-renamed $rA108"
+[ -f "$HARNESS_HOME/$kA108/marker" ] && [ -f "$cl108/rec/$kA108/metrics/marker" ] && ok || bad "a rename lost what was under the key"
+hasnt "$work/in108-a3.out" "is also registered" "a renamed clone is reported as sharing a name"
+sedi 's/^name = "twin-renamed"$/name = "twin"/' "$A108/harness.toml"
+in108 a4 "$A108"; check "reinstall under the first name again" "$?" "0"
+# 소스 리포 — 같은 이름의 소스 트리 복제본 둘이 각자의 키로 등록된다
+for s108 in "$cl108/s1/srcdup" "$cl108/s2/srcdup"; do
+  mkdir -p "$s108/src/bin"
+  cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s108/src/bin/"; cp -R "$root/templates" "$s108/src/templates"
+  ( cd "$s108" && git init -q . ) || bad "could not make a source tree copy"
+done
+"$cl108/s1/srcdup/src/bin/harness" install --target "$cl108/s1/srcdup" > "$work/in108-s1.out" 2>&1; check "install the first source tree" "$?" "0"
+"$cl108/s2/srcdup/src/bin/harness" install --target "$cl108/s2/srcdup" > "$work/in108-s2.out" 2>&1; check "install a second source tree under the same name" "$?" "0"
+check "the first source tree is registered under its key" "$(regs_for "$cl108/s1/srcdup")" "$(key108 "$cl108/s1/srcdup")/project.json"
+check "the second source tree is registered under its key" "$(regs_for "$cl108/s2/srcdup")" "$(key108 "$cl108/s2/srcdup")/project.json"
+has "$work/in108-s2.out" "install: \`srcdup\` is also registered at $(cd "$cl108/s1/srcdup" && pwd -P)" "the second source tree install does not name the first"
+# uninstall — 그 클론의 등록만 지우고 기록과 다른 클론의 등록은 남긴다
+"$root/bin/harness" uninstall --target "$B108" > "$work/un108.out" 2>&1; check "uninstall the second clone" "$?" "0"
+check "uninstall drops only that clone's registration" "[$(regs_for "$B108")] [$(regs_for "$A108")]" "[] [$kA108/project.json]"
+[ -d "$HARNESS_HOME/$kB108" ] && [ -f "$cl108/rec/$kA108/usage.log" ] && [ -f "$cl108/rec/$kB108/usage.log" ] && ok \
+  || bad "uninstall removed records"
+cat "$work"/in108-*.out "$work"/in108-*.err "$work/un108.out" > "$work/out108.log"
+no_hangul "$work/out108.log" "the two-clone install output"
+unset -f g108 key108 in108 pj108 spans108 rec108
+
+echo "UT-109 doctor's registry section judges this clone by its key: registered, its worktree, not registered, registered elsewhere, a sibling subproject"
+r109="$work/reg109"; rm -rf "$r109"; mkdir -p "$r109"
+g109() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+doc109() { # doc109 <이름> <대상> — doctor 의 출력과 registry 절을 남긴다
+  "$root/bin/harness" doctor --target "$2" > "$work/doc109-$1.out" 2> "$work/doc109-$1.err"
+  awk '/^registry$/{f=1; next} /^$/{f=0} f' "$work/doc109-$1.out" > "$work/doc109-$1.reg"
+}
+regsnap109() { ( cd "$HARNESS_HOME" && find . -name project.json | sort | while read -r f; do echo "$f"; cat "$f"; done ); }
+A109="$r109/twin109"; mkdir -p "$A109"; ( cd "$A109" && git init -q . )
+"$root/bin/harness" install --target "$A109" > "$work/in109.out" 2>&1 || bad "could not install the doctor repository"
+isolate_records "$A109"
+before109=$(regsnap109)
+doc109 reg "$A109"
+check "a registered clone is ok" "$(cat "$work/doc109-reg.reg")" "  ok   registered as \`twin109\`"
+check "the registry section sits between tools and git" "$(grep -E '^(tools and connections|registry|git)$' "$work/doc109-reg.out" | tr '\n' ' ')" \
+  "tools and connections registry git "
+"$root/bin/harness" doctor --json --target "$A109" 2>/dev/null | python3 -c '
+import json, sys
+print(json.dumps([i for i in json.load(sys.stdin)["items"] if i["section"] == "registry"]))' > "$work/doc109-reg.json"
+check "doctor --json carries the registry item" "$(cat "$work/doc109-reg.json")" \
+  '[{"section": "registry", "state": "ok", "what": "registered as `twin109`", "detail": ""}]'
+# 같은 클론의 worktree 는 등록된 클론과 키가 같다
+g109 "$A109" add -A && g109 "$A109" commit -q -m init && g109 "$A109" worktree add -q -b side "$r109/twin109-wt" || bad "could not add a worktree"
+doc109 wt "$r109/twin109-wt"
+check "a linked worktree of the registered clone is ok without a warning" "$(cat "$work/doc109-wt.reg")" "  ok   registered as \`twin109\`"
+# 같은 이름의 등록되지 않은 리포 — 다른 클론의 등록을 자기 것으로 보지 않는다
+B109="$r109/other/twin109"; mkdir -p "$B109"; ( cd "$B109" && git init -q . ); cp "$A109/harness.toml" "$B109/harness.toml"
+"$root/bin/harness" render --target "$B109" >/dev/null 2>&1 || bad "could not render the unregistered repository"
+doc109 unreg "$B109"
+check "an unregistered repository warns" "$(cat "$work/doc109-unreg.reg")" \
+  "  warn this repository is not registered  — run \`harness install\` to list it in the UI"
+check "doctor does not register an unregistered repository" "$(regs_for "$B109")" ""
+# 모노레포 — 같은 리포의 다른 서브디렉터리는 위치가 달라 자기 키로 판정한다
+mkdir -p "$A109/sub"; cp "$A109/harness.toml" "$A109/sub/harness.toml"
+"$root/bin/harness" render --target "$A109/sub" >/dev/null 2>&1 || bad "could not render the subdirectory"
+doc109 sub "$A109/sub"
+check "a sibling subproject under the same name is not registered" "$(cat "$work/doc109-sub.reg")" \
+  "  warn this repository is not registered  — run \`harness install\` to list it in the UI"
+check "doctor does not change the registry" "$(regsnap109)" "$before109"
+# 키의 등록이 다른 리포를 가리키면 그 경로와 함께 알린다
+kA109=$(python3 "$A109/script/_clone_key.py" expand '{clone}')
+cp "$HARNESS_HOME/$kA109/project.json" "$work/reg109.json"
+python3 - "$HARNESS_HOME/$kA109/project.json" "$(cd "$B109" && pwd -P)" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["path"] = sys.argv[2]; json.dump(d, open(sys.argv[1], "w"))
+PY
+doc109 moved "$A109"
+check "a registration that points at another repository warns with that path" "$(cat "$work/doc109-moved.reg")" \
+  "  warn this clone is registered to another path  — $(cd "$B109" && pwd -P)"
+cp "$work/reg109.json" "$HARNESS_HOME/$kA109/project.json"
+cat "$work"/doc109-*.reg > "$work/doc109-all.reg"
+hasnt "$work/doc109-all.reg" "FAIL" "the registry section failed in some state"
+cat "$work"/doc109-*.out "$work"/doc109-*.err > "$work/doc109-all.log"
+no_hangul "$work/doc109-all.log" "the doctor registry output"
+unset -f g109 doc109 regsnap109
 
 echo
 if [ "$fail" -eq 0 ]; then
