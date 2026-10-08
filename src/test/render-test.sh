@@ -4227,6 +4227,15 @@ printf '\377\376 broken\n' >> "$w105/.ai/project/glossary.md"
 wd101 "$w105" stack replaced; check "write-doc when render cannot read another document exits 2" "$?" "2"
 cmp -s "$w105/.ai/project/stack.md" "$work/wd105-stack.before" && ok || bad "a failed write-doc left the new body"
 has "$work/wd101.err" "reverted" "a failed write-doc does not say it reverted"
+# 첫 쓰기 자체가 실패해도(읽기 전용 문서) traceback 없이 2 이고 문서는 그대로다. root 는 읽기 전용을 무시하므로 건너뛴다
+if [ "$(id -u)" != 0 ]; then
+  w106="$work/wd106"; setup "$w106"
+  cp "$w106/.ai/project/stack.md" "$work/wd106.before"; chmod 444 "$w106/.ai/project/stack.md"
+  wd101 "$w106" stack replaced; check "write-doc over a read-only document exits 2" "$?" "2"
+  cmp -s "$w106/.ai/project/stack.md" "$work/wd106.before" && ok || bad "a failed write over a read-only document changed it"
+  hasnt "$work/wd101.err" "Traceback" "a failed write over a read-only document ended in a traceback"
+  chmod 644 "$w106/.ai/project/stack.md"
+fi
 unset -f body101 tree101 wd101 wdrules101
 # fix — Doctor 조치. 검증은 그 리포의 검증 스크립트를, 훅은 install 과 같은 판정으로 켠다
 t="$work/fix101"; setup "$t"

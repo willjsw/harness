@@ -3292,14 +3292,20 @@ def cmd_write_doc(cfg, target, args):
         print("error: write-doc failed: %s" % e, file=sys.stderr)
     if rc != 0:
         sys.stdout.write(out.getvalue())
-        if before is None:
-            if os.path.lexists(p):
-                guarded_path(target, rel, "remove").unlink()
-            for d in reversed(made):
-                with contextlib.suppress(OSError):
-                    guarded_path(target, d, "remove").rmdir()
-        else:
-            guarded_path(target, rel, "write").write_bytes(before)
+        # 쓰기 자체가 실패했으면 문서는 그대로다 — 내용이 달라졌을 때만 되돌린다. 되돌리기가 실패해도 안내하고 2 다
+        try:
+            if before is None:
+                if os.path.lexists(p):
+                    guarded_path(target, rel, "remove").unlink()
+                for d in reversed(made):
+                    with contextlib.suppress(OSError):
+                        guarded_path(target, d, "remove").rmdir()
+            elif p.read_bytes() != before:
+                guarded_path(target, rel, "write").write_bytes(before)
+        except OSError as e:
+            print("\nerror: could not restore the document: %s\n  --> %s\n\nhelp: check the file by hand" % (e, rel),
+                  file=sys.stderr)
+            return 2
         print("\nreverted — the document is unchanged", file=sys.stderr)
         return 2
     print("write-doc: %s" % rel)
