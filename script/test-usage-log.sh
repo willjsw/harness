@@ -294,6 +294,42 @@ printf '%s\n' "2026-09-01T10:00:00|note|test-caller|standalone|-" > "$log"
 with_log "$log" "$noenv/usage-log.sh" note test-caller standalone >/dev/null 2>&1
 check no-config "no line added to an existing log" 1 "$(grep -c . "$log")"
 
+echo "the configured path resolves {clone} with the clone key module, and an override is used as given"
+# 기록기·집계기를 설정과 함께 임시 디렉터리에 두고 USAGE_LOG_PATH 에 자리표시를 넣는다. 덮어쓰기 변수는 비운다.
+stage_clone() { # <디렉터리> <USAGE_LOG_PATH 값> [_clone_key.py 자리에 둘 파이썬 본문]
+  mkdir -p "$1" || return 2
+  cp "$root/script/usage-log.sh" "$root/script/usage-report.sh" "$root/script/usage-vocab.sh" "$root/script/harness.env" "$1/" || return 2
+  if [ -n "${3:-}" ]; then printf '%s\n' "$3" > "$1/_clone_key.py"; else cp "$root/script/_clone_key.py" "$1/" || return 2; fi
+  printf "USAGE_LOG_PATH='%s'\n" "$2" >> "$1/harness.env"
+}
+lines_in() { if [ -f "$1" ]; then grep -c . "$1"; else echo 0; fi; }
+ph="$sandbox/ph/script"
+stage_clone "$ph" "$sandbox/ph/rec/{clone}/usage.log" || exit 2
+resolved=$(python3 "$ph/_clone_key.py" expand "$sandbox/ph/rec/{clone}/usage.log")
+case "$resolved" in "$sandbox/ph/rec/c-"*"/usage.log") ;; *) echo "error: could not resolve the expected path" >&2; exit 2 ;; esac
+env -u "$USAGE_ENV_VAR" "$ph/usage-log.sh" block pre-push protected-branch
+check clone-key "a {clone} path gets the line at the resolved path" 1 "$(lines_in "$resolved")"
+check clone-key "no directory named after {clone}" no "$([ -e "$sandbox/ph/rec/{clone}" ] && echo yes || echo no)"
+printf "USAGE_LOG_PATH='%s'\n" "$sandbox/ph/rec/{project}/usage.log" >> "$ph/harness.env"
+env -u "$USAGE_ENV_VAR" "$ph/usage-log.sh" block pre-push protected-branch
+check clone-key "the old alias {project} lands at the same path" 2 "$(lines_in "$resolved")"
+check clone-key "no directory named after {project}" no "$([ -e "$sandbox/ph/rec/{project}" ] && echo yes || echo no)"
+out=$(env -u "$USAGE_ENV_VAR" "$ph/usage-report.sh")
+check clone-key "the report reads the resolved path" 2 "$(printf '%s\n' "$out" | sed -n 's/^TOTAL=//p')"
+# 모듈이 1 로 끝나면 어디에 남길지 모른다 — 기록은 아무것도 만들지 않고 0, 집계는 2
+st="$sandbox/stub/script"
+stage_clone "$st" "$sandbox/stub/rec/{clone}/usage.log" 'import sys; sys.exit(1)' || exit 2
+env -u "$USAGE_ENV_VAR" "$st/usage-log.sh" block pre-push protected-branch >"$sandbox/stub/out" 2>&1
+check clone-key "an unresolved path exits 0" 0 "$?"
+check clone-key "an unresolved path creates nothing" no "$([ -e "$sandbox/stub/rec" ] && echo yes || echo no)"
+check clone-key "an unresolved path prints nothing" "" "$(cat "$sandbox/stub/out")"
+env -u "$USAGE_ENV_VAR" "$st/usage-report.sh" >"$sandbox/stub/report.out" 2>"$sandbox/stub/report.err"
+check clone-key "the report exits 2 when the path cannot be resolved" 2 "$?"
+check clone-key "the report names what it could not resolve" 1 "$(grep -c '^error: could not resolve usage.log_path for this clone$' "$sandbox/stub/report.err")"
+# 환경 변수로 준 경로는 자리표시를 풀지 않는다 — 모듈이 실패해도 그대로 쓴다
+with_log "$sandbox/ov/{clone}/usage.log" "$st/usage-log.sh" block pre-push protected-branch
+check clone-key "an override path is used as given" 1 "$(lines_in "$sandbox/ov/{clone}/usage.log")"
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "usage log test failed: $pass passed, $fail failed" >&2

@@ -5,6 +5,7 @@
 #
 # 종류: block(가드 차단) · preflight(착수 판정) · review(리뷰 회차) · command(커맨드 호출) · note
 # 기록 위치: 설정 `usage.log_path` 가 정한다. 그 값이 `off` 면 기록하지 않는다.
+# 값의 `{clone}` 은 이 클론의 키로 푼다(script/_clone_key.py).
 # 환경변수(설정 `usage.env_var`)로 한 번 덮어쓸 수 있다 — 테스트와 일회성 수집에 쓴다.
 # 형식: <ISO시각>|<종류>|<출처>|<상세>|<브랜치유형>
 #
@@ -30,6 +31,15 @@ _env="$(dirname "$0")/harness.env"
 eval "_override=\${$USAGE_ENV_VAR:-}"
 log=${_override:-$USAGE_LOG_PATH}
 [ "$log" = "off" ] && exit 0
+# 설정 값의 자리표시 {clone}(옛 별칭 {project})은 이 클론의 키로 푼다. 환경 변수로 준 경로는 그대로 쓴다.
+# 풀지 못하면(python3 가 없거나 모듈이 실패) 어디에 남길지 모르므로 기록하지 않는다.
+if [ -z "$_override" ]; then
+  case "$log" in
+    *"{clone}"*|*"{project}"*)
+      log=$(python3 "$(dirname "$0")/_clone_key.py" expand "$log" 2>/dev/null) || exit 0
+      [ -n "$log" ] || exit 0 ;;
+  esac
+fi
 
 [ $# -ge 2 ] || exit 0
 event="$1"

@@ -55,7 +55,7 @@
     }
   },
   "metrics": {
-    "dir": "$HOME/.harness/harness/metrics",
+    "dir": "$HOME/.harness/{clone}/metrics",
     "retention_days": 30,
     "max_file_mb": 10,
     "max_total_mb": 100,

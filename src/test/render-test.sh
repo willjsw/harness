@@ -252,6 +252,14 @@ records_under_work() { # records_under_work <리포> — 두 기록 경로가 $w
   case "$ul" in "$work"/*) ok ;; *) bad "$1: the usage log path is outside \$work: $ul" ;; esac
 }
 
+in_work_records() { # in_work_records <리포> — 두 기록 경로(설정 값 그대로)가 $work 아래면 0. 기록을 남기기 전에 실제 홈을 피하려고 본다
+  local md ul
+  md=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$1/script/harness.plan.json" 2>/dev/null)
+  ul=$(sed -n 's/^USAGE_LOG_PATH=//p' "$1/script/harness.env" 2>/dev/null | tr -d "\"'")
+  case "$md" in "$work"/*) ;; *) return 1 ;; esac
+  case "$ul" in "$work"/*) ;; *) return 1 ;; esac
+}
+
 isolate_records() { # isolate_records <리포> — install 한 리포의 기록 경로를 테스트 작업 디렉터리로 옮긴다
   "$root/bin/harness" set --target "$1" metrics.dir "$1.records/metrics" usage.log_path "$1.records/usage.log" >/dev/null \
     || bad "$1: could not move the record paths"
@@ -1432,7 +1440,9 @@ open(f, "w").write(body[: len(body) - len(last)] + full + "\n")
 PY
 imp > "$work/imp3.json"; sum "$work/imp3.json" > "$work/imp3.sum"
 has "$work/imp3.sum" "1 25 130 10 [16] 1" "the completed line was not imported exactly once"
-cur="$HARNESS_HOME/my-project/state/import-cursor.json"   # setup 의 설정은 project.name 을 바꾸지 않는다
+# 커서는 이 클론의 키 아래에 있다
+cur="$HARNESS_HOME/$(python3 "$t/script/_clone_key.py" expand '{clone}')/state/import-cursor.json"
+[ -f "$cur" ] && ok || bad "the import cursor is not under the clone key"
 [ "$(stat -c %a "$cur" 2>/dev/null || stat -f %Lp "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
 
 echo "UT-63 review threads carry an id, and a reply lands on the thread it names"
@@ -1521,7 +1531,7 @@ unset FAKE_CALLS
 
 echo "UT-70 the worktree section: defaults, unknown keys and paths that are not relative are refused"
 t="$work/wtcfg"; setup "$t"
-has "$t/harness.toml" 'dir = "$HOME/.harness/{project}/worktrees"' "the default config has no worktree.dir default"
+has "$t/harness.toml" 'dir = "$HOME/.harness/{clone}/worktrees"' "the default config has no worktree.dir default"
 has "$t/harness.toml" 'include = [".claude/settings.local.json"]' "the default config has no worktree.include default"
 cp "$t/harness.toml" "$work/wtcfg.orig"
 wt_render() { "$root/bin/harness" render --target "$t" > "$work/wtcfg.log" 2>&1; }
@@ -1542,7 +1552,7 @@ PY
   has "$work/wtcfg.log" "worktree.include[2] must be a path relative to the harness root" "the bad include item $bad_path is not named"
 done
 cp "$work/wtcfg.orig" "$t/harness.toml"
-sedi 's|^dir = "\$HOME/.harness/{project}/worktrees"$|dir = "  "|' "$t/harness.toml"
+sedi 's|^dir = "\$HOME/.harness/{clone}/worktrees"$|dir = "  "|' "$t/harness.toml"
 wt_render; check "render with a blank worktree.dir" "$?" "2"
 has "$work/wtcfg.log" "worktree.dir must be" "the blank worktree.dir is not named"
 # 절이 없는 옛 설정은 기본값으로 돈다
@@ -1627,6 +1637,7 @@ ohead=$(git -C "$wd/7" rev-parse HEAD)
 wtrun "$t" work 7 --worktree; check "exit code for another repository's worktree" "$?" "2"
 [ -f "$work/wt.cwd" ] && bad "the orchestrator launched in another repository's worktree" || ok
 has "$work/wt.log" "error: $wd/7 is not a worktree of this repository" "the path conflict is not named"
+has "$work/wt.log" "help: another clone may share worktree.dir — put {clone} in worktree.dir or move that directory" "the path conflict does not point at {clone}"
 check "another repository's worktree is left as it was" "$(git -C "$wd/7" rev-parse HEAD) $(git -C "$wd/7" status --porcelain | wc -l | tr -d ' ')" "$ohead 0"
 wtg "$o" worktree remove "$wd/7"
 
@@ -1761,7 +1772,8 @@ codex("other", "/elsewhere", 66)
 PY2
   HARNESS_CLAUDE_DIR="$cl" HARNESS_CODEX_DIR="$cx" "$root/bin/harness" metrics import --target "$ti" --since 1d > "$work/wtimp.json"
   check "metrics import with worktree runs ($wtcase)" "$?" "0"
-  python3 - "$work/wtimp.json" "$HARNESS_HOME/my-project/state/import-cursor.json" "$cx" > "$work/wtimp.sum" <<'PY2'
+  kti=$(python3 "$ti/script/_clone_key.py" expand '{clone}')
+  python3 - "$work/wtimp.json" "$HARNESS_HOME/$kti/state/import-cursor.json" "$cx" > "$work/wtimp.sum" <<'PY2'
 import json, os, sys
 d = json.load(open(sys.argv[1])); cur = json.load(open(sys.argv[2])); cx = sys.argv[3]
 tok = {x["trace"]: x["tokens"] for x in d["traces"]}
@@ -1770,7 +1782,7 @@ print(tok.get("t-c7"), tok.get("t-c8"), tok.get("t-x7"), tok.get("t-x8"), tok.ge
       d["diagnostics"]["imported"]["unattributed"], other("x7"), other("x8"), other("other"))
 PY2
   has "$work/wtimp.sum" "11 22 33 44 55 0 False False True" "worktree records are not attributed to their own runs ($wtcase): c7 c8 x7 x8 root unattributed other-flags"
-  rm -rf "$HARNESS_HOME/my-project/state"
+  rm -rf "$HARNESS_HOME/$kti/state"
 done
 
 echo "UT-74 doctor reports the issue worktrees left under worktree.dir with their state"
@@ -4460,6 +4472,69 @@ grep -rlF "$kt106" "$t" > "$work/ck106-gen.txt"
 check "no generated file carries the clone key" "$(cat "$work/ck106-gen.txt")" ""
 no_hangul "$work/ck106-name.err" "the clone key refusal"
 unset -f kg106 plant106 ck106 name106
+
+echo "UT-107 {clone} in the record and worktree paths resolves to the clone key when used, {project} resolves the same, and generated files keep the value"
+# 기본값 — 세 값이 {clone} 을 담고 {project} 를 담지 않는다
+python3 - "$root/templates/harness.toml" > "$work/ph107-defaults.txt" <<'PY'
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+for v in (c["metrics"]["dir"], c["usage"]["log_path"], c["worktree"]["dir"]):
+    print("{clone}" in v, "{project}" in v)
+PY
+check "the shipped defaults use {clone} and not {project}" "$(tr '\n' ' ' < "$work/ph107-defaults.txt")" "True False True False True False "
+t="$work/ph107"; setup "$t"; p107="$work/ph107-rec"
+( cd "$t" && git init -q . ) || bad "could not start git in the placeholder repo"
+mkdir -p "$work/ph107-bin" && printf '#!/bin/sh\nexit 0\n' > "$work/ph107-bin/claude" && chmod +x "$work/ph107-bin/claude"
+key107=$(python3 "$t/script/_clone_key.py" expand '{clone}')
+dry107() { ( cd "$t" && PATH="$work/ph107-bin:$PATH" "$root/bin/harness" run work 7 --worktree --dry-run ) > "$work/ph107-run.log" 2>&1; }
+# 설정에 없는 키의 기본값 — 계획 파일에는 {clone} 그대로, worktree 자리는 키로 푼 자리
+cp "$t/harness.toml" "$work/ph107.toml"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+s = re.sub(r'(?m)^(\[metrics\]\n(?:#.*\n)*)dir = .*\n', r'\1', s, count=1)
+s, n = re.subn(r'^\[worktree\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1
+open(p, "w", encoding="utf-8").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1 || bad "could not render without metrics.dir and the worktree section"
+check "the default metrics.dir reaches the plan as written" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$t/script/harness.plan.json")" '$HOME/.harness/{clone}/metrics'
+dry107; check "run --worktree --dry-run with the default worktree.dir" "$?" "0"
+has "$work/ph107-run.log" "worktree: $HOME/.harness/$key107/worktrees/7 (new)" "the default worktree.dir is not resolved with the clone key"
+cp "$work/ph107.toml" "$t/harness.toml"
+# {clone} 과 {project} — 같은 자리에 쌓이고, 생성 파일은 설정 값 그대로
+rec107() { # rec107 — 이 클론에서 스팬 하나와 사용 기록 한 줄을 남긴다. 기록 경로가 테스트 작업 디렉터리 밖이면 남기지 않는다
+  in_work_records "$t" || { bad "the record paths of $t are not under the test work directory"; return 1; }
+  ( cd "$t" && python3 script/metric.py start --name ph107 --kind script >/dev/null && env -u HARNESS_USAGE_LOG script/usage-log.sh note test-caller )
+}
+for ph in '{clone}' '{project}'; do
+  "$root/bin/harness" set --target "$t" metrics.dir "$p107/$ph/metrics" usage.log_path "$p107/$ph/usage.log" worktree.dir "$p107/$ph/trees" >/dev/null 2>&1 \
+    || bad "could not set the three paths with $ph"
+  check "the plan keeps metrics.dir with $ph" \
+    "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$t/script/harness.plan.json")" "$p107/$ph/metrics"
+  has "$t/script/harness.env" "USAGE_LOG_PATH=\"$p107/$ph/usage.log\"" "harness.env does not keep usage.log_path with $ph"
+  rec107
+  dry107; has "$work/ph107-run.log" "worktree: $p107/$key107/trees/7 (new)" "worktree.dir with $ph is not resolved with the clone key"
+  "$root/bin/harness" metrics --target "$t" > "$work/ph107-metrics.json" 2>&1 || bad "metrics with $ph failed"
+  check "metrics names the resolved dir with $ph" \
+    "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnostics"]["dir"])' "$work/ph107-metrics.json")" "$p107/$key107/metrics"
+done
+check "the spans of both placeholders are under the clone key" "$(cat "$p107/$key107"/metrics/spans-*.jsonl 2>/dev/null | grep -c '"name":"ph107"')" "2"
+check "the usage lines of both placeholders are under the clone key" "$(grep -c '|note|test-caller|' "$p107/$key107/usage.log" 2>/dev/null)" "2"
+[ ! -e "$p107/{clone}" ] && [ ! -e "$p107/{project}" ] && ok || bad "a placeholder was written into a path as it is"
+grep -rlF "$key107" "$t" > "$work/ph107-gen.txt"
+check "no file in the repository carries the clone key" "$(cat "$work/ph107-gen.txt")" ""
+[ -e "$t/script/__pycache__" ] && bad "resolving the placeholders left bytecode in script/" || ok
+# 키를 구하지 못하면 지표를 남기지 않는다 — 모듈 없이 둔 기록기
+nk107="$work/ph107-nokey"; rm -rf "$nk107"; mkdir -p "$nk107/script"
+cp "$t/script/metric.py" "$nk107/script/"
+printf '{"metrics": {"dir": "%s/{clone}/metrics", "retention_days": 30, "max_file_mb": 10, "max_total_mb": 100, "stale_after_hours": 6, "capture_logs": "errors"}}\n' "$nk107" \
+  > "$nk107/script/harness.plan.json"
+python3 "$nk107/script/metric.py" start --name ph107 --kind script > /dev/null; check "metric.py without the key module still exits 0" "$?" "0"
+check "metric.py records nothing when it cannot compute the key" "$(find "$nk107" -name 'spans-*' | wc -l | tr -d ' ')" "0"
+no_hangul "$work/ph107-run.log" "run --worktree --dry-run output"
+unset -f dry107 rec107
 
 echo
 if [ "$fail" -eq 0 ]; then

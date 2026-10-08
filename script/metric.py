@@ -8,6 +8,7 @@
     script/metric.py prune
 
 어디에 얼마나 남길지는 `script/harness.plan.json` 의 metrics(= harness.toml 의 [metrics])가 정한다.
+dir 의 자리표시 `{clone}`(옛 별칭 `{project}`)은 기록할 때 `script/_clone_key.py` 로 이 클론의 키로 푼다.
 한 줄에 이벤트 하나인 JSONL 이고, 시각은 UTC 다. 트레이스는 환경 변수로 이어진다 —
 HARNESS_TRACE_ID(한 실행) · HARNESS_PARENT_SPAN(부모 스팬). wrap 은 자식에게 둘 다 넘긴다.
 
@@ -40,8 +41,31 @@ ISSUE_RE = re.compile(r"^[0-9]{1,10}$")
 LOG_LINES, LOG_BYTES = 20, 2048
 
 
+_EXPANDED = {}
+
+
+def expand_dir(raw):
+    """지표 디렉터리 설정 값의 자리표시를 이 클론의 키로 푼 것(같은 디렉터리의 _clone_key.py). 풀지 못하면 None.
+    자리표시가 없으면 모듈을 부르지 않고 그대로 돌려준다. 한 프로세스에서 값마다 한 번만 푼다."""
+    if not isinstance(raw, str):
+        return None
+    if "{clone}" not in raw and "{project}" not in raw:
+        return raw
+    if raw not in _EXPANDED:
+        try:
+            import importlib.util
+            sys.dont_write_bytecode = True
+            spec = importlib.util.spec_from_file_location("harness_clone_key", Path(__file__).resolve().parent / "_clone_key.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            _EXPANDED[raw] = mod.expand(raw, ROOT)
+        except Exception:
+            _EXPANDED[raw] = None
+    return _EXPANDED[raw]
+
+
 def config():
-    """지표 설정. 계획 파일이 없거나(렌더 전) 꺼져 있으면 None — 기록하지 않는다.
+    """지표 설정. 계획 파일이 없거나(렌더 전) 꺼져 있거나 클론 키를 구하지 못하면 None — 기록하지 않는다.
     HARNESS_METRICS=off 면 이 프로세스와 자식은 기록하지 않는다(doctor 같은 점검이 쓴다)."""
     if os.environ.get("HARNESS_METRICS") == "off":
         return None
@@ -51,7 +75,10 @@ def config():
         return None
     if m.get("dir", "off") == "off":
         return None
-    return dict(m, dir=Path(os.path.expandvars(os.path.expanduser(m["dir"]))))
+    d = expand_dir(m["dir"])
+    if d is None:
+        return None
+    return dict(m, dir=Path(os.path.expandvars(os.path.expanduser(d))))
 
 
 def now():

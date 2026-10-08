@@ -115,7 +115,8 @@ LEGACY_COMMANDS = ".ai/project/commands.md"
 
 
 # 실행 지표. 리포 밖(홈 아래)에 남아 커밋되지 않는다. 기록은 script/metric.py, 집계는 `harness metrics`.
-METRICS_DEFAULTS = {"dir": "$HOME/.harness/{project}/metrics", "retention_days": 30, "max_file_mb": 10,
+# dir 의 {clone} 은 실행할 때 이 클론의 키로 풀린다 — 생성 파일에는 설정 값 그대로 들어간다.
+METRICS_DEFAULTS = {"dir": "$HOME/.harness/{clone}/metrics", "retention_days": 30, "max_file_mb": 10,
                     "max_total_mb": 100, "stale_after_hours": 6, "capture_logs": "errors"}
 
 
@@ -124,7 +125,7 @@ CLONE_KEY = re.compile(r"c-[0-9a-f]{16}")
 
 
 # 이슈별 작업 트리. dir 의 확장은 쓰는 시점에 한다 — 값이 실행 환경에 달려 있다.
-WORKTREE_DEFAULTS = {"dir": "$HOME/.harness/{project}/worktrees", "include": [".claude/settings.local.json"]}
+WORKTREE_DEFAULTS = {"dir": "$HOME/.harness/{clone}/worktrees", "include": [".claude/settings.local.json"]}
 # 하네스 루트 기준 상대 경로: `/` 로 시작하지 않고, `..` 조각·공백·glob 문자가 없다
 INCLUDE_PATH = re.compile(r"(?!/)(?!(.*/)?\.\.(/|$))[^\s*?\[]+")
 
@@ -140,16 +141,16 @@ DOCTOR_DEFAULTS = {"remote_timeout": 30}
 REMOTE_TIMEOUT_LIMIT = 600
 
 
-def worktree_dir(cfg: dict) -> str:
-    """[worktree].dir 에 프로젝트 이름을 채우고 `~` 와 환경 변수를 확장한 것."""
-    d = cfg["worktree"]["dir"].replace("{project}", cfg["project"]["name"])
-    return os.path.expandvars(os.path.expanduser(d))
+def worktree_dir(cfg: dict, target: Path) -> str:
+    """[worktree].dir 의 자리표시를 이 클론의 키로 풀고 `~` 와 환경 변수를 확장한 것."""
+    return os.path.expandvars(os.path.expanduser(expand_key(cfg["worktree"]["dir"], target)))
 
 
-def metrics_cfg(cfg: dict) -> dict:
-    """[metrics] 에 프로젝트 이름을 채운 것. dir 이 "off" 면 기록하지 않는다."""
+def metrics_cfg(cfg: dict, target: Path) -> dict:
+    """[metrics] 의 dir 자리표시를 이 클론의 키로 푼 것. 환경 변수는 풀지 않는다. dir 이 "off" 면 기록하지 않는다."""
     m = dict(cfg["metrics"])
-    m["dir"] = m["dir"].replace("{project}", cfg["project"]["name"])
+    if m["dir"] != "off":
+        m["dir"] = expand_key(m["dir"], target)
     return m
 
 
@@ -442,7 +443,7 @@ def run_plan(cfg: dict) -> dict:
                         "auth_timeout": cfg["doctor"]["remote_timeout"],
                         "entry": role_meta(n).get("entry") or "%s %s" % (RUN_AGENT, n)}
     return {"_generated": "harness.toml 에서 생성된다. 직접 고치지 않는다 — harness render 가 다시 만든다.",
-            "roles": roles, "metrics": metrics_cfg(cfg)}
+            "roles": roles, "metrics": dict(cfg["metrics"])}
 
 
 def vendor(cfg: dict, role: str) -> str:
@@ -750,7 +751,7 @@ def derive(cfg: dict) -> dict:
         "ADR_TOOL": cfg["adr"]["tool"],
         "ADR_DIR": cfg["adr"]["dir"],
         "ADR_PROCEDURE": adr_procedure(cfg["adr"]["style"], cfg["adr"]["tool"], cfg["adr"]["dir"]),
-        "USAGE_LOG_PATH": cfg["usage"]["log_path"].replace("{project}", p["name"]),
+        "USAGE_LOG_PATH": cfg["usage"]["log_path"],
         "USAGE_ENV_VAR": cfg["usage"]["env_var"],
     }
 
@@ -3386,7 +3387,7 @@ def registered_worktrees(top):
 
 def left_worktrees(cfg, target):
     """worktree.dir 바로 아래에 등록된 이 리포의 worktree — (이름, 경로). 경로가 지워진 것도 든다."""
-    d = worktree_dir(cfg)
+    d = worktree_dir(cfg, target)
     if not os.path.isabs(d):
         return []
     real = os.path.realpath(d)
@@ -3406,7 +3407,7 @@ def issue_worktree(cfg, target, issue):
         die("error: --worktree needs the harness root inside a git repository (%s)" % target)
     top = os.path.realpath(r.stdout.strip())
     prefix = git(target, "rev-parse", "--show-prefix").stdout.strip()
-    d = worktree_dir(cfg)
+    d = worktree_dir(cfg, target)
     real = os.path.realpath(d) if os.path.isabs(d) else ""
     if not real or real == top or real.startswith(top.rstrip("/") + "/"):
         die("error: worktree.dir must be an absolute path outside the repository (got %s)\n\n"
@@ -3425,7 +3426,7 @@ def issue_worktree(cfg, target, issue):
             return 1
     else:
         print("error: %s is not a worktree of this repository\n\n"
-              "help: another checkout may use the same project name — set worktree.dir or move that directory" % path,
+              "help: another clone may share worktree.dir — put {clone} in worktree.dir or move that directory" % path,
               file=sys.stderr)
         return 2
     return {"path": path, "top": top, "new": new, "run_dir": os.path.join(path, prefix) if prefix else path}
@@ -4012,16 +4013,24 @@ def clone_key(root: Path) -> str:
     return _CLONE_KEYS[k]
 
 
+def expand_key(text: str, target: Path) -> str:
+    """설정 값의 자리표시(`{clone}` 과 그 옛 별칭 `{project}`)를 이 클론의 키로 바꾼 것. 자리표시가 없으면 키를 구하지 않는다."""
+    for p in clone_key_module().PLACEHOLDERS:
+        if p in text:
+            text = text.replace(p, clone_key(target))
+    return text
+
+
 def cmd_metrics(cfg, target, args):
     """`harness metrics [--since 24h|7d|30d] [--trace ID]` — 실행 지표 집계(JSON). `harness metrics prune` — 정리."""
-    m = metrics_cfg(cfg)
+    m = metrics_cfg(cfg, target)
     d = Path(os.path.expandvars(os.path.expanduser(m["dir"]))) if m["dir"] != "off" else None
     if args.args[:1] == ["prune"]:
         r = subprocess.run([sys.executable, str(target / "script" / "metric.py"), "prune"], cwd=target)
         return r.returncode
     hm = metrics_module()
-    imported = (hm.metrics_import(target, m, registry() / cfg["project"]["name"] / "state", set(cfg["roles"]),
-                                  worktree_dir(cfg), git(target, "rev-parse", "--show-prefix").stdout.strip())
+    imported = (hm.metrics_import(target, m, registry() / clone_key(target) / "state", set(cfg["roles"]),
+                                  worktree_dir(cfg, target), git(target, "rev-parse", "--show-prefix").stdout.strip())
                 if args.args[:1] == ["import"] else None)
     mt = re.fullmatch(r"(\d+)([hd])", args.since or "7d")
     if not mt:
