@@ -4271,6 +4271,15 @@ in101 --create --git-init --target "$c101/c/fresh101"; check "install --create u
 check "a refused install --create leaves the registry" "$(cat "$work/home101/fresh101/project.json")" "$before"
 has "$work/in101.err" "is already registered to another repository" "the refusal is not the registry's"
 cat "$work/in101.err" >> "$work/in101-all.log"
+# 있는 대상에서 install 이 바꿀 경로가 판정에서 멈추면 .git 도 설정도 생기지 않는다 — 설정이 없을 때와 있을 때
+mkdir -p "$work/outside105"
+for e in noconf conf; do
+  s105="$c101/e/$e"; mkdir -p "$s105/.ai"; ln -s "$work/outside105" "$s105/.ai/workflows"
+  [ "$e" = conf ] && cp "$root/templates/harness.toml" "$s105/harness.toml"
+  in101 --git-init --target "$s105"; check "install --git-init over a linked path is refused ($e)" "$?" "2"
+  [ ! -e "$s105/.git" ] && ok || bad "a refused install --git-init started a git repository ($e)"
+  if [ "$e" = noconf ]; then [ ! -e "$s105/harness.toml" ] && ok || bad "a refused install laid down the config"; fi
+done
 r="$c101/d/repo101"; mkdir -p "$r"
 ( cd "$r" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first ) || bad "could not prepare a repository"
 head101=$(git -C "$r" rev-parse HEAD)

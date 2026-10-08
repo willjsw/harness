@@ -1962,15 +1962,26 @@ def cmd_vars(cfg, _target, _args):
     return 0
 
 
+def seed_text(target: Path) -> str:
+    """설정이 없는 대상에 깔 기본 설정 — 프로젝트 이름만 채운다."""
+    return DEFAULT_CONFIG.read_text(encoding="utf-8").replace('name = "my-project"', 'name = "%s"' % target.name)
+
+
+def seeded_config(target: Path) -> dict:
+    """seed_config 가 깔 설정을 파일로 쓰지 않고 읽은 것."""
+    cfg = tomllib.loads(seed_text(target))
+    normalize(cfg)
+    validate(cfg)
+    return cfg
+
+
 def seed_config(target: Path):
     """설정이 없는 대상에 기본 설정을 깔고 프로젝트 이름만 채운다."""
     dst = target / "harness.toml"
     if dst.exists():
         return
-    text = DEFAULT_CONFIG.read_text(encoding="utf-8")
     # 대상이 없는 링크면 공용 함수가 멈춘다 — 따라 쓰면 링크가 가리키는 곳에 설정이 생긴다
-    guarded_path(target, "harness.toml", "write").write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
-                   encoding="utf-8")
+    guarded_path(target, "harness.toml", "write").write_text(seed_text(target), encoding="utf-8")
     print("created %s — review the values, then run `harness render`" % dst)
 
 
@@ -2131,6 +2142,11 @@ def cmd_install(_cfg, target, args):
         # 판정 이름은 대상의 설정에 있으면 그 이름, 없으면 새로 깔 설정이 채울 디렉터리 이름이다
         cfg = loaded_config(target) if (target / "harness.toml").is_file() else None
         if refuse_taken(cfg or {"project": {"name": target.name}}, target) is None:
+            return 2
+        # 있는 대상은 디렉터리 · .git · 설정을 만들기 전에 install 이 바꿀 경로를 판정한다 — 멈추면 아무것도 생기지 않는다.
+        # 설정이 없으면 깔 기본 설정으로 판정한다(파일로 쓰지 않는다)
+        if target.is_dir() and refuse_changes(cfg or seeded_config(target), target, args,
+                                              {rel: "remove" for rel in (PINNED.rstrip("/"),) + PINNED_PARTS}):
             return 2
         if not target.is_dir():
             target.mkdir(parents=True)
