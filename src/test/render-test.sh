@@ -4589,7 +4589,7 @@ cat "$work"/doc109-*.out "$work"/doc109-*.err > "$work/doc109-all.log"
 no_hangul "$work/doc109-all.log" "the doctor registry output"
 unset -f g109 doc109 regsnap109
 
-echo "UT-110 install and render move what an old version left under the name directory to the clone key, and leave what they cannot move with the reason"
+echo "UT-110 install and render move what an old version left under the name directory to the clone key, leave what they cannot move or what is a link with the reason, and merge without losing lines"
 lg110="$work/legacy110"; rm -rf "$lg110"; mkdir -p "$lg110"
 g110() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
 perm110() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
@@ -4692,7 +4692,168 @@ check "render moves nothing for another repository's old name directory" "$(move
   || bad "another repository's old name directory was touched"
 "$root/bin/harness" doctor --target "$D110" > "$work/doc110-other.out" 2>&1
 hasnt "$work/doc110-other.out" "state under the old name directory is not moved" "doctor reports another repository's old name directory"
-cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out > "$work/out110.log"
+# 링크 — 옛 기록이 새 자리를 가리키는 링크면 합치지 않고 사유와 함께 남긴다. 따라가 합치면 같은 파일을 자기 자신에
+# 덧붙이고 지워 새 자리의 기록이 사라진다
+E110="$lg110/e"; mk110 "$E110" legacy110e || bad "could not set up the link repository"
+kE110=$(python3 "$E110/script/_clone_key.py" expand '{clone}'); nE110="$HARNESS_HOME/$kE110"; oE110="$HARNESS_HOME/legacy110e"
+mkdir -p "$nE110/metrics" "$nE110/state" "$oE110"
+printf '{"new":1}\n' > "$nE110/metrics/spans-20260101.jsonl"; printf '{"new": 1}\n' > "$nE110/state/import-cursor.json"
+printf 'new-usage\n' > "$nE110/usage.log"
+g110 "$E110" worktree add -q --detach "$nE110/worktrees/3" || bad "could not add a worktree under the clone key"
+printf '{"path": "%s"}\n' "$(cd "$E110" && pwd -P)" > "$oE110/project.json"
+for x in metrics state usage.log worktrees; do ln -s "$nE110/$x" "$oE110/$x"; done
+"$root/bin/harness" render --target "$E110" > "$work/r110e.out" 2>&1; check "render over links to the clone key exits 0" "$?" "0"
+for l in "render: left import state at $oE110/state — a symbolic link" "render: left run metrics at $oE110/metrics — a symbolic link" \
+         "render: left usage log at $oE110/usage.log — a symbolic link" "render: left worktrees at $oE110/worktrees — a symbolic link" \
+         "render: kept $oE110 — 4 item(s) left there"; do
+  has "$work/r110e.out" "$l" "render does not say: $l"
+done
+check "spans the old metrics link points at stay as they were" "$(cat "$nE110/metrics/spans-20260101.jsonl" 2>&1)" '{"new":1}'
+check "the cursor the old state link points at stays" "$(cat "$nE110/state/import-cursor.json" 2>&1)" '{"new": 1}'
+check "the usage log the old link points at stays as it was" "$(cat "$nE110/usage.log" 2>&1)" "new-usage"
+[ -L "$oE110/metrics" ] && [ -L "$oE110/usage.log" ] && [ -f "$oE110/project.json" ] && ok || bad "a link or the registration under the old name directory went away"
+git -C "$E110" worktree list --porcelain | grep -F "$kE110/worktrees/3" >/dev/null && ok || bad "the worktree under the clone key was moved"
+# 옛 이름 디렉터리 자체가 클론 키 디렉터리를 가리키는 링크면 아무것도 옮기지 않는다
+H110="$lg110/h"; mk110 "$H110" legacy110h || bad "could not set up the linked name directory repository"
+kH110=$(python3 "$H110/script/_clone_key.py" expand '{clone}'); nH110="$HARNESS_HOME/$kH110"
+mkdir -p "$nH110/state" && printf '{"new": 1}\n' > "$nH110/state/import-cursor.json"
+printf '{"path": "%s", "name": "legacy110h"}\n' "$(cd "$H110" && pwd -P)" > "$nH110/project.json"
+ln -s "$nH110" "$HARNESS_HOME/legacy110h"
+"$root/bin/harness" render --target "$H110" > "$work/r110h.out" 2>&1; check "render over a linked name directory exits 0" "$?" "0"
+has "$work/r110h.out" "render: kept $HARNESS_HOME/legacy110h — a symbolic link" "render does not say it kept the linked name directory"
+check "render over a linked name directory moves nothing" "$(moved110 "$work/r110h.out" | grep -v '— a symbolic link$')" ""
+check "the cursor behind the linked name directory stays" "$(cat "$nH110/state/import-cursor.json" 2>&1)" '{"new": 1}'
+[ -L "$HARNESS_HOME/legacy110h" ] && ok || bad "the linked name directory went away"
+# 옛 디렉터리 안에 새 자리를 가리키는 링크가 있으면 그 디렉터리를 통째로 남긴다
+F110="$lg110/f"; mk110 "$F110" legacy110f || bad "could not set up the inner link repository"
+kF110=$(python3 "$F110/script/_clone_key.py" expand '{clone}'); nF110="$HARNESS_HOME/$kF110"; oF110="$HARNESS_HOME/legacy110f"
+mkdir -p "$nF110/metrics" "$oF110/metrics"
+printf '{"new":1}\n' > "$nF110/metrics/spans-20260101.jsonl"; printf 'old-only\n' > "$oF110/metrics/spans-20260102.jsonl"
+ln -s "$nF110/metrics/spans-20260101.jsonl" "$oF110/metrics/spans-20260101.jsonl"
+printf '{"path": "%s"}\n' "$(cd "$F110" && pwd -P)" > "$oF110/project.json"
+"$root/bin/harness" render --target "$F110" > "$work/r110f.out" 2>&1; check "render over an inner link exits 0" "$?" "0"
+has "$work/r110f.out" "render: left run metrics at $oF110/metrics — holds a symbolic link" "render does not say it left the metrics holding a link"
+check "the span file an inner link points at is not merged into itself" "$(cat "$nF110/metrics/spans-20260101.jsonl" 2>&1)" '{"new":1}'
+[ -f "$oF110/metrics/spans-20260102.jsonl" ] && [ ! -e "$nF110/metrics/spans-20260102.jsonl" ] && ok || bad "part of a metrics directory left behind was moved"
+# 상위 경로의 링크 때문에 옛 경로가 새 자리와 같은 곳이면 남긴다
+G110="$lg110/g"; mk110 "$G110" legacy110g || bad "could not set up the linked parent repository"
+gr110="$lg110/g-rec"
+"$root/bin/harness" set --target "$G110" metrics.dir "$gr110/{clone}/metrics" >/dev/null 2>&1 || bad "could not set metrics.dir under a linked parent"
+kG110=$(python3 "$G110/script/_clone_key.py" expand '{clone}')
+mkdir -p "$gr110/$kG110/metrics" "$HARNESS_HOME/legacy110g" && printf '{"new":1}\n' > "$gr110/$kG110/metrics/spans-20260101.jsonl"
+ln -s "$gr110/$kG110" "$gr110/legacy110g"
+printf '{"path": "%s"}\n' "$(cd "$G110" && pwd -P)" > "$HARNESS_HOME/legacy110g/project.json"
+"$root/bin/harness" render --target "$G110" > "$work/r110g.out" 2>&1; check "render over a linked parent exits 0" "$?" "0"
+has "$work/r110g.out" "render: left run metrics at $gr110/legacy110g/metrics — overlaps the new path" "render does not say the old metrics overlap the new ones"
+check "spans reached through a linked parent stay as they were" "$(cat "$gr110/$kG110/metrics/spans-20260101.jsonl" 2>&1)" '{"new":1}'
+# 사용자 파일로 거부된 렌더는 옮기지 않는다 — 쓰기 전 판정이 옮기기보다 먼저다
+J110="$lg110/j"; mk110 "$J110" legacy110j || bad "could not set up the refused repository"
+old110 "$J110" legacy110j || bad "could not lay down the refused repository's old name directory"
+sedi '/  script\/review-mr.sh$/d' "$J110/.harness/managed"
+"$root/bin/harness" render --target "$J110" > "$work/r110j.out" 2>&1; check "render over a user file is refused" "$?" "2"
+check "a refused render moves nothing" "$(moved110 "$work/r110j.out")" ""
+[ -f "$HARNESS_HOME/legacy110j/state/import-cursor.json" ] && [ -f "$HARNESS_HOME/legacy110j/metrics/spans-20260101.jsonl" ] \
+  && [ -f "$HARNESS_HOME/legacy110j/usage.log" ] && ok || bad "a refused render moved the old records"
+check "a refused render leaves only the old registration" "$(regs_for "$J110")" "legacy110j/project.json"
+# 합치는 동안의 다른 기록기 — 지표는 기록기의 잠금(옛 · 새 자리 모두)을 잡은 채 합치고, 덧붙이기는 추가 쓰기라 그 사이
+# 덧붙인 줄을 덮지 않는다. 합치기가 목적 파일에 쓰기 직전에 끼어드는 기록기를 흉내 낸다
+python3 - "$root/bin/harness" "$lg110/race" > "$work/race110.txt" 2>&1 <<'PY'
+import contextlib, fcntl, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]; home, root, rec = d + "/home", d + "/root", d + "/rec"
+os.makedirs(home + "/race110"); os.makedirs(root)
+os.environ["HARNESS_HOME"] = home
+json.dump({"path": os.path.realpath(root)}, open(home + "/race110/project.json", "w"))
+key = cli.clone_key(Path(root))
+for side, tag in ((rec + "/race110", "old"), (rec + "/" + key, "new")):
+    os.makedirs(side + "/metrics")
+    open(side + "/metrics/spans-20260101.jsonl", "w").write('{"%s":1}\n' % tag)
+    open(side + "/metrics/.lock", "w").close()
+    open(side + "/usage.log", "w").write("%s-usage\n" % tag)
+spans = os.path.realpath(rec + "/" + key + "/metrics/spans-20260101.jsonl")
+usage = os.path.realpath(rec + "/" + key + "/usage.log")
+real_os_open, real_os_write, real_open = os.open, os.write, open
+locks, done, fds = [], set(), {}
+
+def lock_state(p):
+    fd = real_os_open(p, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return "free"
+    except BlockingIOError:
+        return "held"
+    finally:
+        os.close(fd)
+
+def hit(path):   # 목적 파일에 처음 쓰기 직전 — 지표는 잠금을 보고, 사용 기록은 다른 기록기가 한 줄을 덧붙인다
+    if path in done:
+        return
+    done.add(path)
+    if path == spans:
+        locks.append("old=%s new=%s" % (lock_state(rec + "/race110/metrics/.lock"), lock_state(rec + "/" + key + "/metrics/.lock")))
+    else:
+        fd = real_os_open(path, os.O_WRONLY | os.O_APPEND)
+        real_os_write(fd, b"concurrent\n")
+        os.close(fd)
+
+def target(p):
+    try:
+        rp = os.path.realpath(p)
+    except (TypeError, ValueError):
+        return None
+    return rp if rp in (spans, usage) else None
+
+def os_open(p, flags, *a, **k):
+    fd = real_os_open(p, flags, *a, **k)
+    fds.pop(fd, None)
+    if target(p) and flags & (os.O_WRONLY | os.O_RDWR):
+        fds[fd] = target(p)
+    return fd
+
+def os_write(fd, data):
+    if fd in fds:
+        hit(fds[fd])
+    return real_os_write(fd, data)
+
+class Hooked:
+    def __init__(self, f, p):
+        self._f, self._p = f, p
+    def write(self, b):
+        hit(self._p)
+        return self._f.write(b)
+    def __getattr__(self, n):
+        return getattr(self._f, n)
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return self._f.__exit__(*a)
+
+def hooked_open(p, mode="r", *a, **k):
+    f = real_open(p, mode, *a, **k)
+    return Hooked(f, target(p)) if target(p) and any(c in mode for c in "wa+") else f
+
+cli.open = hooked_open
+os.open, os.write = os_open, os_write
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        cli.migrate_legacy({"project": {"name": "race110"}, "metrics": {"dir": rec + "/{clone}/metrics"},
+                            "usage": {"log_path": rec + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}, Path(root), "render")
+finally:
+    os.open, os.write = real_os_open, real_os_write
+print(locks[0] if locks else "no write to the spans file")
+print(real_open(spans).read().replace("\n", " "))
+lines = real_open(usage).read().split("\n")
+print(" ".join(sorted(lines)))
+PY
+check "metrics merge under the recorder's lock in both places" "$(sed -n 1p "$work/race110.txt")" "old=held new=held"
+check "the merged spans keep both lines" "$(sed -n 2p "$work/race110.txt")" '{"new":1} {"old":1} '
+check "merging the usage log keeps a line another recorder appended meanwhile" "$(sed -n 3p "$work/race110.txt")" " concurrent new-usage old-usage"
+cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out "$work/race110.txt" > "$work/out110.log"
 no_hangul "$work/out110.log" "the old name directory move output"
 unset -f g110 perm110 moved110 mk110 old110
 
