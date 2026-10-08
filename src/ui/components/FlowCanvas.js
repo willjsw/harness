@@ -514,7 +514,8 @@ function Procedure({ project, wf, doc, notes, path, docPath, canSave }) {
           <h2>Generated Procedure {docPath && <code className="key fname">{docPath}</code>}</h2>
           <ModeToggle edit={edit} onChange={setEdit} />
         </div>
-        <div className="md-view proc-doc"><Markdown>{doc || ""}</Markdown></div>
+        {/* 절차 문서 경로를 내지 않는 옛 고정 사본이면 빈 문서로 보이지 않게 재설치를 안내한다 */}
+        {docPath ? <div className="md-view proc-doc"><Markdown>{doc || ""}</Markdown></div> : <Reinstall what="생성된 절차 문서를 보기" compact />}
       </section>
       {edit && !canSave && <Reinstall what="절차 지시를 저장" compact />}
       {edit && canSave && (
