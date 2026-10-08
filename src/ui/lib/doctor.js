@@ -180,12 +180,22 @@ export function explain(i, base, schema) {
     return { title: `${m[1]} 역할의 모델(${m[2]})을 이 컴퓨터에서 찾지 못했습니다`, body: "그 에이전트 CLI 가 제공하는 모델로 바꿉니다. 모델 목록이 오래됐다면 Agents 탭에서 도구 목록을 새로 읽습니다.", href: `${base}/agents` };
   if ((m = w.match(/^role `(.+)` is not in harness\.toml$/)))
     return { title: `설정에 없는 역할(${m[1]})을 가리키는 문서가 있습니다`, body: `위치: ${d.replace(/^still referenced at /, "")}` };
-  if ((m = w.match(/^`(.+)` is registered to another path$/)))
-    return { title: `프로젝트 이름 ${m[1]} 이 다른 경로에 등록되어 있습니다`,
-      body: `UI 와 실행 기록이 ${d} 를 가리킵니다. 그 경로가 더는 이 프로젝트가 아니면 여기서 다시 설치해 등록을 넘겨받습니다. 아직 쓰는 클론이면 그쪽에서 harness uninstall 하거나 이 리포의 project.name 을 바꿉니다.`,
-      cmd: "harness install" };
+  // 등록은 클론마다 따로다 — 이 클론의 등록이 가리키는 경로로 판정한다
+  if (w === "this clone is registered to another path")
+    return { title: "이 클론의 등록이 다른 경로를 가리킵니다",
+      body: `UI 에서 이 클론을 열면 ${d} 가 열립니다. 여기서 다시 설치하면 이 경로로 등록됩니다.`, cmd: "harness install" };
   if (w === "this repository is not registered")
     return { title: "이 리포가 등록되어 있지 않습니다", body: "UI 의 프로젝트 목록에 나오지 않습니다.", cmd: "harness install" };
+  if (w === "state under the old name directory is not moved") {
+    const dir = d.match(/`([^`]+)`$/)?.[1];
+    return { title: "옛 이름 디렉터리의 기록이 아직 이 클론으로 옮겨지지 않았습니다",
+      body: `옛 버전이 ${dir ?? "이름 디렉터리"} 에 남긴 기록(가져오기 커서 · 실행 지표 · 사용 기록 · 이슈 worktree)이 아직 이 클론 아래에 없습니다. `
+        + "render 가 옮기고, 옮기지 못한 worktree 는 render 출력이 사유와 함께 알립니다.",
+      cmd: "harness render" };
+  }
+  if ((m = w.match(/^`(.+)` uses `\{project\}`$/)))
+    return { title: `${m[1]} 에 옛 자리표시 {project} 가 남아 있습니다`,
+      body: "{project} 는 {clone} 의 옛 별칭이라 같은 값(이 클론의 키)으로 풀립니다. harness.toml 의 그 값에서 {project} 를 {clone} 으로 바꿉니다." };
   if ((m = w.match(/^`(.+)` does not exist$/)))
     return { title: `없는 경로(${m[1]})를 가리키는 문서가 있습니다`, body: `위치: ${d.replace(/^referenced by /, "")}` };
   if ((m = w.match(/^forge CLI `(.+)`$/)) && i.state !== "ok")

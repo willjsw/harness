@@ -68,16 +68,36 @@ test("without a schema the fix stays and the verify and hooks commands are empty
 
 test("explain registry lines", () => {
   const b = "/demo";
-  const line = { state: "warn", what: "`demo` is registered to another path", detail: "/elsewhere/demo" };
-  const other = explain(line, b);
-  assert.notEqual(other.title, line.what);
-  assert.notEqual(other.body, line.detail);
+  assert.equal(SECTIONS.registry, "등록");
+  const reg = (what, detail) => ({ section: "registry", state: "warn", what, detail });
+  const elsewhere = reg("this clone is registered to another path", "/elsewhere/demo");
+  const other = explain(elsewhere, b);
+  assert.notEqual(other.title, elsewhere.what);
+  assert.notEqual(other.body, elsewhere.detail);
   assert.match(other.body, /\/elsewhere\/demo/);
   assert.equal(other.cmd, "harness install");
-  const none = explain({ state: "warn", what: "this repository is not registered", detail: "run `harness install` to list it in the UI" }, b);
+  const missing = reg("this repository is not registered", "run `harness install` to list it in the UI");
+  const none = explain(missing, b);
+  assert.notEqual(none.title, missing.what);
+  assert.notEqual(none.body, missing.detail);
   assert.equal(none.cmd, "harness install");
-  assert.notEqual(none.title, "this repository is not registered");
-  assert.equal(SECTIONS.registry, "등록");
+  const left = reg("state under the old name directory is not moved", "run `harness render` to move `/home/u/.harness/demo`");
+  const old = explain(left, b);
+  assert.notEqual(old.title, left.what);
+  assert.notEqual(old.body, left.detail);
+  assert.match(old.body, /\/home\/u\/\.harness\/demo/);
+  assert.equal(old.cmd, "harness render");
+});
+
+test("explain the old {project} placeholder in config", () => {
+  const line = { section: "config", state: "warn", what: "`metrics.dir` uses `{project}`", detail: "an old alias of {clone} — replace it with {clone} in harness.toml" };
+  const x = explain(line, "/demo");
+  assert.notEqual(x.title, line.what);
+  assert.notEqual(x.body, line.detail);
+  assert.match(x.title, /metrics\.dir/);
+  assert.match(x.body, /\{clone\}/);
+  assert.equal("cmd" in x, false);
+  assert.equal("run" in x, false);
 });
 
 test("explain remote lines", () => {
