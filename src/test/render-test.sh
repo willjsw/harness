@@ -4589,6 +4589,113 @@ cat "$work"/doc109-*.out "$work"/doc109-*.err > "$work/doc109-all.log"
 no_hangul "$work/doc109-all.log" "the doctor registry output"
 unset -f g109 doc109 regsnap109
 
+echo "UT-110 install and render move what an old version left under the name directory to the clone key, and leave what they cannot move with the reason"
+lg110="$work/legacy110"; rm -rf "$lg110"; mkdir -p "$lg110"
+g110() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+perm110() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+moved110() { grep -E '^(install|render): (moved|left|kept|removed) ' "$1"; }
+mk110() { # mk110 <리포> <이름> — 기록 경로를 등록부 아래 {clone} 으로 둔 설정으로 렌더하고 커밋한 리포
+  mkdir -p "$1" && ( cd "$1" && git init -q . ) && cp "$root/templates/harness.toml" "$1/harness.toml" || return 1
+  python3 - "$1/harness.toml" "$2" "$HARNESS_HOME" <<'PY'
+import re, sys
+p, name, home = sys.argv[1:4]; s = open(p, encoding="utf-8").read()
+for pat, repl in ((r'(?m)^(\[project\]\nname = ).*$', lambda m: m.group(1) + '"%s"' % name),
+                  (r'(?m)^(\[metrics\]\n(?:#.*\n)*)dir = .*$', lambda m: m.group(1) + 'dir = "%s/{clone}/metrics"' % home),
+                  (r'(?m)^log_path = .*$', lambda m: 'log_path = "%s/{clone}/usage.log"' % home),
+                  (r'(?m)^(\[worktree\]\n(?:#.*\n)*)dir = .*$', lambda m: m.group(1) + 'dir = "%s/{clone}/worktrees"' % home)):
+    s, n = re.subn(pat, repl, s, count=1)
+    assert n == 1, pat
+open(p, "w", encoding="utf-8").write(s)
+PY
+  "$root/bin/harness" render --target "$1" >/dev/null 2>&1 && g110 "$1" add -A && g110 "$1" commit -q -m init
+}
+old110() { # old110 <등록이 가리킬 리포> <이름> — 옛 버전이 남긴 이름 디렉터리: 등록 · 가져오기 커서 · 지표 · 사용 기록
+  mkdir -p "$HARNESS_HOME/$2/state" "$HARNESS_HOME/$2/metrics" \
+    && printf '{"path": "%s"}\n' "$(cd "$1" && pwd -P)" > "$HARNESS_HOME/$2/project.json" \
+    && printf '{"old": 1}\n' > "$HARNESS_HOME/$2/state/import-cursor.json" \
+    && printf '{"old":1}\n' > "$HARNESS_HOME/$2/metrics/spans-20260101.jsonl" && printf 'old-usage\n' > "$HARNESS_HOME/$2/usage.log"
+}
+# 전부 옮김 — install 이 커서 · 지표 · 사용 기록 · 깨끗한 worktree 를 키 아래로 옮기고 옛 디렉터리를 지운다
+A110="$lg110/a"; mk110 "$A110" legacy110a || bad "could not set up the first legacy repository"
+old110 "$A110" legacy110a || bad "could not lay down the old name directory"
+g110 "$A110" worktree add -q --detach "$HARNESS_HOME/legacy110a/worktrees/5" || bad "could not add the clean worktree"
+kA110=$(python3 "$A110/script/_clone_key.py" expand '{clone}'); nA110="$HARNESS_HOME/$kA110"
+"$root/bin/harness" doctor --target "$A110" > "$work/doc110-before.out" 2>&1
+has "$work/doc110-before.out" "warn state under the old name directory is not moved  — run \`harness render\` to move \`$HARNESS_HOME/legacy110a\`" \
+  "doctor does not report the state left under the old name"
+"$root/bin/harness" install --target "$A110" > "$work/in110a.out" 2> "$work/in110a.err"; check "install over the old name directory" "$?" "0"
+for l in "install: moved import state to $nA110/state" "install: moved run metrics to $nA110/metrics" "install: moved usage log to $nA110/usage.log" \
+         "install: moved worktree 5 to $nA110/worktrees/5" "install: removed $HARNESS_HOME/legacy110a"; do
+  has "$work/in110a.out" "$l" "install does not say: $l"
+done
+check "the cursor is under the clone key" "$(cat "$nA110/state/import-cursor.json" 2>&1)" '{"old": 1}'
+check "the spans are under the clone key" "$(cat "$nA110/metrics/spans-20260101.jsonl" 2>&1)" '{"old":1}'
+check "the usage log is under the clone key" "$(cat "$nA110/usage.log" 2>&1)" "old-usage"
+git -C "$A110" worktree list --porcelain | grep -qF "worktree" && git -C "$A110" worktree list --porcelain | grep -F "$kA110/worktrees/5" >/dev/null \
+  && [ -f "$nA110/worktrees/5/harness.toml" ] && ok || bad "the worktree is not at its new path in git worktree list"
+[ ! -e "$HARNESS_HOME/legacy110a" ] && ok || bad "the old name directory is left after everything moved"
+check "install registered the clone" "$(regs_for "$A110")" "$kA110/project.json"
+check "the moved cursor directory is private" "$(perm110 "$nA110/state")" "700"
+check "the moved cursor is private" "$(perm110 "$nA110/state/import-cursor.json")" "600"
+check "the moved metrics directory is private" "$(perm110 "$nA110/metrics")" "700"
+check "the moved span file is private" "$(perm110 "$nA110/metrics/spans-20260101.jsonl")" "600"
+"$root/bin/harness" doctor --target "$A110" > "$work/doc110-after.out" 2>&1
+hasnt "$work/doc110-after.out" "state under the old name directory is not moved" "doctor still reports state that was moved"
+# 남김 — 미커밋 변경 · 잠김 · 없는 경로 · 새 자리 있음은 옛 자리에 두고 사유를 알린다. 옛 등록도 남는다
+B110="$lg110/b"; mk110 "$B110" legacy110b || bad "could not set up the second legacy repository"
+old110 "$B110" legacy110b || bad "could not lay down the second old name directory"
+ob110="$HARNESS_HOME/legacy110b/worktrees"
+for n in 7 8 9 10; do g110 "$B110" worktree add -q --detach "$ob110/$n" || bad "could not add worktree $n"; done
+echo dirty > "$ob110/7/notes.txt"; g110 "$B110" worktree lock "$ob110/8"; rm -rf "$ob110/9"
+kB110=$(python3 "$B110/script/_clone_key.py" expand '{clone}'); nB110="$HARNESS_HOME/$kB110"
+mkdir -p "$nB110/worktrees/10"
+"$root/bin/harness" render --target "$B110" > "$work/r110b.out" 2> "$work/r110b.err"; check "render that leaves worktrees behind exits 0" "$?" "0"
+for l in "render: left worktree 7 at $ob110/7 — uncommitted changes" "render: left worktree 8 at $ob110/8 — locked" \
+         "render: left worktree 9 at $ob110/9 — missing — run git worktree prune" "render: left worktree 10 at $ob110/10 — destination exists" \
+         "render: kept $HARNESS_HOME/legacy110b — 1 item(s) left there" "render: moved import state to $nB110/state"; do
+  has "$work/r110b.out" "$l" "render does not say: $l"
+done
+[ -f "$HARNESS_HOME/legacy110b/project.json" ] && ok || bad "the old registration went away while worktrees are left"
+[ -d "$ob110/7" ] && [ -d "$ob110/8" ] && [ ! -e "$nB110/worktrees/7" ] && ok || bad "a worktree that could not move was touched"
+check "render registers the clone and keeps the old registration" "$(regs_for "$B110" | tr '\n' ' ')" "$kB110/project.json legacy110b/project.json "
+# 이슈 worktree 에서 도는 렌더는 옮기지 않는다 — 옛 등록은 본 클론을 가리킨다
+"$root/bin/harness" render --target "$ob110/7" > "$work/r110wt.out" 2>&1; check "render in an issue worktree exits 0" "$?" "0"
+check "render in an issue worktree moves nothing" "$(moved110 "$work/r110wt.out")" ""
+# 남긴 것을 풀고 다시 렌더하면 옮겨지고 옛 디렉터리가 사라진다
+g110 "$ob110/7" add -A && g110 "$ob110/7" commit -q -m fix || bad "could not commit in worktree 7"
+g110 "$B110" worktree unlock "$ob110/8" && g110 "$B110" worktree prune && rm -rf "$nB110/worktrees/10" || bad "could not free the worktrees"
+"$root/bin/harness" render --target "$B110" > "$work/r110c.out" 2>&1; check "render after the worktrees are freed exits 0" "$?" "0"
+for n in 7 8 10; do has "$work/r110c.out" "render: moved worktree $n to $nB110/worktrees/$n" "render did not move worktree $n the second time"; done
+has "$work/r110c.out" "render: removed $HARNESS_HOME/legacy110b" "render did not remove the emptied old name directory"
+[ ! -e "$HARNESS_HOME/legacy110b" ] && ok || bad "the old name directory is left after the second render"
+# 합치기 — 키 아래에 같은 이름이 있으면 스팬 · 사용 기록은 옛 줄을 끝에 붙이고, 커서와 그 밖의 파일은 새 것을 남긴다
+C110="$lg110/c"; mk110 "$C110" legacy110c || bad "could not set up the merge repository"
+kC110=$(python3 "$C110/script/_clone_key.py" expand '{clone}'); nC110="$HARNESS_HOME/$kC110"
+old110 "$C110" legacy110c || bad "could not lay down the merge old name directory"
+printf 'old-only\n' > "$HARNESS_HOME/legacy110c/metrics/spans-20260102.jsonl"; printf 'old-lock\n' > "$HARNESS_HOME/legacy110c/metrics/.lock"
+mkdir -p "$nC110/state" "$nC110/metrics"
+printf '{"new": 1}\n' > "$nC110/state/import-cursor.json"; printf '{"new":1}\n' > "$nC110/metrics/spans-20260101.jsonl"
+printf 'new-lock\n' > "$nC110/metrics/.lock"; printf 'new-usage\n' > "$nC110/usage.log"
+"$root/bin/harness" render --target "$C110" > "$work/r110m.out" 2>&1; check "render that merges into the clone key exits 0" "$?" "0"
+check "old span lines follow the new ones" "$(tr '\n' ' ' < "$nC110/metrics/spans-20260101.jsonl")" '{"new":1} {"old":1} '
+check "an old span file the clone key lacks is moved" "$(cat "$nC110/metrics/spans-20260102.jsonl" 2>&1)" "old-only"
+check "the clone key's own lock file stays" "$(cat "$nC110/metrics/.lock")" "new-lock"
+check "old usage lines follow the new ones" "$(tr '\n' ' ' < "$nC110/usage.log")" "new-usage old-usage "
+check "the clone key's cursor stays" "$(cat "$nC110/state/import-cursor.json")" '{"new": 1}'
+[ ! -e "$HARNESS_HOME/legacy110c" ] && ok || bad "the merged old name directory is left"
+# 다른 경로 — 옛 등록이 다른 리포를 가리키면 아무것도 옮기지 않고 알리지 않는다
+D110="$lg110/d"; mk110 "$D110" legacy110d || bad "could not set up the other-path repository"
+old110 "$C110" legacy110d || bad "could not lay down the other-path old name directory"
+"$root/bin/harness" render --target "$D110" > "$work/r110d.out" 2>&1; check "render beside another repository's old name directory exits 0" "$?" "0"
+check "render moves nothing for another repository's old name directory" "$(moved110 "$work/r110d.out")" ""
+[ -f "$HARNESS_HOME/legacy110d/state/import-cursor.json" ] && [ -f "$HARNESS_HOME/legacy110d/usage.log" ] && ok \
+  || bad "another repository's old name directory was touched"
+"$root/bin/harness" doctor --target "$D110" > "$work/doc110-other.out" 2>&1
+hasnt "$work/doc110-other.out" "state under the old name directory is not moved" "doctor reports another repository's old name directory"
+cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out > "$work/out110.log"
+no_hangul "$work/out110.log" "the old name directory move output"
+unset -f g110 perm110 moved110 mk110 old110
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

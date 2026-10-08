@@ -1808,7 +1808,11 @@ def adopt_user_files(cfg, target: Path):
         print("render: adopted %s — yours is at %s.orig" % (rel, rel))
 
 
-def cmd_render(cfg, target, args):
+def cmd_render(cfg, target, args, migrate=True):
+    # 옛 버전이 이름으로 남긴 기록이 이 루트의 것이면 렌더 전에 클론 키 아래로 옮긴다. install 은 자기 잠금 안에서 이미 옮겼다
+    if migrate and legacy_dir(cfg, target) is not None:
+        with registry_lock():
+            migrate_legacy(cfg, target, "render")
     # 무엇이든 쓰기 전에 가른다 — 바꿀 경로가 링크를 거치거나, 하네스가 쓸 자리에 프로젝트 파일이 있으면 멈춘다.
     if refuse_changes(cfg, target, args):
         return 2
@@ -2081,6 +2085,181 @@ def register(cfg, target: Path):
             (registry() / r["key"] / "project.json").unlink(missing_ok=True)
 
 
+def legacy_dir(cfg, target: Path):
+    """옮길 옛 이름 디렉터리 — 옛 버전이 `<등록부>/<project.name>/` 에 남긴 등록이 이 하네스 루트를 가리킬 때만. 아니면 None."""
+    name = cfg["project"]["name"]
+    if not isinstance(name, str) or not name or CLONE_KEY.fullmatch(name) or name in (".", "..") or "/" in name:
+        return None
+    d = registry() / name
+    _name, path = read_registration(d) or (None, None)
+    if path is None or os.path.realpath(path) != os.path.realpath(target):
+        return None
+    return d
+
+
+def append_file(src: str, dst: str):
+    """src 의 내용을 dst 끝에 덧붙인다. dst 가 줄 중간에서 끝나면 줄을 바꾼 뒤 붙인다."""
+    with open(src, "rb") as f:
+        data = f.read()
+    with open(dst, "rb+") as f:
+        f.seek(0, os.SEEK_END)
+        if f.tell():
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                f.write(b"\n")
+        f.write(data)
+
+
+def private_tree(d: str):
+    """d 와 그 아래 디렉터리를 0700, 파일을 0600 으로. 링크는 건드리지 않는다."""
+    os.chmod(d, 0o700)
+    for top, dirs, files in os.walk(d):
+        for x in dirs:
+            if not os.path.islink(os.path.join(top, x)):
+                os.chmod(os.path.join(top, x), 0o700)
+        for x in files:
+            if not os.path.islink(os.path.join(top, x)):
+                os.chmod(os.path.join(top, x), 0o600)
+
+
+def move_state_dir(old: str, new: str):
+    """기록 디렉터리를 옮긴다. 새 자리가 있으면 파일마다 옮기고, 같은 이름은 스팬 파일만 덧붙이고 그 밖은 옛 것을 지운다."""
+    if not os.path.lexists(new):
+        os.makedirs(os.path.dirname(new), mode=0o700, exist_ok=True)
+        shutil.move(old, new)
+    else:
+        for top, _dirs, files in os.walk(old):
+            for x in files:
+                src = os.path.join(top, x)
+                dst = os.path.join(new, os.path.relpath(src, old))
+                if not os.path.lexists(dst):
+                    os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
+                    shutil.move(src, dst)
+                elif re.fullmatch(r"spans-.*\.jsonl", x):
+                    append_file(src, dst)
+                    os.unlink(src)
+                else:
+                    # 커서는 새 것이 이어 온 기록이다. 잠금·정리 표지는 새 자리의 것이 맞다
+                    os.unlink(src)
+        for top, _dirs, _files in os.walk(old, topdown=False):
+            try:
+                os.rmdir(top)
+            except OSError:
+                pass
+    private_tree(new)
+
+
+def move_state_file(old: str, new: str):
+    """기록 파일을 옮긴다. 새 파일이 있으면 옛 내용을 끝에 덧붙이고 옛 파일을 지운다."""
+    if not os.path.lexists(new):
+        os.makedirs(os.path.dirname(new), mode=0o700, exist_ok=True)
+        shutil.move(old, new)
+    else:
+        append_file(old, new)
+        os.unlink(old)
+
+
+def worktree_entries(top: str) -> list:
+    """`git worktree list --porcelain` 의 항목 — (경로, 잠겼는가)."""
+    out, cur = [], None
+    for ln in git(top, "worktree", "list", "--porcelain").stdout.splitlines() + [""]:
+        if ln.startswith("worktree "):
+            cur = [ln[len("worktree "):], False]
+        elif cur is not None and (ln == "locked" or ln.startswith("locked ")):
+            cur[1] = True
+        elif not ln and cur is not None:
+            out.append(tuple(cur))
+            cur = None
+    return out
+
+
+def migrate_worktrees(target: Path, old_dir: str, new_dir: str, say):
+    """옛 worktree.dir 바로 아래에 등록된 이 리포의 worktree 를 새 자리로 `git worktree move` 한다. 옮기지 못하면 사유와 함께 남긴다."""
+    r = git(target, "rev-parse", "--show-toplevel")
+    if r.returncode != 0 or not r.stdout.strip():
+        return
+    top, real_old = r.stdout.strip(), os.path.realpath(old_dir)
+    for path, locked in worktree_entries(top):
+        if os.path.dirname(os.path.realpath(path)) != real_old:
+            continue
+        name = os.path.basename(path)
+        old, new = os.path.join(old_dir, name), os.path.join(new_dir, name)
+        why = None
+        if locked:
+            why = "locked"
+        elif not os.path.isdir(path):
+            why = "missing — run git worktree prune"
+        else:
+            st = git(path, "status", "--porcelain")
+            if st.returncode != 0 or st.stdout.strip():
+                why = "uncommitted changes"
+            elif os.path.lexists(new):
+                why = "destination exists"
+        if why is None:
+            try:
+                os.makedirs(new_dir, mode=0o700, exist_ok=True)
+                why = None if git(top, "worktree", "move", path, new).returncode == 0 else "git worktree move failed"
+            except OSError as e:
+                why = type(e).__name__
+        say(("left worktree %s at %s — %s" % (name, old, why)) if why else ("moved worktree %s to %s" % (name, new)))
+
+
+def migrate_legacy(cfg, target: Path, who: str):
+    """옛 버전이 이름으로 남긴 기기 단위 상태(가져오기 커서 · 실행 지표 · 사용 기록 · 이슈 worktree)를 이 클론의 키 아래로 옮긴다.
+
+    옛 이름 디렉터리의 등록이 이 하네스 루트를 가리킬 때만 돈다. 등록부 잠금 안에서 부른다. 옮기지 못한 것은 사유와 함께
+    알리고 남긴다 — 다음 install · render 가 다시 옮긴다. 종료 코드에 닿지 않는다."""
+    old_dir = legacy_dir(cfg, target)
+    if old_dir is None:
+        return
+    name, key = cfg["project"]["name"], clone_key(target)
+    say = lambda msg: print("%s: %s" % (who, msg))
+    full = lambda v: os.path.expandvars(os.path.expanduser(v))
+
+    def both(value):
+        """설정 값의 (옛 경로, 새 경로). off 거나 두 경로가 같으면 None."""
+        if not isinstance(value, str) or value == "off":
+            return None
+        old = full(value.replace("{clone}", name).replace("{project}", name))
+        new = full(expand_key(value, target))
+        return None if old == new else (old, new)
+
+    moves = [("import state", (str(old_dir / "state"), str(registry() / key / "state")), move_state_dir),
+             ("run metrics", both(cfg["metrics"]["dir"]), move_state_dir),
+             ("usage log", both(cfg["usage"]["log_path"]), move_state_file)]
+    for item, pair, how in moves:
+        if pair is None or not os.path.lexists(pair[0]):
+            continue
+        try:
+            how(*pair)
+            say("moved %s to %s" % (item, pair[1]))
+        except OSError as e:
+            say("left %s at %s — %s" % (item, pair[0], type(e).__name__))
+    wt = both(cfg["worktree"]["dir"])
+    if wt is not None:
+        migrate_worktrees(target, wt[0], wt[1], say)
+
+    if read_registration(registry() / key) is None:
+        (registry() / key).mkdir(mode=0o700, parents=True, exist_ok=True)
+        (registry() / key / "project.json").write_text(json.dumps({"path": str(target), "name": name}) + "\n",
+                                                       encoding="utf-8")
+    # 등록 말고 남은 것이 빈 디렉터리뿐이면 통째로 지운다. 남은 것이 있으면 등록까지 그대로 둔다 — 다음에 다시 옮긴다
+    left = [os.path.join(top, x) for top, dirs, files in os.walk(old_dir)
+            for x in files + [d for d in dirs if os.path.islink(os.path.join(top, d))]]
+    if all(x == str(old_dir / "project.json") for x in left):
+        try:
+            shutil.rmtree(old_dir)
+            say("removed %s" % old_dir)
+            return
+        except OSError:
+            pass
+    try:
+        n = len([x for x in os.listdir(old_dir) if x != "project.json"])
+    except OSError:
+        n = 0
+    say("kept %s — %d item(s) left there" % (old_dir, n))
+
+
 def cmd_projects(_cfg, _target, _args):
     """`harness projects` — 이 기기에 등록된 클론 목록(JSON). UI 가 읽는다. 설정을 읽지 않고 등록부를 바꾸지 않는다.
 
@@ -2204,7 +2383,7 @@ def cmd_install(_cfg, target, args):
                 undo_created(target, made_dirs, made_git, seeded, not had_pin)
         if not done:
             return 2
-    rc = cmd_render(cfg, target, args)
+    rc = cmd_render(cfg, target, args, migrate=False)
     # 렌더가 끝나야 `script/githooks/` 가 있다.
     if rc == 0:
         report_hooks(target)
@@ -2268,6 +2447,7 @@ def install_registered(cfg, target: Path, args=None) -> bool:
             elif os.path.lexists(stale):
                 stale.unlink()
         print("install: %s is the harness source tree — it runs its own src/bin/harness, nothing to vendor" % target)
+        migrate_legacy(cfg, target, "install")
         register(cfg, target)
         report_same_name(cfg, target)
         return True
@@ -2287,6 +2467,7 @@ def install_registered(cfg, target: Path, args=None) -> bool:
     hashes.update((PINNED + rel, sha256_of(dst / rel)) for rel in pinned_files(dst))
     write_manifest_hashes(target, hashes)
     print("install: %s (harness %s)" % (dst, version))
+    migrate_legacy(cfg, target, "install")
     register(cfg, target)
     report_same_name(cfg, target)
     return True
@@ -2776,6 +2957,9 @@ def doctor_items(cfg, target, remote=False):
         line("ok", "registered as `%s`" % (name or cfg["project"]["name"]))
     else:
         line("warn", "this clone is registered to another path", at)
+    old = legacy_dir(cfg, target)
+    if old is not None:
+        line("warn", "state under the old name directory is not moved", "run `harness render` to move `%s`" % old)
 
     section("git")
     on = hooks_on(target)
