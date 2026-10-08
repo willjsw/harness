@@ -26,3 +26,34 @@ jobs:
           python-version: "3.11"
       - name: run-lint-test
         run: script/run-lint-test.sh
+
+  # main 에 push 되면 검증을 통과한 커밋을 GitHub Release 로 낸다. Homebrew 포뮬러가 main 을 설치하므로
+  # main 의 커밋 하나가 곧 배포 단위다. 태그는 `harness version` 과 같은 `v<번호>+<커밋 7자리>` 다.
+  release:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(src/bin/harness version | sed -n 's/^harness //p')
+          case "$version" in
+            *+*-dirty|"") echo "error: cannot release version '$version'" >&2; exit 1 ;;
+            *+*) ;;
+            *) echo "error: version '$version' carries no source commit" >&2; exit 1 ;;
+          esac
+          tag="v$version"
+          # 같은 커밋을 다시 돌리면 이미 있는 릴리스를 그대로 둔다
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists"
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes
