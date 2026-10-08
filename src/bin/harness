@@ -2152,11 +2152,19 @@ def cmd_install(_cfg, target, args):
             return 2
         # git init 뒤에야 드러나는 거부도 있다 — 리포 루트가 바뀌면 만들 파일(forge 템플릿)이 달라진다.
         # 이번 실행이 만든 것(디렉터리 · .git · 기본 설정)을 기록해 두고, 등록 전에 멈추면 그것만 걷는다
-        missing = [p for p in (target, *target.parents) if not os.path.lexists(p)]   # 안쪽부터 위로
-        made_git = seeded = done = False
+        had_pin = os.path.lexists(target / PINNED.rstrip("/"))
+        made_dirs, made_git, seeded, done = [], False, False, False
         try:
             if not target.is_dir():
-                target.mkdir(parents=True)
+                # 한 단계씩 만들어 실제로 이번에 만든 것만 기록한다 — 그 사이 다른 것이 만든 디렉터리는 걷지 않는다
+                for d in reversed([p for p in (target, *target.parents) if not os.path.lexists(p)]):
+                    try:
+                        d.mkdir()
+                        made_dirs.insert(0, d)
+                    except FileExistsError:
+                        pass
+                if not target.is_dir():
+                    die("error: target is not a directory\n  --> %s" % target)
                 print("install: created %s" % target)
             if git_init and not os.path.lexists(target / ".git"):
                 made_git = True
@@ -2172,7 +2180,7 @@ def cmd_install(_cfg, target, args):
             done = install_registered(cfg, target, args)
         finally:
             if not done:
-                undo_created(target, missing, made_git, seeded)
+                undo_created(target, made_dirs, made_git, seeded, not had_pin)
         if not done:
             return 2
     rc = cmd_render(cfg, target, args)
@@ -2185,8 +2193,8 @@ def cmd_install(_cfg, target, args):
 PINNED_PARTS = (".harness/bin", ".harness/templates", ".harness/VERSION")
 
 
-def undo_created(target: Path, made_dirs: list, made_git: bool, seeded: bool):
-    """거부된 install 이 이번에 만든 것만 걷는다 — 이번에 만든 .git · 기본 설정, 그리고 비어 있는 새 디렉터리.
+def undo_created(target: Path, made_dirs: list, made_git: bool, seeded: bool, made_pin: bool):
+    """거부·실패한 install 이 이번에 만든 것만 걷는다 — 이번에 만든 .git · 기본 설정 · 고정 사본, 그리고 비어 있는 새 디렉터리.
 
     디렉터리는 통째로 지우지 않는다 — 그 사이 다른 것이 만든 파일이 들어 있을 수 있다. 원래 있던 것은 건드리지 않는다.
     made_dirs 는 이번에 만든 디렉터리, 안쪽(대상)부터 위로다.
@@ -2196,6 +2204,12 @@ def undo_created(target: Path, made_dirs: list, made_git: bool, seeded: bool):
         print("install: removed the git repository it started")
     if seeded and os.path.lexists(target / "harness.toml"):
         guarded_path(target, "harness.toml", "remove").unlink()
+    # 고정 사본을 깔다 멈춘 것 — 시작할 때 .harness 가 없었으면 그 안은 전부 이번 실행이 깐 것이다
+    pin = PINNED.rstrip("/")
+    if made_pin and os.path.lexists(target / pin):
+        p = guarded_path(target, pin, "remove")
+        shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
+        print("install: removed the partial %s" % pin)
     for d in made_dirs:
         # 하네스 루트 위의 디렉터리일 수 있어 공용 함수 밖이다. 비어 있을 때만 지워진다
         try:

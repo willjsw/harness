@@ -4319,6 +4319,15 @@ PATH="$fg109:$PATH" in101 --create --git-init --target "$c101/i/repo109"; check 
 check "a file another process made in the new directory is kept" "$(cat "$c101/i/notes109.txt" 2>/dev/null)" "note"
 [ ! -e "$c101/i/repo109" ] && ok || bad "the empty directory this run made is left"
 has "$work/in101.out" "something else is in it now" "install does not say it kept a directory that is no longer empty"
+# 고정 사본을 깔다 예외로 멈추면 이번에 깐 .harness 와 새 디렉터리를 남기지 않는다. root 는 읽기 권한을 무시하므로 건너뛴다
+if [ "$(id -u)" != 0 ]; then
+  h110="$work/cli110"; rm -rf "$h110"; mkdir -p "$h110"; cp -R "$root/bin" "$root/templates" "$h110/"
+  f110=$(find "$h110/templates/adr/madr" -type f | head -1); chmod 000 "$f110"
+  HARNESS_HOME="$work/home101" "$h110/bin/harness" install --create --target "$c101/j/repo110" > "$work/in110.out" 2> "$work/in110.err"
+  [ "$?" != 0 ] && ok || bad "install with an unreadable template file succeeded"
+  [ ! -e "$c101/j" ] && ok || bad "a failed install left the directory it made and its partial copy"
+  chmod 644 "$f110"
+fi
 r="$c101/d/repo101"; mkdir -p "$r"
 ( cd "$r" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first ) || bad "could not prepare a repository"
 head101=$(git -C "$r" rev-parse HEAD)
