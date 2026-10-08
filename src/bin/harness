@@ -1251,6 +1251,14 @@ ISSUE_FORMS = (("requirement", "issue-requirement.md", "Requirement", "요구사
                ("task", "issue-task.md", "Task", "단독 task 이슈. 분해의 task 는 sync-task-issues.sh 가 만든다"))
 
 
+FORGE_TEMPLATE_DIRS = (".github/ISSUE_TEMPLATE/", ".gitlab/issue_templates/", ".gitlab/merge_request_templates/")
+
+
+def forge_template_path(rel: str) -> bool:
+    """forge 가 읽는 이슈·리뷰 요청 템플릿 자리인가."""
+    return rel.startswith(FORGE_TEMPLATE_DIRS) or rel == ".github/pull_request_template.md"
+
+
 def forge_templates(cfg: dict, at: Path = None) -> list:
     """forge 가 읽는 이슈·리뷰 요청 템플릿. 본문은 `.ai/templates/` 양식 그대로이고 forge 가 읽는 머리·꼬리만 더한다.
 
@@ -1784,16 +1792,15 @@ def cmd_render(cfg, target, args):
     made = {rel for rel, _c, _m in items}
     # forge 템플릿을 끄면 지난 렌더가 만든 것은 정리한다. 단 하네스가 만든 내용과 달라진 것(사내 양식으로 갈아 끼운 것)은
     # 리포의 파일이므로 지우지 않고 넘긴다 — 매니페스트에서 빠져 다음부터 사용자 파일이다
+    # 지난 렌더가 만든 forge 템플릿을 이번에 만들지 않으면(끄거나 forge 를 바꾸면) 정리한다. 단 그때 기록한 해시와 내용이
+    # 다른 것 — 손으로 바꾼 것 — 과 해시가 없어 확인할 수 없는 것은 지우지 않고 매니페스트에서만 빼 리포의 파일로 넘긴다.
+    # 잘못 지우면 되돌릴 수 없고, 잘못 남기면 사람이 지우면 된다
     kept = set()
-    if not cfg["forge"]["templates"]:
-        before = set(previous(target, MANIFEST))
-        on = dict(cfg, forge=dict(cfg["forge"], templates=True))
-        for rel, content, _m in forge_templates(on, target):
-            p = target / rel
-            if rel in before and p.is_file() and not p.is_symlink() \
-                    and p.read_text(encoding="utf-8", errors="replace") != content:
-                kept.add(rel)
-                print("render: %s differs from the harness template — kept as the repository's own" % rel)
+    for rel, h in manifest_entries(target, MANIFEST):
+        p = target / rel
+        if rel not in made and forge_template_path(rel) and p.is_file() and not p.is_symlink() and sha256_of(p) != h:
+            kept.add(rel)
+            print("render: %s is not what the harness last wrote — kept as the repository's own" % rel)
     removed = prune(target, made | kept, MANIFEST) + prune(target, set(managed_paths) | made | kept, MANIFEST_MANAGED)
 
     # 관리 파일의 해시는 이번에 깐 내용으로 계산한다. 고정 사본의 해시는 install 이 기록한 것을 옮긴다 —
@@ -1803,7 +1810,10 @@ def cmd_render(cfg, target, args):
         hashes.update((rel, h) for rel, h in manifest_entries(target)
                       if rel.startswith(PINNED) and h is not None)
     make_parents(target, MANIFEST)
-    guarded_path(target, MANIFEST, "write").write_text("".join(rel + "\n" for rel in sorted(made)), encoding="utf-8")
+    # forge 템플릿 줄에는 쓴 내용의 해시를 붙인다 — 나중에 끄거나 forge 를 바꿀 때 손으로 바꿨는지 가른다
+    guarded_path(target, MANIFEST, "write").write_text(
+        "".join(("%s  %s\n" % (sha256_of(target / rel), rel)) if forge_template_path(rel) else rel + "\n"
+                for rel in sorted(made)), encoding="utf-8")
     write_manifest_hashes(target, hashes)
 
     print("render: %d generated (%d updated, %d removed) · %d managed updated · %d owned created"
