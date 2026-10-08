@@ -4415,7 +4415,7 @@ check "metric.py records nothing when it cannot compute the key" "$(find "$nk107
 no_hangul "$work/ph107-run.log" "run --worktree --dry-run output"
 unset -f dry107 rec107 alias107
 
-echo "UT-108 two clones of one repository live side by side: each its own registration and records, the same generated files, and a worktree with its clone"
+echo "UT-108 two clones of one repository live side by side: each its own registration and records, the same generated files, a worktree with its clone, and harness projects lists them"
 cl108="$work/clones108"; rm -rf "$cl108"; mkdir -p "$cl108"
 g108() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
 key108() { python3 "$1/script/_clone_key.py" expand '{clone}'; }
@@ -4495,6 +4495,35 @@ done
 check "the first source tree is registered under its key" "$(regs_for "$cl108/s1/srcdup")" "$(key108 "$cl108/s1/srcdup")/project.json"
 check "the second source tree is registered under its key" "$(regs_for "$cl108/s2/srcdup")" "$(key108 "$cl108/s2/srcdup")/project.json"
 has "$work/in108-s2.out" "install: \`srcdup\` is also registered at $(cd "$cl108/s1/srcdup" && pwd -P)" "the second source tree install does not name the first"
+# projects — 등록부의 키 디렉터리는 projects, 옛 이름 디렉터리는 legacy. 파일과 . 으로 시작하는 항목은 등록이 아니다
+hp108="$work/home108p"; rm -rf "$hp108"; mkdir -p "$hp108"
+cp -R "$HARNESS_HOME/$kA108" "$HARNESS_HOME/$kB108" "$hp108/"
+mkdir -p "$hp108/old-twin" "$hp108/c-00000000000000ff" "$hp108/c-0000000000000000" "$hp108/no-registration" "$hp108/.install.lock.d"
+printf '{"path": "%s"}\n' "$work/gone108" > "$hp108/old-twin/project.json"
+printf 'not json\n' > "$hp108/c-00000000000000ff/project.json"
+printf '{"path": "%s"}\n' "$rA108" > "$hp108/.install.lock.d/project.json"
+printf '{}\n' > "$hp108/tools.json"; : > "$hp108/.install.lock"; : > "$hp108/ui.log"
+snap108() { ( cd "$hp108" && find . | sort && find . -type f | sort | while read -r f; do cat "$f"; done ); }
+before108=$(snap108)
+( cd "$work" && HARNESS_HOME="$hp108" "$root/bin/harness" projects ) > "$work/projects108.json" 2> "$work/projects108.err"
+check "projects runs where there is no config" "$?" "0"
+python3 - "$work/projects108.json" "$kA108" "$kB108" "$rA108" "$rB108" > "$work/projects108.txt" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); kA, kB, rA, rB = sys.argv[2:6]
+want = {"projects": [{"key": "c-00000000000000ff", "name": "c-00000000000000ff", "path": None, "ok": False},
+                     {"key": kA, "name": "twin", "path": rA, "ok": True},
+                     {"key": kB, "name": "twin", "path": rB, "ok": True}],
+        "legacy": [{"name": "old-twin", "path": sys.argv[1].rsplit("/", 1)[0] + "/gone108"}]}
+print("same" if d == want else "differs: %s" % json.dumps(d))
+PY
+check "projects lists the clones, the unreadable one and the old name directory" "$(cat "$work/projects108.txt")" "same"
+check "projects does not change the registry" "$(snap108)" "$before108"
+( cd "$work" && HARNESS_HOME="$work/nohome108" "$root/bin/harness" projects ) > "$work/projects108-none.json" 2>&1
+check "projects with no registry exits 0" "$?" "0"
+check "projects with no registry lists nothing" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])))' "$work/projects108-none.json")" \
+  "{'projects': [], 'legacy': []}"
+[ ! -e "$work/nohome108" ] && ok || bad "projects made the registry directory"
+cat "$work/projects108.err" >> "$work/in108-a.err"
 # uninstall — 그 클론의 등록만 지우고 기록과 다른 클론의 등록은 남긴다
 "$root/bin/harness" uninstall --target "$B108" > "$work/un108.out" 2>&1; check "uninstall the second clone" "$?" "0"
 check "uninstall drops only that clone's registration" "[$(regs_for "$B108")] [$(regs_for "$A108")]" "[] [$kA108/project.json]"
@@ -4502,7 +4531,7 @@ check "uninstall drops only that clone's registration" "[$(regs_for "$B108")] [$
   || bad "uninstall removed records"
 cat "$work"/in108-*.out "$work"/in108-*.err "$work/un108.out" > "$work/out108.log"
 no_hangul "$work/out108.log" "the two-clone install output"
-unset -f g108 key108 in108 pj108 spans108 rec108
+unset -f g108 key108 in108 pj108 spans108 rec108 snap108
 
 echo "UT-109 doctor's registry section judges this clone by its key: registered, its worktree, not registered, registered elsewhere, a sibling subproject"
 r109="$work/reg109"; rm -rf "$r109"; mkdir -p "$r109"

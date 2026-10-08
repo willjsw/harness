@@ -2014,7 +2014,7 @@ def read_registration(d: Path):
     """등록 디렉터리 d 의 project.json — (이름, 경로). 파일이 없으면 None.
     읽히지 않거나 객체가 아니거나 값이 비어 있지 않은 문자열이 아니면 그 자리는 None 이다."""
     f = d / "project.json"
-    if not f.is_file():
+    if not os.path.isfile(f):
         return None
     try:
         data = json.loads(f.read_text(encoding="utf-8"))
@@ -2037,7 +2037,7 @@ def registrations():
     except OSError:
         return clones, legacy
     for e in entries:
-        if e.name.startswith(".") or not e.is_dir():
+        if e.name.startswith(".") or not os.path.isdir(e.path):
             continue
         reg = read_registration(Path(e.path))
         if reg is None:
@@ -2079,6 +2079,22 @@ def register(cfg, target: Path):
     for r in registrations()[0]:
         if r["key"] != key and r["path"] == str(target):
             (registry() / r["key"] / "project.json").unlink(missing_ok=True)
+
+
+def cmd_projects(_cfg, _target, _args):
+    """`harness projects` — 이 기기에 등록된 클론 목록(JSON). UI 가 읽는다. 설정을 읽지 않고 등록부를 바꾸지 않는다.
+
+    projects 는 클론 등록, legacy 는 옛 버전이 이름으로 만든 디렉터리의 등록이다. ok 는 경로 아래에 설정이 있는지다.
+    두 목록 모두 이름, 경로(없는 것은 뒤), 키 순이다."""
+    clones, legacy = registrations()
+    order = lambda r: (r["name"], r["path"] is None, r["path"] or "", r["key"] or "")
+    print(json.dumps({
+        "projects": [{"key": r["key"], "name": r["name"], "path": r["path"],
+                      "ok": bool(r["path"]) and os.path.isfile(os.path.join(r["path"], "harness.toml"))}
+                     for r in sorted(clones, key=order)],
+        "legacy": [{"name": r["name"], "path": r["path"]} for r in sorted(legacy, key=order)],
+    }, ensure_ascii=False, indent=2))
+    return 0
 
 
 def report_same_name(cfg, target: Path):
@@ -4445,6 +4461,7 @@ COMMANDS = {
     "schema":    (None, True,  "", "agent registry and resolved roles as JSON (for the UI)"),
     "status":    (None, True,  "[--remote]", "project health for the home screen as JSON: check, doctor, facts, git (--remote: passed to doctor)"),
     "tools":     (None, False, "[--sync]", "list agent CLIs and decision-record tools on this machine"),
+    "projects":  (None, False, "", "registered clones on this machine as JSON (for the UI)"),
     "version":   (None, False, "", "version of this harness"),
     "help":      (None, False, "", "this help"),
 }
@@ -4565,7 +4582,7 @@ def main():
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
                 "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
-                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup,
+                "tools": cmd_tools, "projects": cmd_projects, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup,
                 "write-doc": cmd_write_doc, "fix": cmd_fix}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
@@ -4604,6 +4621,8 @@ def main():
         return handlers[args.command](None, None, args)
     if args.command == "tools":          # 기기의 사실이다 — 대상 리포가 필요 없다
         return cmd_tools(None, None, args)
+    if args.command == "projects":       # 등록부를 읽기만 한다 — 대상 리포도 설정도 필요 없다
+        return cmd_projects(None, None, args)
 
     target = Path(args.target).resolve()
     delegate(target, args.command)
