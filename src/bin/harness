@@ -2143,24 +2143,38 @@ def cmd_install(_cfg, target, args):
         cfg = loaded_config(target) if (target / "harness.toml").is_file() else None
         if refuse_taken(cfg or {"project": {"name": target.name}}, target) is None:
             return 2
-        # 있는 대상은 디렉터리 · .git · 설정을 만들기 전에 install 이 바꿀 경로를 판정한다 — 멈추면 아무것도 생기지 않는다.
-        # 설정이 없으면 깔 기본 설정으로 판정한다(파일로 쓰지 않는다)
-        if target.is_dir() and refuse_changes(cfg or seeded_config(target), target, args,
-                                              {rel: "remove" for rel in (PINNED.rstrip("/"),) + PINNED_PARTS}):
-            return 2
-        if not target.is_dir():
-            target.mkdir(parents=True)
-            print("install: created %s" % target)
-        if git_init and not os.path.lexists(target / ".git"):
-            r = subprocess.run(["git", "init", "-q"], cwd=str(target), capture_output=True, text=True)
-            if r.returncode != 0:
-                tail = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
-                die("error: git init failed: %s\n  --> %s" % (tail[-1].strip() if tail else "exit %d" % r.returncode, target))
-            print("install: started a git repository in %s" % target)
+        # 있는 대상은 디렉터리 · .git · 설정을 만들기 전에 install 이 바꿀 경로를 판정한다.
+        # 설정이 없으면 깔 기본 설정으로 판정한다(파일로 쓰지 않는다) — 그 설정을 쓸 자리도 판정한다
+        extra = {rel: "remove" for rel in (PINNED.rstrip("/"),) + PINNED_PARTS}
         if cfg is None:
-            seed_config(target)
-            cfg = loaded_config(target)
-        if not install_registered(cfg, target, args):
+            extra["harness.toml"] = "write"
+        if target.is_dir() and refuse_changes(cfg or seeded_config(target), target, args, extra):
+            return 2
+        # git init 뒤에야 드러나는 거부도 있다 — 리포 루트가 바뀌면 만들 파일(forge 템플릿)이 달라진다.
+        # 이번 실행이 만든 것(디렉터리 · .git · 기본 설정)을 기록해 두고, 등록 전에 멈추면 그것만 걷는다
+        missing = [p for p in (target, *target.parents) if not os.path.lexists(p)]
+        top = missing[-1] if missing else None
+        made_git = seeded = done = False
+        try:
+            if not target.is_dir():
+                target.mkdir(parents=True)
+                print("install: created %s" % target)
+            if git_init and not os.path.lexists(target / ".git"):
+                made_git = True
+                r = subprocess.run(["git", "init", "-q"], cwd=str(target), capture_output=True, text=True)
+                if r.returncode != 0:
+                    tail = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+                    die("error: git init failed: %s\n  --> %s" % (tail[-1].strip() if tail else "exit %d" % r.returncode, target))
+                print("install: started a git repository in %s" % target)
+            if cfg is None:
+                seeded = True
+                seed_config(target)
+                cfg = loaded_config(target)
+            done = install_registered(cfg, target, args)
+        finally:
+            if not done:
+                undo_created(target, top, made_git, seeded)
+        if not done:
             return 2
     rc = cmd_render(cfg, target, args)
     # 렌더가 끝나야 `script/githooks/` 가 있다.
@@ -2170,6 +2184,20 @@ def cmd_install(_cfg, target, args):
 
 
 PINNED_PARTS = (".harness/bin", ".harness/templates", ".harness/VERSION")
+
+
+def undo_created(target: Path, top, made_git: bool, seeded: bool):
+    """거부된 install 이 이번에 만든 것만 걷는다 — 디렉터리 · .git · 기본 설정. 원래 있던 것은 건드리지 않는다."""
+    if top is not None:
+        # 이번 실행이 만든 가장 위 디렉터리다. 그 아래는 전부 이번에 생겼다(하네스 루트 위일 수 있어 공용 함수 밖이다)
+        shutil.rmtree(top, ignore_errors=True)
+        print("install: removed %s — nothing is left behind" % top)
+        return
+    if made_git and os.path.lexists(target / ".git"):
+        shutil.rmtree(guarded_path(target, ".git", "remove"))
+        print("install: removed the git repository it started — nothing is left behind")
+    if seeded and os.path.lexists(target / "harness.toml"):
+        guarded_path(target, "harness.toml", "remove").unlink()
 
 
 def clear_dir(d: Path, keep=()):

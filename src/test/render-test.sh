@@ -3873,7 +3873,7 @@ check "the directory behind the old copy's link is kept" "$(ls "$out101/oldbin" 
 sd="$work/seed101"; rm -rf "$sd"; mkdir -p "$sd"; ( cd "$sd" && git init -q . )
 ln -s "$out101/seeded.toml" "$sd/harness.toml"
 "$root/bin/harness" install --target "$sd" > "$work/p101-13.out" 2> "$work/p101-13.err"; check "install over a dangling harness.toml link" "$?" "2"
-has "$work/p101-13.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
+has "$work/p101-13.err" "go through a symbolic link" "the refusal does not say it would write through a link"
 has "$work/p101-13.err" "  --> harness.toml" "the refusal does not name harness.toml"
 [ -e "$out101/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
 # uninstall — 지울 경로의 부모가 링크면 아무것도 지우지 않는다
@@ -4287,6 +4287,17 @@ for e in noconf conf; do
   [ ! -e "$s105/.git" ] && ok || bad "a refused install --git-init started a git repository ($e)"
   if [ "$e" = noconf ]; then [ ! -e "$s105/harness.toml" ] && ok || bad "a refused install laid down the config"; fi
 done
+# 설정 자리가 끊긴 링크면 git init 전에 멈춘다
+s107="$c101/g/danglecfg"; mkdir -p "$s107"; ln -s "$work/nowhere107/harness.toml" "$s107/harness.toml"
+in101 --git-init --target "$s107"; check "install --git-init over a dangling config link is refused" "$?" "2"
+[ ! -e "$s107/.git" ] && ok || bad "a refused install --git-init over a dangling config link started a git repository"
+# 상위 리포 안의 디렉터리는 git init 뒤에야 forge 템플릿 자리가 생긴다 — 거기가 링크여서 멈춰도 이번에 만든 것은 걷는다
+p108="$c101/h/parent"; mkdir -p "$p108/sub/.github" "$p108/sub/.gitlab"; ( cd "$p108" && git init -q . )
+ln -s "$work/outside105" "$p108/sub/.github/ISSUE_TEMPLATE"; ln -s "$work/outside105" "$p108/sub/.gitlab/issue_templates"
+in101 --git-init --target "$p108/sub"; check "install --git-init refused after git init (nested repository)" "$?" "2"
+[ ! -e "$p108/sub/.git" ] && ok || bad "a refused install left the git repository it started"
+[ ! -e "$p108/sub/harness.toml" ] && ok || bad "a refused install left the config it laid down"
+[ -L "$p108/sub/.github/ISSUE_TEMPLATE" ] && ok || bad "a refused install touched what was already there"
 r="$c101/d/repo101"; mkdir -p "$r"
 ( cd "$r" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first ) || bad "could not prepare a repository"
 head101=$(git -C "$r" rev-parse HEAD)
