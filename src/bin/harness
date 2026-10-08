@@ -3245,11 +3245,13 @@ def cmd_write_doc(cfg, target, args):
         die("error: the document path is a directory\n  --> %s\n\nnothing was written" % rel)
     before = p.read_bytes() if p.is_file() else None
     made = [d.as_posix() for d in reversed(p.relative_to(target).parents) if str(d) != "." and not (target / d).exists()]
-    make_parents(target, rel)
-    p.write_text(body, encoding="utf-8")
 
     out = io.StringIO()
+    rc = 2
+    # 쓰기부터 render 까지 한 구역이다 — 어디서 실패하든 아래에서 쓰기 전 상태로 되돌린다
     try:
+        make_parents(target, rel)
+        p.write_text(body, encoding="utf-8")
         with contextlib.redirect_stdout(out):
             # 사용자 파일로 멈추면 안내가 넘겨받는 명령으로 render 를 가리킨다 — write-doc 은 넘겨받지 않는다
             rc = cmd_render(cfg, target, argparse.Namespace(command="render", adopt=False))
@@ -3257,13 +3259,14 @@ def cmd_write_doc(cfg, target, args):
         rc = e.code if isinstance(e.code, int) and e.code else 2
         if not isinstance(e.code, int) and e.code:
             print(e.code, file=sys.stderr)
-    except OSError as e:
+    except Exception as e:   # 디코딩 오류처럼 예상하지 못한 실패도 문서를 남기지 않는다
         rc = 2
-        print("error: render failed: %s" % e, file=sys.stderr)
+        print("error: write-doc failed: %s" % e, file=sys.stderr)
     if rc != 0:
         sys.stdout.write(out.getvalue())
         if before is None:
-            guarded_path(target, rel, "remove").unlink()
+            if os.path.lexists(p):
+                guarded_path(target, rel, "remove").unlink()
             for d in reversed(made):
                 with contextlib.suppress(OSError):
                     guarded_path(target, d, "remove").rmdir()

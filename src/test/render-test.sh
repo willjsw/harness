@@ -4220,6 +4220,13 @@ n101=$(wdrules101 "$t")
 check "a path write-doc cannot write adds no write-doc rule" "$(wdrules101 "$t")" "$n101"
 "$root/bin/harness" set --target "$t" docs.protected ".ai/**," >/dev/null 2>&1 || bad "could not protect .ai/**"
 has "$t/.claude/settings.json" '"Bash(harness write-doc:*)"' "a directory over .ai/project does not deny every write-doc call"
+# 쓴 뒤 render 가 예상하지 못한 이유(다른 문서의 깨진 UTF-8)로 실패해도 문서는 쓰기 전으로 돌아간다
+w105="$work/wd105"; setup "$w105"
+cp "$w105/.ai/project/stack.md" "$work/wd105-stack.before"
+printf '\377\376 broken\n' >> "$w105/.ai/project/glossary.md"
+wd101 "$w105" stack replaced; check "write-doc when render cannot read another document exits 2" "$?" "2"
+cmp -s "$w105/.ai/project/stack.md" "$work/wd105-stack.before" && ok || bad "a failed write-doc left the new body"
+has "$work/wd101.err" "reverted" "a failed write-doc does not say it reverted"
 unset -f body101 tree101 wd101 wdrules101
 # fix — Doctor 조치. 검증은 그 리포의 검증 스크립트를, 훅은 install 과 같은 판정으로 켠다
 t="$work/fix101"; setup "$t"
