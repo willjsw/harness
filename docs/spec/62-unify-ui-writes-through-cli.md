@@ -406,3 +406,5 @@ doctor 항목은 #59 가 정한 `{section, state, what, detail}` 넷이고 조�
 - 명령 가드는 `python3 src/bin/harness write-doc …` 처럼 인터프리터를 앞에 둔 호출과 셸 확장으로 적은 이름을 판정하지 않는다.
   deny 도 그 표기를 덮지 않는다
 - `write-doc` 은 저장 전 검사(정적 · 모델)를 하지 않는다. 검사는 UI 가 저장 전에 하고, 저장할지는 사람이 정한다
+- install 의 실패 정리는 시작할 때 없던 `.harness` 를 통째로 걷는다. 그 몇 초 사이 다른 프로세스가 그 대상의 `.harness`
+  안에 만든 파일도 함께 지워진다 — `.harness` 는 하네스만 쓰는 자리라 같은 대상에 install 을 동시에 돌리지 않는 한 생기지 않는다
