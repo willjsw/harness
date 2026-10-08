@@ -17,24 +17,28 @@ const newer = (a, b) => a && b && a.localeCompare(b, undefined, { numeric: true 
 
 export default function HomeGrid({ projects, global, labels }) {
   const [status, setStatus] = useState({});
-  const load = (name) => projectStatus(name).then((st) => setStatus((s) => ({ ...s, [name]: st ?? false })));
-  useEffect(() => { projects.filter((p) => p.ok).forEach((p) => load(p.name)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const load = (key) => projectStatus(key).then((st) => setStatus((s) => ({ ...s, [key]: st ?? false })));
+  useEffect(() => { projects.filter((p) => p.ok).forEach((p) => load(p.key)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
       <div className="project-grid">
         {projects.map((p) => {
           if (!p.ok) return (
-            <div key={p.name} className="project-card off" title="경로가 기록되지 않은 옛 설치다">
+            <div key={p.key ?? `legacy:${p.name}`} className="project-card off"
+              title={p.legacy ? "옛 설치다 — 그 프로젝트에서 harness install 을 다시 돌린다" : "경로가 기록되지 않았거나 그 경로에 설정이 없다 — 그 프로젝트에서 harness install 을 다시 돌린다"}>
               <div className="pc-head"><span className="avatar big" style={avatarStyle(p.name)}>{p.name[0]?.toUpperCase()}</span><b className="grow">{p.name}</b><span className="tag-sm warn">재설치 필요</span></div>
+              {p.path && <code className="pc-path" title={p.path}>{p.path}</code>}
             </div>
           );
-          const st = status[p.name];
+          const st = status[p.key];
           return (
-            <Link key={p.name} href={`/${encodeURIComponent(p.name)}/settings`} className="project-card">
+            <Link key={p.key} href={`/${encodeURIComponent(p.key)}/settings`} className="project-card">
               <div className="pc-head">
                 <span className="avatar big" style={avatarStyle(p.name)}>{p.name[0]?.toUpperCase()}</span>
                 <b className="grow">{p.name}</b>
               </div>
+              {/* 같은 이름의 클론은 경로로 가른다 */}
+              <code className="pc-path" title={p.path}>{p.path}</code>
               <div className="pc-state">
                 {st === undefined && <span className="tag-sm pulse">상태 읽는 중</span>}
                 {st === false && <span className="tag-sm">상태를 읽지 못했다 — 옛 버전</span>}
