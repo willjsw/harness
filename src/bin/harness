@@ -16,6 +16,7 @@ import contextlib
 import datetime
 import fcntl
 import hashlib
+import io
 import json
 import os
 import re
@@ -158,6 +159,11 @@ def legacy_verify(target) -> bool:
     """손으로 쓴 검증 스크립트가 있는가. 채우지 않은 원형은 없는 것과 같다."""
     f = target / LEGACY_VERIFY if target else None
     return bool(f and f.is_file() and LEGACY_VERIFY_TEMPLATE not in f.read_text(encoding="utf-8"))
+
+
+def verify_entry(target) -> str:
+    """검증으로 도는 스크립트 — 채운 옛 검증 스크립트가 있으면 그것, 아니면 생성된 검증 스크립트. 하네스 루트 기준."""
+    return LEGACY_VERIFY if legacy_verify(target) else VERIFY_SCRIPT
 
 
 def verify_steps(cfg: dict) -> list:
@@ -810,7 +816,33 @@ def deny_rules(cfg: dict) -> list:
         rule = doc.rstrip("*").rstrip("/") + "/**" if doc.endswith(("/", "/**")) else doc
         # Edit 규칙이 Write · NotebookEdit 를 포함한 파일 편집 도구 전부에 걸린다.
         out.append("Edit(%s)" % rule)
+    # 같은 문서를 `harness write-doc` 으로 쓰는 호출. 표기 차이(옵션 위치 등)는 명령 가드가 잡는다
+    for doc in cfg["docs"]["protected"]:
+        name = write_doc_scope(doc)
+        if name is None:
+            continue
+        for h in WRITE_DOC_CALLERS:
+            rule = "Bash(%s write-doc%s:*)" % (h, " " + name if name else "")
+            if rule not in out:
+                out.append(rule)
     return out
+
+
+# write-doc 을 부르는 세 형태 — 전역 CLI, 고정 사본, 소스 리포의 실행 파일.
+WRITE_DOC_CALLERS = ("harness", ".harness/bin/harness", "src/bin/harness")
+
+
+def write_doc_scope(doc: str):
+    """보호 항목 하나가 write-doc 이름으로 닿는 범위. 이름 접두(`scope` · `roles/`), 전부면 빈 문자열, 닿지 않으면 None."""
+    base = PROJECT_DOCS + "/"
+    if doc.endswith(("/", "/**")):
+        d = doc.rstrip("*").rstrip("/") + "/"
+        if base.startswith(d):
+            return ""
+        return d[len(base):] if d.startswith(base) else None
+    if doc.startswith(base) and doc.endswith(".md") and len(doc) > len(base) + len(".md"):
+        return doc[len(base):-len(".md")]
+    return None
 
 
 # 허용 목록에서 빼는 관리 스크립트 — 이슈·리뷰 요청을 닫거나 만드는, 되돌릴 수 없는 forge 쓰기와
@@ -1930,15 +1962,26 @@ def cmd_vars(cfg, _target, _args):
     return 0
 
 
+def seed_text(target: Path) -> str:
+    """설정이 없는 대상에 깔 기본 설정 — 프로젝트 이름만 채운다."""
+    return DEFAULT_CONFIG.read_text(encoding="utf-8").replace('name = "my-project"', 'name = "%s"' % target.name)
+
+
+def seeded_config(target: Path) -> dict:
+    """seed_config 가 깔 설정을 파일로 쓰지 않고 읽은 것."""
+    cfg = tomllib.loads(seed_text(target))
+    normalize(cfg)
+    validate(cfg)
+    return cfg
+
+
 def seed_config(target: Path):
     """설정이 없는 대상에 기본 설정을 깔고 프로젝트 이름만 채운다."""
     dst = target / "harness.toml"
     if dst.exists():
         return
-    text = DEFAULT_CONFIG.read_text(encoding="utf-8")
     # 대상이 없는 링크면 공용 함수가 멈춘다 — 따라 쓰면 링크가 가리키는 곳에 설정이 생긴다
-    guarded_path(target, "harness.toml", "write").write_text(text.replace('name = "my-project"', 'name = "%s"' % target.name),
-                   encoding="utf-8")
+    guarded_path(target, "harness.toml", "write").write_text(seed_text(target), encoding="utf-8")
     print("created %s — review the values, then run `harness render`" % dst)
 
 
@@ -2075,10 +2118,70 @@ def harness_version() -> str:
     return "%s+%s%s" % (base, rev[:7], "-dirty" if dirty else "")
 
 
-def cmd_install(cfg, target, args):
+def loaded_config(target: Path) -> dict:
+    cfg = load(target)
+    normalize(cfg)
+    validate(cfg)
+    return cfg
+
+
+def cmd_install(_cfg, target, args):
+    """설정을 깔고(없으면) 고정 사본을 깔고 등록한 뒤 render 한다.
+
+    `--create` 는 없는 대상 디렉터리를 만들고 `--git-init` 은 `.git` 이 없는 대상에서 git 을 시작한다.
+    무엇이든 만들기 전에 등록을 가른다 — 거부되면 디렉터리 · `.git` · 설정이 생기지 않는다.
+    """
+    create, git_init = getattr(args, "create", False), getattr(args, "git_init", False)
+    if not os.path.lexists(target) and not create:
+        die("error: target directory does not exist\n  --> %s\n\n"
+            "help: create it as part of the install\n        harness install --create --target %s" % (target, target))
+    if os.path.lexists(target) and not target.is_dir():
+        die("error: target is not a directory\n  --> %s" % target)
     # 같은 이름의 설치가 동시에 돌면 둘 다 빈 등록을 보고 통과한다. 판정부터 등록까지 잠근다.
     with registry_lock():
-        if not install_registered(cfg, target, args):
+        # 판정 이름은 대상의 설정에 있으면 그 이름, 없으면 새로 깔 설정이 채울 디렉터리 이름이다
+        cfg = loaded_config(target) if (target / "harness.toml").is_file() else None
+        if refuse_taken(cfg or {"project": {"name": target.name}}, target) is None:
+            return 2
+        # 있는 대상은 디렉터리 · .git · 설정을 만들기 전에 install 이 바꿀 경로를 판정한다.
+        # 설정이 없으면 깔 기본 설정으로 판정한다(파일로 쓰지 않는다) — 그 설정을 쓸 자리도 판정한다
+        extra = {rel: "remove" for rel in (PINNED.rstrip("/"),) + PINNED_PARTS}
+        if cfg is None:
+            extra["harness.toml"] = "write"
+        if target.is_dir() and refuse_changes(cfg or seeded_config(target), target, args, extra):
+            return 2
+        # git init 뒤에야 드러나는 거부도 있다 — 리포 루트가 바뀌면 만들 파일(forge 템플릿)이 달라진다.
+        # 이번 실행이 만든 것(디렉터리 · .git · 기본 설정)을 기록해 두고, 등록 전에 멈추면 그것만 걷는다
+        had_pin = os.path.lexists(target / PINNED.rstrip("/"))
+        made_dirs, made_git, seeded, done = [], False, False, False
+        try:
+            if not target.is_dir():
+                # 한 단계씩 만들어 실제로 이번에 만든 것만 기록한다 — 그 사이 다른 것이 만든 디렉터리는 걷지 않는다
+                for d in reversed([p for p in (target, *target.parents) if not os.path.lexists(p)]):
+                    try:
+                        d.mkdir()
+                        made_dirs.insert(0, d)
+                    except FileExistsError:
+                        pass
+                if not target.is_dir():
+                    die("error: target is not a directory\n  --> %s" % target)
+                print("install: created %s" % target)
+            if git_init and not os.path.lexists(target / ".git"):
+                made_git = True
+                r = subprocess.run(["git", "init", "-q"], cwd=str(target), capture_output=True, text=True)
+                if r.returncode != 0:
+                    tail = [ln for ln in (r.stderr or "").splitlines() if ln.strip()]
+                    die("error: git init failed: %s\n  --> %s" % (tail[-1].strip() if tail else "exit %d" % r.returncode, target))
+                print("install: started a git repository in %s" % target)
+            if cfg is None:
+                seeded = True
+                seed_config(target)
+                cfg = loaded_config(target)
+            done = install_registered(cfg, target, args)
+        finally:
+            if not done:
+                undo_created(target, made_dirs, made_git, seeded, not had_pin)
+        if not done:
             return 2
     rc = cmd_render(cfg, target, args)
     # 렌더가 끝나야 `script/githooks/` 가 있다.
@@ -2088,6 +2191,32 @@ def cmd_install(cfg, target, args):
 
 
 PINNED_PARTS = (".harness/bin", ".harness/templates", ".harness/VERSION")
+
+
+def undo_created(target: Path, made_dirs: list, made_git: bool, seeded: bool, made_pin: bool):
+    """거부·실패한 install 이 이번에 만든 것만 걷는다 — 이번에 만든 .git · 기본 설정 · 고정 사본, 그리고 비어 있는 새 디렉터리.
+
+    디렉터리는 통째로 지우지 않는다 — 그 사이 다른 것이 만든 파일이 들어 있을 수 있다. 원래 있던 것은 건드리지 않는다.
+    made_dirs 는 이번에 만든 디렉터리, 안쪽(대상)부터 위로다.
+    """
+    if made_git and os.path.lexists(target / ".git"):
+        shutil.rmtree(guarded_path(target, ".git", "remove"))
+        print("install: removed the git repository it started")
+    if seeded and os.path.lexists(target / "harness.toml"):
+        guarded_path(target, "harness.toml", "remove").unlink()
+    # 고정 사본을 깔다 멈춘 것 — 시작할 때 .harness 가 없었으면 그 안은 전부 이번 실행이 깐 것이다
+    pin = PINNED.rstrip("/")
+    if made_pin and os.path.lexists(target / pin):
+        p = guarded_path(target, pin, "remove")
+        shutil.rmtree(p) if p.is_dir() and not p.is_symlink() else p.unlink()
+        print("install: removed the partial %s" % pin)
+    for d in made_dirs:
+        # 하네스 루트 위의 디렉터리일 수 있어 공용 함수 밖이다. 비어 있을 때만 지워진다
+        try:
+            d.rmdir()
+        except OSError:
+            print("install: kept %s — something else is in it now" % d)
+            break
 
 
 def clear_dir(d: Path, keep=()):
@@ -2209,24 +2338,45 @@ def enable_hooks(target: Path):
     return "set", want
 
 
-def report_hooks(target: Path):
-    """install 이 훅 설정 결과를 표준 출력에 알린다. 종료 코드는 바꾸지 않는다."""
+def report_hooks(target: Path, who: str = "install") -> str:
+    """훅 설정 결과를 알리고 결과를 돌려준다. install 은 모두 표준 출력에 내고, 그 밖은 켜지 않은 이유를 표준 오류에 낸다."""
     result, extra = enable_hooks(target)
     want = hooks_expected(target) if result != "no-git" else HOOKS_DIR
     help_line = "help: to use this harness's hooks, run `git config core.hooksPath %s`" % want
+    out = sys.stdout if who == "install" or result in ("set", "already") else sys.stderr
     if result == "set":
-        print("install: set core.hooksPath to %s — git hooks now run on commit and push" % extra)
+        print("%s: set core.hooksPath to %s — git hooks now run on commit and push" % (who, extra), file=out)
+    elif result == "already" and who != "install":
+        print("%s: core.hooksPath is already %s — git hooks run on commit and push" % (who, extra), file=out)
     elif result == "other":
-        print("install: core.hooksPath is already %s — left as is\n%s" % (extra, help_line))
+        print("%s: core.hooksPath is already %s — left as is\n%s" % (who, extra, help_line), file=out)
     elif result == "own-hooks":
         d, names = extra
-        print("install: core.hooksPath is not set but %s has hooks of its own (%s) — left as is\n%s"
-              % (d, ", ".join(names), help_line))
+        print("%s: core.hooksPath is not set but %s has hooks of its own (%s) — left as is\n%s"
+              % (who, d, ", ".join(names), help_line), file=out)
     elif result == "no-git":
-        print("install: not a git repository — git hooks were not enabled\n"
-              "help: after `git init`, run `git config core.hooksPath %s`" % want)
+        print("%s: not a git repository — git hooks were not enabled\n"
+              "help: after `git init`, run `git config core.hooksPath %s`" % (who, want), file=out)
     elif result == "failed":
-        print("install: could not set core.hooksPath: %s\n%s" % (extra, help_line))
+        print("%s: could not set core.hooksPath: %s\n%s" % (who, extra, help_line), file=out)
+    return result
+
+
+# Doctor 화면의 조치 가운데 명령이 따로 없던 것.
+FIXES = ("hooks", "verify")
+
+
+def cmd_fix(_cfg, target, args):
+    """`harness fix hooks|verify` — 훅 경로는 install 의 설정 로직으로 켜고, 검증은 그 스크립트를 다시 돌린다."""
+    if len(args.args) != 1 or args.args[0] not in FIXES:
+        die("error: fix takes one of: %s\n\n"
+            "usage: harness fix <hooks|verify>\n"
+            "  hooks    point core.hooksPath at this harness's git hooks, as install does\n"
+            "  verify   run the verification script again" % ", ".join(FIXES))
+    if args.args[0] == "verify":
+        sys.stdout.flush()
+        return subprocess.run(["bash", verify_entry(target)], cwd=str(target)).returncode
+    return 0 if report_hooks(target, "fix") in ("set", "already") else 2
 
 
 def owned_files(target: Path):
@@ -3076,6 +3226,112 @@ def cmd_set(_cfg, target, args):
     return cmd_render(cfg, target, args)
 
 
+# 프로젝트 문서의 원형. write-doc 이 받는 문서 이름과 schema 의 `docs` 가 여기서 나온다.
+OWNED_DOCS = TEMPLATES / "owned" / ".ai" / "project"
+PROJECT_DOCS = ".ai/project"
+# 메모 머리의 안내 주석. 사람에게 하는 말이라 render 가 생성물에 옮길 때 뺀다.
+NOTE_HEADS = {
+    "roles": "<!--\n이 파일은 프로젝트가 소유한다. 하네스 갱신이 덮지 않는다.\n"
+             "`harness render` 가 이 본문을 이 역할의 에이전트 정의 끝(\"이 프로젝트에서\")에 붙인다.\n-->\n\n",
+    "workflows": "<!--\n이 파일은 프로젝트가 소유한다. 하네스 갱신이 덮지 않는다.\n"
+                 "`harness render` 가 이 본문을 이 절차 끝(\"이 프로젝트에서\")에 붙인다.\n-->\n\n",
+}
+
+
+def project_docs() -> list:
+    """프로젝트 문서 이름 — 하네스 원형의 `.ai/project/*.md`. 명령은 문서가 아니라 설정의 `[commands]` 다."""
+    return sorted(p.stem for p in OWNED_DOCS.glob("*.md") if p.is_file() and p.stem != "commands")
+
+
+def writable_docs(cfg: dict) -> dict:
+    """write-doc 이 받는 이름 → 쓰는 경로(하네스 루트 기준). 문서, 설정의 역할 메모, 설정의 절차 메모."""
+    out = {d: "%s/%s.md" % (PROJECT_DOCS, d) for d in project_docs()}
+    out.update(("roles/%s" % n, "%s/%s.md" % (ROLE_NOTES, n)) for n in sorted(cfg["roles"]))
+    out.update(("workflows/%s" % w, "%s/%s.md" % (WORKFLOW_NOTES, w)) for w in sorted(cfg["workflows"]))
+    return out
+
+
+def note_body(name: str, text: str) -> str:
+    """쓸 본문. 메모는 공백뿐이면 비우고, 안내 주석으로 시작하지 않으면 머리 주석을 붙인다. 끝은 줄바꿈 하나 이상."""
+    kind = name.split("/", 1)[0] if "/" in name else None
+    if kind in NOTE_HEADS:
+        if not text.strip():
+            text = ""
+        elif not text.lstrip().startswith("<!--"):
+            text = NOTE_HEADS[kind] + text
+    return text if text.endswith("\n") else text + "\n"
+
+
+def cmd_write_doc(cfg, target, args):
+    """`harness write-doc <이름> -` — 표준 입력의 본문을 프로젝트 문서나 역할·절차 메모에 쓰고 render 한다.
+
+    경로를 입력에서 만들지 않는다. 이름을 받는 목록과 문자열로 비교하고 맞는 항목의 경로를 쓴다.
+    render 가 실패하면 문서를 쓰기 전으로 되돌린다 — 생성물과 어긋난 문서를 남기지 않는다.
+    """
+    names = writable_docs(cfg)
+    if len(args.args) != 2 or args.args[1] != "-":
+        die("error: write-doc reads the document from standard input\n\n"
+            "usage: harness write-doc <name> -\n"
+            "example: printf '...' | harness write-doc stack -")
+    name = args.args[0]
+    rel = names.get(name)
+    if rel is None:
+        docs = [n for n in names if "/" not in n]
+        notes = [n for n in names if "/" in n]
+        die("error: unknown document `%s`\n  --> write-doc\n\n"
+            "help: write-doc takes one of these names\n        %s\n        %s"
+            % (name, ", ".join(docs), ", ".join(notes)))
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8")
+    except UnicodeDecodeError:
+        die("error: standard input is not UTF-8\n  --> %s\n\nnothing was written" % rel)
+    body = note_body(name, text)
+
+    p = guarded_path(target, rel, "write")
+    if p.is_dir():
+        die("error: the document path is a directory\n  --> %s\n\nnothing was written" % rel)
+    before = p.read_bytes() if p.is_file() else None
+    made = [d.as_posix() for d in reversed(p.relative_to(target).parents) if str(d) != "." and not (target / d).exists()]
+
+    out = io.StringIO()
+    rc = 2
+    # 쓰기부터 render 까지 한 구역이다 — 어디서 실패하든 아래에서 쓰기 전 상태로 되돌린다
+    try:
+        make_parents(target, rel)
+        p.write_text(body, encoding="utf-8")
+        with contextlib.redirect_stdout(out):
+            # 사용자 파일로 멈추면 안내가 넘겨받는 명령으로 render 를 가리킨다 — write-doc 은 넘겨받지 않는다
+            rc = cmd_render(cfg, target, argparse.Namespace(command="render", adopt=False))
+    except SystemExit as e:
+        rc = e.code if isinstance(e.code, int) and e.code else 2
+        if not isinstance(e.code, int) and e.code:
+            print(e.code, file=sys.stderr)
+    except Exception as e:   # 디코딩 오류처럼 예상하지 못한 실패도 문서를 남기지 않는다
+        rc = 2
+        print("error: write-doc failed: %s" % e, file=sys.stderr)
+    if rc != 0:
+        sys.stdout.write(out.getvalue())
+        # 쓰기 자체가 실패했으면 문서는 그대로다 — 내용이 달라졌을 때만 되돌린다. 되돌리기가 실패해도 안내하고 2 다
+        try:
+            if before is None:
+                if os.path.lexists(p):
+                    guarded_path(target, rel, "remove").unlink()
+                for d in reversed(made):
+                    with contextlib.suppress(OSError):
+                        guarded_path(target, d, "remove").rmdir()
+            elif p.read_bytes() != before:
+                guarded_path(target, rel, "write").write_bytes(before)
+        except OSError as e:
+            print("\nerror: could not restore the document: %s\n  --> %s\n\nhelp: check the file by hand" % (e, rel),
+                  file=sys.stderr)
+            return 2
+        print("\nreverted — the document is unchanged", file=sys.stderr)
+        return 2
+    print("write-doc: %s" % rel)
+    sys.stdout.write(out.getvalue())
+    return 0
+
+
 ISSUE_NO = re.compile(r"[0-9]{1,10}")
 
 
@@ -3632,6 +3888,42 @@ def cmd_tools(_cfg, _target, args):
     return 0
 
 
+# 설정 파일의 주석이 곧 스키마 문서다. 키 바로 위의 주석 줄이 그 키의 설명이다.
+CONFIG_SECTION = re.compile(r"\[([^\]]+)\]")
+CONFIG_KEY = re.compile(r"([A-Za-z0-9_-]+)\s*=")
+
+
+def config_notes(target: Path) -> dict:
+    """`harness.toml` 의 키마다 바로 위 주석 — `{"<절>.<키>": "<설명>"}`. 빈 줄이 끼면 붙이지 않고, `─` 구분선 줄은 뺀다."""
+    p = target / "harness.toml"
+    notes, section, buf = {}, "", []
+    for ln in p.read_text(encoding="utf-8").split("\n") if p.is_file() else []:
+        st = ln.strip()
+        m = CONFIG_SECTION.fullmatch(st)
+        if m:
+            section, buf = m.group(1), []
+            continue
+        if st.startswith("#"):
+            t = re.sub(r"^#\s?", "", st)
+            if not re.fullmatch("─+", t):
+                buf.append(t)
+            continue
+        kv = CONFIG_KEY.match(st)
+        if kv and buf:
+            notes["%s.%s" % (section, kv.group(1))] = "\n".join(buf).strip()
+        if st == "" or kv:
+            buf = []
+    return notes
+
+
+def template_path(target: Path, p: Path) -> str:
+    """이 명령을 답한 하네스의 원형 경로. 하네스 루트 안이면 그 기준 상대 경로, 밖이면 절대 경로."""
+    try:
+        return p.relative_to(target).as_posix()
+    except ValueError:
+        return str(p)
+
+
 def cmd_schema(cfg, _target, _args):
     """`harness schema` — UI 가 선택지를 그리는 데 쓰는 해석된 설정. 등록부와 역할별 실제 실행 주체를 낸다.
 
@@ -3662,8 +3954,16 @@ def cmd_schema(cfg, _target, _args):
         "forge": {k: cfg["forge"][k] for k in FORGE_DEFAULTS},
         "workflow_notes": {wf: "%s/%s.md" % (WORKFLOW_NOTES, wf) for wf in cfg["workflows"]},
         # 절차 목록: 제목과, 이 프로젝트가 만든 것인지(하네스 기본 조각이 없는 것)
-        "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None}
+        "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None,
+                           "path": ".ai/workflows/%s.md" % wf}
                       for wf, body in cfg["workflows"].items()},
+        # UI 가 읽고 보이는 경로와 판정 값. UI 는 경로를 짓지 않고 이것을 쓴다. 이 키가 있는 사본은 write-doc · fix 를 안다
+        "docs": {d: {"path": rel, "template": template_path(_target, OWNED_DOCS / ("%s.md" % d))}
+                 for d, rel in writable_docs(cfg).items() if "/" not in d},
+        "verify_script": verify_entry(_target),
+        "hooks_path": hooks_expected(_target),
+        "config_notes": config_notes(_target),
+        "base_protected": list(BASE_PROTECTED),
     }, ensure_ascii=False, indent=2))
     return 0
 
@@ -4107,12 +4407,14 @@ def cmd_start_server(_cfg, _target, args):
 
 COMMANDS = {
     # 이름          (함수, 설정이 필요한가, 인수, 설명)
-    "install":   (None, True,  "[--target DIR] [--adopt]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
+    "install":   (None, True,  "[--target DIR] [--adopt] [--create] [--git-init]", "vendor the harness into .harness/ and render (the source tree only registers and renders)"),
     "render":    (None, True,  "[--target DIR] [--adopt]", "harness.toml + .ai/project/ -> generated files"),
     "check":     (None, True,  "[--staged]", "verify generated files match the config and managed files match the manifest"),
     "doctor":    (None, True,  "[--remote] [--json]", "report readiness: config, files, managed file changes, tools, hooks (--remote: also the remote, read-only; "
                   "--json: the items as JSON)"),
     "set":       (None, True,  "<section.key> <value> ...", "change config values together and re-render"),
+    "write-doc": (None, True,  "<name> -", "write standard input to a project document or a role or workflow note, and re-render"),
+    "fix":       (None, True,  "<hooks|verify>", "run a Doctor fix: turn the git hooks on as install does, or run verification again"),
     "run":       (None, True,  "<workflow> <issue> [--worktree]", "start a workflow in the configured orchestrator"),
     "steps":     (None, True,  "[<workflow> <json>]", "print steps as JSON, or replace one workflow's (--dry-run: check only)"),
     "checks":    (None, True,  "[<json>]", "print verification checks as JSON, or replace them"),
@@ -4157,7 +4459,7 @@ def cmd_help(_cfg, _target, _args):
 # 전역 CLI 를 깔아도 각 프로젝트는 자기가 고정한 버전으로 돌아야 한다. 그러지 않으면
 # 전역을 올리는 순간 모든 프로젝트의 생성물이 조용히 바뀌고, 그 리포의 검사가 한꺼번에 깨진다.
 DELEGATES = {"render", "check", "doctor", "set", "steps", "checks", "metrics", "schema", "status", "run", "vars", "uninstall",
-             "forge-setup"}
+             "forge-setup", "write-doc", "fix"}
 
 
 PINNED_SHOWN = 10
@@ -4247,7 +4549,8 @@ def main():
                 "doctor": cmd_doctor, "set": cmd_set, "steps": cmd_steps, "checks": cmd_checks, "metrics": cmd_metrics, "run": cmd_run, "vars": cmd_vars,
                 "uninstall": cmd_uninstall, "version": cmd_version, "help": cmd_help,
                 "start-server": cmd_start_server, "stop-server": cmd_stop_server, "server-status": cmd_server_status,
-                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup}
+                "tools": cmd_tools, "schema": cmd_schema, "status": cmd_status, "forge-setup": cmd_forge_setup,
+                "write-doc": cmd_write_doc, "fix": cmd_fix}
 
     ap = argparse.ArgumentParser(prog="harness", add_help=False,
                                  description=__doc__,
@@ -4268,6 +4571,8 @@ def main():
     ap.add_argument("--dev", action="store_true", help="start-server: run next dev in the foreground")
     ap.add_argument("--json", action="store_true", help="doctor: print the items as one JSON object")
     ap.add_argument("--remote", action="store_true", help="doctor, status: also check the remote, read-only")
+    ap.add_argument("--create", action="store_true", help="install: create the target directory if it does not exist")
+    ap.add_argument("--git-init", action="store_true", help="install: run `git init` in the target if it has no .git")
     ap.add_argument("--adopt", action="store_true",
                     help="install, render, set, steps, checks: take over files the harness would write, keeping each as <path>.orig")
     ap.add_argument("-h", "--help", action="store_true")
@@ -4287,10 +4592,10 @@ def main():
     target = Path(args.target).resolve()
     delegate(target, args.command)
 
+    if args.command == "install":       # 설정을 깔기 전에 등록을 가르고, 대상을 만들 수 있다
+        return cmd_install(None, target, args)
     cfg = None
     if COMMANDS[args.command][1]:
-        if args.command == "install":
-            seed_config(target)
         cfg = load(target)
         normalize(cfg)
         validate(cfg)

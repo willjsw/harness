@@ -579,3 +579,68 @@ guard_arch_docs() {
       "help: if the user explicitly asked for this edit, they run it themselves"
   return 0
 }
+
+# 6) `harness write-doc` 으로 보호 문서를 쓰는 것
+#    write-doc 은 UI 가 문서·메모를 저장할 때 부르는 명령이다. 에이전트가 이 명령으로 보호 문서·역할 메모·
+#    절차 메모를 고치는 것은 셸 편집과 같은 행위다. 명령 자리의 하네스 호출에서 옵션을 걷고 첫 위치 인수가
+#    write-doc 이면 다음 위치 인수를 문서 이름으로 본다. 셸이 실행 때 정하는 이름은 판정하지 않는다.
+# 하네스 호출 인수 한 줄에서 write-doc 의 문서 이름을 낸다. write-doc 호출이 아니거나 이름이 없으면 아무것도 내지 않는다.
+# 값을 다음 토큰으로 받는 옵션은 그 값까지, 나머지 `-` 로 시작하는 토큰은 그 토큰만 걷는다.
+write_doc_name() {
+  # shellcheck disable=SC2086
+  set -- $1
+  _sub=
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --target | --rename | --since | --trace)
+        shift
+        [ $# -gt 0 ] && shift
+        continue
+        ;;
+      -*)
+        shift
+        continue
+        ;;
+    esac
+    if [ -z "$_sub" ]; then
+      _sub=$1
+      shift
+      [ "$_sub" = write-doc ] || return 0
+      continue
+    fi
+    printf '%s' "$1"
+    return 0
+  done
+}
+
+guard_write_doc() {
+  GUARD_LABEL=arch-doc
+  _paths=${PROTECTED_DOCS_RE:-}
+  [ -n "$_paths" ] || return 0
+  _invs=$(invocations_of harness)
+  [ -n "$_invs" ] || return 0
+  _hit=
+  _ifs=$IFS
+  IFS='
+'
+  for _line in $_invs; do
+    IFS=$_ifs
+    _name=$(write_doc_name "$_line")
+    [ -n "$_name" ] || continue
+    # 셸이 실행 때 정하는 이름은 풀지 않는다
+    case "$_name" in
+      *'$'* | *'`'* | *'*'* | *'?'* | *'['* | *'{'* | *'\'*) continue ;;
+    esac
+    _name=$(unquote_word "$_name")
+    if printf '%s' ".ai/project/$_name.md" | grep -Eq -- "^($_paths)"; then
+      _hit=1
+      break
+    fi
+  done
+  IFS=$_ifs
+  [ -n "$_hit" ] &&
+    block "writing a protected document through harness write-doc" \
+      "agents read these documents as ground truth — if a request conflicts with one, report it instead of editing" \
+      "help: this command is for the UI; if the user explicitly asked for this edit, they make it themselves"
+  return 0
+}

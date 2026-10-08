@@ -3873,7 +3873,7 @@ check "the directory behind the old copy's link is kept" "$(ls "$out101/oldbin" 
 sd="$work/seed101"; rm -rf "$sd"; mkdir -p "$sd"; ( cd "$sd" && git init -q . )
 ln -s "$out101/seeded.toml" "$sd/harness.toml"
 "$root/bin/harness" install --target "$sd" > "$work/p101-13.out" 2> "$work/p101-13.err"; check "install over a dangling harness.toml link" "$?" "2"
-has "$work/p101-13.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
+has "$work/p101-13.err" "go through a symbolic link" "the refusal does not say it would write through a link"
 has "$work/p101-13.err" "  --> harness.toml" "the refusal does not name harness.toml"
 [ -e "$out101/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
 # uninstall — 지울 경로의 부모가 링크면 아무것도 지우지 않는다
@@ -4115,6 +4115,296 @@ sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" > "$work/ftoff-bad.log" 2>&1; check "render with a non-boolean forge.templates exits 2" "$?" "2"
 has "$work/ftoff-bad.log" "forge.templates must be true or false" "the refusal does not name forge.templates"
 cat "$work"/ftoff-*.log > "$work/ftoff-all.log"; no_hangul "$work/ftoff-all.log" "forge.templates output"
+
+echo "UT-105 the UI writes through CLI commands and reads paths from schema: write-doc and its deny, fix, install --create, and the schema paths"
+# UI 가 파일을 직접 쓰면 머리 주석·render 를 UI 와 CLI 가 따로 알게 되고, 한쪽만 고치면 결과가 갈린다.
+body101() { python3 -c 'import sys; print(repr(open(sys.argv[1], encoding="utf-8").read()))' "$1"; }
+tree101() { # tree101 <대상> — 등록부를 뺀 파일 경로와 내용의 해시. 파일이 하나라도 생기거나 바뀌면 달라진다
+  python3 - "$1" <<'PY'
+import hashlib, os, sys
+h = hashlib.sha256()
+for d, dirs, files in sorted(os.walk(sys.argv[1])):
+    dirs.sort()
+    for f in sorted(files):
+        p = os.path.join(d, f)
+        h.update(p.encode()); h.update(b"\0")
+        h.update(open(p, "rb").read() if not os.path.islink(p) else os.readlink(p).encode())
+    h.update(("dir:" + d).encode())
+print(h.hexdigest())
+PY
+}
+wd101() { # wd101 <대상> <이름> <본문> [두 번째 인수] — 출력은 $work/wd101.out · .err
+  printf '%s' "$3" | "$root/bin/harness" write-doc "$2" "${4:--}" --target "$1" > "$work/wd101.out" 2> "$work/wd101.err"
+}
+t="$work/wd101"; setup "$t"
+wd101 "$t" stack x; check "write-doc of a document exits 0" "$?" "0"
+check "the document is the body ending in one newline" "$(body101 "$t/.ai/project/stack.md")" "'x\\n'"
+has "$work/wd101.out" "write-doc: .ai/project/stack.md" "write-doc does not name the path it wrote"
+has "$work/wd101.out" "render:" "write-doc does not show the render output"
+grep -qx 'x' "$t/.ai/AI_AGENT.md" && ok || bad "the rule canon does not carry the written document"
+"$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check after write-doc" "$?" "0"
+cat "$work/wd101.out" "$work/wd101.err" > "$work/wd101-all.log"
+[ ! -e "$t/.ai/project/roles" ] && ok || bad "the test repo already has role notes"
+wd101 "$t" roles/developer "developer-note-101"; check "write-doc of a role note exits 0" "$?" "0"
+has "$t/.ai/project/roles/developer.md" "이 역할의 에이전트 정의 끝" "the role note did not get the role head comment"
+has "$t/.ai/project/roles/developer.md" "developer-note-101" "the role note lost its body"
+has "$t/.claude/agents/developer.md" "developer-note-101" "the agent definition does not carry the role note"
+wd101 "$t" roles/planner "<!-- mine -->
+planner-note-101"; check "write-doc of a note with its own comment exits 0" "$?" "0"
+check "a note starting with a comment gets no head comment" "$(body101 "$t/.ai/project/roles/planner.md")" \
+  "'<!-- mine -->\\nplanner-note-101\\n'"
+wd101 "$t" roles/planner "
+	"; check "write-doc of a blank note exits 0" "$?" "0"
+check "a blank note is written as one newline" "$(body101 "$t/.ai/project/roles/planner.md")" "'\\n'"
+wd101 "$t" workflows/work "work-note-101"; check "write-doc of a workflow note exits 0" "$?" "0"
+has "$t/.ai/project/workflows/work.md" "이 절차 끝" "the workflow note did not get the workflow head comment"
+has "$t/.ai/workflows/work.md" "work-note-101" "the procedure does not carry the workflow note"
+cat "$work/wd101.out" "$work/wd101.err" >> "$work/wd101-all.log"
+# 받지 않는 이름과 인수 — 아무것도 생기거나 바뀌지 않는다
+before=$(tree101 "$t")
+for name in commands ../x stack.md roles/nosuch workflows/nosuch /etc/passwd; do
+  wd101 "$t" "$name" "refused"; check "write-doc refuses \`$name\`" "$?" "2"
+  has "$work/wd101.err" "error: unknown document" "the refusal of \`$name\` is not an error line"
+  has "$work/wd101.err" "roles/developer" "the refusal of \`$name\` does not list the role notes it takes"
+  has "$work/wd101.err" "workflows/work" "the refusal of \`$name\` does not list the workflow notes it takes"
+  has "$work/wd101.err" "review-checks" "the refusal of \`$name\` does not list the documents it takes"
+  cat "$work/wd101.err" >> "$work/wd101-all.log"
+done
+wd101 "$t" stack "refused" x; check "write-doc refuses a second argument other than -" "$?" "2"
+"$root/bin/harness" write-doc stack --target "$t" > /dev/null 2>&1 < /dev/null; check "write-doc refuses a missing -" "$?" "2"
+check "refused calls change no file" "$(tree101 "$t")" "$before"
+# render 가 실패하면 문서를 쓰기 전으로 되돌린다. 없던 메모와 그 디렉터리는 남지 않는다
+rm -f "$t/.ai/forge.md"; mkdir "$t/.ai/forge.md"
+wd101 "$t" stack "should-revert"; check "write-doc exits 2 when render fails" "$?" "2"
+has "$work/wd101.err" "reverted — the document is unchanged" "a failed render does not say the document was reverted"
+check "the document is back to what it was" "$(body101 "$t/.ai/project/stack.md")" "'x\\n'"
+hasnt "$work/wd101.out" "write-doc: " "a reverted write-doc claims it wrote the document"
+wd101 "$t" workflows/retro "should-revert"; check "write-doc of a new note exits 2 when render fails" "$?" "2"
+[ ! -e "$t/.ai/project/workflows/retro.md" ] && ok || bad "a reverted new note was left behind"
+rm -rf "$t/.ai/project/roles"
+wd101 "$t" roles/developer "should-revert"; check "write-doc of a note in a new directory exits 2 when render fails" "$?" "2"
+[ ! -e "$t/.ai/project/roles" ] && ok || bad "a reverted note left the directory it made"
+cat "$work/wd101.out" "$work/wd101.err" >> "$work/wd101-all.log"
+rmdir "$t/.ai/forge.md"
+# 고정 사본이 있는 리포에서는 고정 사본이 답한다
+t="$work/wdpin101"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+"$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for write-doc delegation"
+echo "0.0.9" > "$t/.harness/VERSION"
+python3 - "$t" <<'PY'
+import hashlib, pathlib, re, sys
+t = pathlib.Path(sys.argv[1]); m = t / ".harness/managed"
+h = hashlib.sha256((t / ".harness/VERSION").read_bytes()).hexdigest()
+m.write_text(re.sub(r"^[0-9a-f]{64}(  \.harness/VERSION)$", h + r"\1", m.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+PY
+wd101 "$t" stack "pinned-101"; check "write-doc in a pinned repo exits 0" "$?" "0"
+has "$work/wd101.err" "pinned to harness 0.0.9" "the global CLI did not hand write-doc to the pinned copy"
+has "$t/.ai/project/stack.md" "pinned-101" "the pinned copy did not write the document"
+cat "$work/wd101.out" >> "$work/wd101-all.log"
+no_hangul "$work/wd101-all.log" "write-doc output"
+# 권한 deny — 보호 항목마다 세 호출 형태로 write-doc 규칙이 생기고, 기존 편집 규칙은 그대로다
+t="$work/wddeny101"; setup "$t"
+wdrules101() { grep -c 'write-doc' "$1/.claude/settings.json"; }
+for h in harness .harness/bin/harness src/bin/harness; do
+  for n in scope roles/ workflows/; do
+    has "$t/.claude/settings.json" "\"Bash($h write-doc $n:*)\"" "no write-doc deny for \`$n\` through $h"
+  done
+  hasnt "$t/.claude/settings.json" "\"Bash($h write-doc stack:*)\"" "an unprotected document is denied to write-doc through $h"
+done
+has "$t/.claude/settings.json" '"Edit(.ai/project/scope.md)"' "the edit deny for a protected document is gone"
+has "$t/.claude/settings.json" '"Edit(.ai/project/roles/**)"' "the edit deny for role notes is gone"
+"$root/bin/harness" set --target "$t" docs.protected ".ai/project/stack.md," >/dev/null 2>&1 || bad "could not protect stack.md"
+has "$t/.claude/settings.json" '"Bash(harness write-doc stack:*)"' "protecting a document does not deny it to write-doc"
+n101=$(wdrules101 "$t")
+"$root/bin/harness" set --target "$t" docs.protected ".ai/project/stack.md,docs/guide.md,.ai/project/notes.txt," >/dev/null 2>&1 \
+  || bad "could not protect paths outside .ai/project"
+check "a path write-doc cannot write adds no write-doc rule" "$(wdrules101 "$t")" "$n101"
+"$root/bin/harness" set --target "$t" docs.protected ".ai/**," >/dev/null 2>&1 || bad "could not protect .ai/**"
+has "$t/.claude/settings.json" '"Bash(harness write-doc:*)"' "a directory over .ai/project does not deny every write-doc call"
+# 쓴 뒤 render 가 예상하지 못한 이유(다른 문서의 깨진 UTF-8)로 실패해도 문서는 쓰기 전으로 돌아간다
+w105="$work/wd105"; setup "$w105"
+cp "$w105/.ai/project/stack.md" "$work/wd105-stack.before"
+printf '\377\376 broken\n' >> "$w105/.ai/project/glossary.md"
+wd101 "$w105" stack replaced; check "write-doc when render cannot read another document exits 2" "$?" "2"
+cmp -s "$w105/.ai/project/stack.md" "$work/wd105-stack.before" && ok || bad "a failed write-doc left the new body"
+has "$work/wd101.err" "reverted" "a failed write-doc does not say it reverted"
+# 첫 쓰기 자체가 실패해도(읽기 전용 문서) traceback 없이 2 이고 문서는 그대로다. root 는 읽기 전용을 무시하므로 건너뛴다
+if [ "$(id -u)" != 0 ]; then
+  w106="$work/wd106"; setup "$w106"
+  cp "$w106/.ai/project/stack.md" "$work/wd106.before"; chmod 444 "$w106/.ai/project/stack.md"
+  wd101 "$w106" stack replaced; check "write-doc over a read-only document exits 2" "$?" "2"
+  cmp -s "$w106/.ai/project/stack.md" "$work/wd106.before" && ok || bad "a failed write over a read-only document changed it"
+  hasnt "$work/wd101.err" "Traceback" "a failed write over a read-only document ended in a traceback"
+  chmod 644 "$w106/.ai/project/stack.md"
+fi
+unset -f body101 tree101 wd101 wdrules101
+# fix — Doctor 조치. 검증은 그 리포의 검증 스크립트를, 훅은 install 과 같은 판정으로 켠다
+t="$work/fix101"; setup "$t"
+fix101() { "$root/bin/harness" fix "$@" --target "$t" > "$work/fix101.out" 2> "$work/fix101.err"; }
+"$root/bin/harness" set --target "$t" commands.test "true" >/dev/null 2>&1 || bad "could not set a passing test command"
+fix101 verify; check "fix verify with a passing command" "$?" "0"
+has "$work/fix101.out" "verify: ok" "fix verify did not show the verification output"
+"$root/bin/harness" set --target "$t" commands.test "false" >/dev/null 2>&1 || bad "could not set a failing test command"
+fix101 verify; [ "$?" -ne 0 ] && ok || bad "fix verify exits 0 though the command fails"
+printf '#!/usr/bin/env bash\necho legacy-verify-101\nexit 0\n' > "$t/script/verify-project.sh"
+fix101 verify; check "fix verify with a filled hand-written script" "$?" "0"
+has "$work/fix101.out" "legacy-verify-101" "fix verify did not run the hand-written script"
+# 검증 출력은 그 리포의 단계 이름을 담으므로 한글 검사에서 뺀다
+( cd "$t" && git init -q . )
+fix101 hooks; check "fix hooks on an empty setting" "$?" "0"
+check "fix hooks sets the hooks path" "$(git -C "$t" config core.hooksPath)" "script/githooks"
+has "$work/fix101.out" "fix: set core.hooksPath to script/githooks" "fix hooks does not say it set the value"
+fix101 hooks; check "fix hooks when the value is already right" "$?" "0"
+has "$work/fix101.out" "already script/githooks" "fix hooks does not say the value is already right"
+cat "$work/fix101.out" "$work/fix101.err" > "$work/fix101-all.log"
+t="$work/fixown101"; setup "$t"; ( cd "$t" && git init -q . )
+mkdir -p "$t/.git/hooks"; printf '#!/bin/sh\nexit 0\n' > "$t/.git/hooks/pre-commit"; chmod +x "$t/.git/hooks/pre-commit"
+fix101 hooks; check "fix hooks over hooks of the repository's own" "$?" "2"
+check "fix hooks leaves the setting empty" "$(git -C "$t" config core.hooksPath || echo '(none)')" "(none)"
+has "$work/fix101.err" "pre-commit" "fix hooks does not say why it left the setting"
+fix101 nosuch; check "fix refuses an unknown fix" "$?" "2"
+has "$work/fix101.err" "usage: harness fix" "the refusal does not show the usage"
+fix101; check "fix refuses a missing fix" "$?" "2"
+cat "$work/fix101.out" "$work/fix101.err" >> "$work/fix101-all.log"
+no_hangul "$work/fix101-all.log" "fix output"
+unset -f fix101
+# install --create · --git-init — 새 프로젝트 만들기가 CLI 한 번이다. 거부되면 아무것도 만들지 않는다
+c101="$work/create101"; rm -rf "$c101" "$work/home101"
+in101() { HARNESS_HOME="$work/home101" "$root/bin/harness" install "$@" > "$work/in101.out" 2> "$work/in101.err"; }
+reg101() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$work/home101/$1/project.json" 2>/dev/null || echo "(none)"; }
+in101 --create --git-init --target "$c101/a/fresh101"; check "install --create --git-init into a missing path" "$?" "0"
+[ -d "$c101/a/fresh101/.git" ] && ok || bad "install --git-init did not start a git repository"
+[ -f "$c101/a/fresh101/harness.toml" ] && ok || bad "install --create did not lay down the config"
+check "the new path is registered" "$(reg101 fresh101)" "$(cd "$c101/a/fresh101" && pwd -P)"
+cat "$work/in101.out" "$work/in101.err" > "$work/in101-all.log"
+in101 --target "$c101/b/missing101"; check "install into a missing path without --create" "$?" "2"
+[ ! -e "$c101/b" ] && ok || bad "install without --create made the path"
+has "$work/in101.err" "error: target directory does not exist" "the refusal does not say the directory is missing"
+has "$work/in101.err" "--create" "the refusal does not point at --create"
+cat "$work/in101.err" >> "$work/in101-all.log"
+before=$(cat "$work/home101/fresh101/project.json")
+in101 --create --git-init --target "$c101/c/fresh101"; check "install --create under a name in use elsewhere" "$?" "2"
+[ ! -e "$c101/c" ] && ok || bad "a refused install --create made the path"
+check "a refused install --create leaves the registry" "$(cat "$work/home101/fresh101/project.json")" "$before"
+has "$work/in101.err" "is already registered to another repository" "the refusal is not the registry's"
+cat "$work/in101.err" >> "$work/in101-all.log"
+# 있는 대상에서 install 이 바꿀 경로가 판정에서 멈추면 .git 도 설정도 생기지 않는다 — 설정이 없을 때와 있을 때
+mkdir -p "$work/outside105"
+for e in noconf conf; do
+  s105="$c101/e/$e"; mkdir -p "$s105/.ai"; ln -s "$work/outside105" "$s105/.ai/workflows"
+  [ "$e" = conf ] && cp "$root/templates/harness.toml" "$s105/harness.toml"
+  in101 --git-init --target "$s105"; check "install --git-init over a linked path is refused ($e)" "$?" "2"
+  [ ! -e "$s105/.git" ] && ok || bad "a refused install --git-init started a git repository ($e)"
+  if [ "$e" = noconf ]; then [ ! -e "$s105/harness.toml" ] && ok || bad "a refused install laid down the config"; fi
+done
+# 설정 자리가 끊긴 링크면 git init 전에 멈춘다
+s107="$c101/g/danglecfg"; mkdir -p "$s107"; ln -s "$work/nowhere107/harness.toml" "$s107/harness.toml"
+in101 --git-init --target "$s107"; check "install --git-init over a dangling config link is refused" "$?" "2"
+[ ! -e "$s107/.git" ] && ok || bad "a refused install --git-init over a dangling config link started a git repository"
+# 상위 리포 안의 디렉터리는 git init 뒤에야 forge 템플릿 자리가 생긴다 — 거기가 링크여서 멈춰도 이번에 만든 것은 걷는다
+p108="$c101/h/parent"; mkdir -p "$p108/sub/.github" "$p108/sub/.gitlab"; ( cd "$p108" && git init -q . )
+ln -s "$work/outside105" "$p108/sub/.github/ISSUE_TEMPLATE"; ln -s "$work/outside105" "$p108/sub/.gitlab/issue_templates"
+in101 --git-init --target "$p108/sub"; check "install --git-init refused after git init (nested repository)" "$?" "2"
+[ ! -e "$p108/sub/.git" ] && ok || bad "a refused install left the git repository it started"
+[ ! -e "$p108/sub/harness.toml" ] && ok || bad "a refused install left the config it laid down"
+[ -L "$p108/sub/.github/ISSUE_TEMPLATE" ] && ok || bad "a refused install touched what was already there"
+# 그 사이 다른 것이 새 디렉터리에 파일을 만들었으면 그 디렉터리는 남긴다 — git init 이 실패하는 동안 생긴 파일
+fg109="$work/fakegit109"; mkdir -p "$fg109"
+cat > "$fg109/git" <<SH
+#!/bin/sh
+if [ "\$1" = init ]; then echo note > "$c101/i/notes109.txt"; echo "fatal: cannot init" >&2; exit 1; fi
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$fg109/git"
+PATH="$fg109:$PATH" in101 --create --git-init --target "$c101/i/repo109"; check "install --create --git-init when git init fails" "$?" "2"
+check "a file another process made in the new directory is kept" "$(cat "$c101/i/notes109.txt" 2>/dev/null)" "note"
+[ ! -e "$c101/i/repo109" ] && ok || bad "the empty directory this run made is left"
+has "$work/in101.out" "something else is in it now" "install does not say it kept a directory that is no longer empty"
+# 고정 사본을 깔다 예외로 멈추면 이번에 깐 .harness 와 새 디렉터리를 남기지 않는다. root 는 읽기 권한을 무시하므로 건너뛴다
+if [ "$(id -u)" != 0 ]; then
+  h110="$work/cli110"; rm -rf "$h110"; mkdir -p "$h110"; cp -R "$root/bin" "$root/templates" "$h110/"
+  f110=$(find "$h110/templates/adr/madr" -type f | head -1); chmod 000 "$f110"
+  HARNESS_HOME="$work/home101" "$h110/bin/harness" install --create --target "$c101/j/repo110" > "$work/in110.out" 2> "$work/in110.err"
+  [ "$?" != 0 ] && ok || bad "install with an unreadable template file succeeded"
+  [ ! -e "$c101/j" ] && ok || bad "a failed install left the directory it made and its partial copy"
+  chmod 644 "$f110"
+fi
+r="$c101/d/repo101"; mkdir -p "$r"
+( cd "$r" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first ) || bad "could not prepare a repository"
+head101=$(git -C "$r" rev-parse HEAD)
+in101 --git-init --target "$r"; check "install --git-init into a repository" "$?" "0"
+check "the repository keeps its history" "$(git -C "$r" rev-parse HEAD)|$(git -C "$r" rev-list --count HEAD)" "$head101|1"
+hasnt "$work/in101.out" "started a git repository" "install --git-init claims it started git over an existing one"
+cat "$work/in101.out" "$work/in101.err" >> "$work/in101-all.log"
+no_hangul "$work/in101-all.log" "install --create output"
+unset -f in101 reg101
+# schema — UI 가 짓지 않고 받는 경로와 판정 값
+schema101() { # schema101 <CLI> <대상> <파이썬 식> — schema 를 s, 대상 경로를 t, 원형 디렉터리 목록을 owned 로 두고 식을 찍는다
+  "$1" schema --target "$2" 2>/dev/null | python3 -c '
+import json, os, sys
+s = json.load(sys.stdin); t = sys.argv[1]
+owned = sorted(f[:-3] for f in os.listdir(sys.argv[2]) if f.endswith(".md"))
+print(eval(sys.argv[3]))' "$2" "$root/templates/owned/.ai/project" "$3"
+}
+docs101='sorted(s["docs"]) == [d for d in owned if d != "commands"] and "commands" not in s["docs"] and all(v["path"] == ".ai/project/%s.md" % k and os.path.isfile(os.path.join(t, v["template"])) for k, v in s["docs"].items())'
+t="$work/schpin101"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q . )
+HARNESS_HOME="$work/home101" "$root/bin/harness" install --target "$t" >/dev/null 2>&1 || bad "could not install for schema"
+check "schema docs in a pinned repo" "$(schema101 "$root/bin/harness" "$t" "$docs101")" "True"
+check "schema templates in a pinned repo come from the pinned copy" \
+  "$(schema101 "$root/bin/harness" "$t" 'all(v["template"].startswith(".harness/templates/owned/") for v in s["docs"].values())')" "True"
+check "schema workflow paths point at generated procedures" \
+  "$(schema101 "$root/bin/harness" "$t" 'bool(s["workflows"]) and all(os.path.isfile(os.path.join(t, w["path"])) for w in s["workflows"].values())')" "True"
+check "schema verify script without a hand-written one" "$(schema101 "$root/bin/harness" "$t" 's["verify_script"]')" "script/harness-verify.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$t/script/verify-project.sh"
+check "schema verify script with a filled hand-written one" "$(schema101 "$root/bin/harness" "$t" 's["verify_script"]')" "script/verify-project.sh"
+rm "$t/script/verify-project.sh"
+check "schema hooks path at a repository root" "$(schema101 "$root/bin/harness" "$t" 's["hooks_path"]')" "$(git -C "$t" config core.hooksPath)"
+m="$work/schmono101"; rm -rf "$m"; mkdir -p "$m/packages/api"; ( cd "$m" && git init -q . )
+HARNESS_HOME="$work/home101" "$root/bin/harness" install --target "$m/packages/api" >/dev/null 2>&1 || bad "could not install a subproject for schema"
+check "schema hooks path in a subproject is what install set" "$(schema101 "$root/bin/harness" "$m/packages/api" 's["hooks_path"]')" \
+  "$(git -C "$m" config core.hooksPath)"
+src="$work/schsrc101"; rm -rf "$src"; mkdir -p "$src/src/bin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$root/templates" "$src/src/templates"
+( cd "$src" && git init -q . )
+HARNESS_HOME="$work/home101" "$src/src/bin/harness" install --target "$src" >/dev/null 2>&1 || bad "could not install the source tree clone"
+check "schema docs in a source tree clone" "$(schema101 "$src/src/bin/harness" "$src" "$docs101")" "True"
+check "schema templates in a source tree clone come from its src/templates" \
+  "$(schema101 "$src/src/bin/harness" "$src" 'all(v["template"].startswith("src/templates/owned/") for v in s["docs"].values())')" "True"
+# 설정 주석 — 바로 위 주석이 그 키의 설명이다. 구분선은 빠지고, 빈 줄로 떨어진 주석은 붙지 않는다
+t="$work/schnotes101"; setup "$t"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+m = re.search(r"^\[roles\.developer\]\n", s, re.M)
+s = s[:m.end()] + "# ──────────\n# developer-runner-101\n# second line\n" + re.sub(r"^((?:#.*\n)*)(runner =)", r"\2", s[m.end():], count=1, flags=re.M)
+m = re.search(r"^\[project\]\n", s, re.M)
+s = s[:m.end()] + "# orphan-101\n\n" + s[m.end():]
+open(p, "w", encoding="utf-8").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1 || bad "the config with test comments does not render"
+check "a key's note is the comment right above it, without the rule line" \
+  "$(schema101 "$root/bin/harness" "$t" 's["config_notes"].get("roles.developer.runner")' | tr '\n' '|')" "developer-runner-101|second line|"
+check "a comment cut off by a blank line is no key's note" \
+  "$(schema101 "$root/bin/harness" "$t" 'any("orphan-101" in v for v in s["config_notes"].values())')" "False"
+# 기준 보호 목록은 CLI 의 것 그대로이고, 설정에서 비워도 같다
+base101=$(python3 -c '
+import ast, sys
+for n in ast.parse(open(sys.argv[1], encoding="utf-8").read()).body:
+    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "BASE_PROTECTED":
+        print(ast.literal_eval(n.value))' "$root/bin/harness")
+check "schema base_protected is the CLI's list" "$(schema101 "$root/bin/harness" "$t" 's["base_protected"]')" "$base101"
+check "schema base_protected holds workflow notes" "$(schema101 "$root/bin/harness" "$t" '".ai/project/workflows/" in s["base_protected"]')" "True"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+m = re.search(r"^\[docs\]\n", s, re.M)
+s = s[:m.end()] + re.sub(r"^protected = \[[^\]]*\]", "protected = []", s[m.end():], count=1, flags=re.M)
+open(p, "w", encoding="utf-8").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1 || bad "an empty docs.protected does not render"
+check "schema base_protected with docs.protected emptied" "$(schema101 "$root/bin/harness" "$t" 's["base_protected"]')" "$base101"
+check "the existing schema keys stay" \
+  "$(schema101 "$root/bin/harness" "$t" 'all(k in s for k in ("agents", "script_roles", "orchestrator", "orchestrator_model", "roles", "commands", "checks", "legacy_verify", "doctor", "workflow_notes", "workflows"))')" "True"
+unset -f schema101
 
 echo
 if [ "$fail" -eq 0 ]; then

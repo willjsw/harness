@@ -8,7 +8,7 @@ import ModeToggle from "@/components/ModeToggle";
 import CheckReport from "@/components/CheckReport";
 import HelpTip from "@/components/HelpTip";
 
-export default function DocEditor({ project, doc, initial }) {
+export default function DocEditor({ project, doc, path, initial }) {
   const fields = fieldsOf(doc);
   const store = `harness:${project}:${doc}`;   // 입력 중인 항목만 브라우저에 둔다. 정본은 파일이다
   const [values, setValues] = useState({});
@@ -96,7 +96,7 @@ export default function DocEditor({ project, doc, initial }) {
       </section>
       <section className="card draft">
         <div className="card-head">
-          <h2 className="panel-title">문서 <code className="key fname">.ai/project/{doc}.md</code></h2>
+          <h2 className="panel-title">문서 <code className="key fname">{path}</code></h2>
           <ModeToggle edit={edit} onChange={setEdit} />
         </div>
         {edit

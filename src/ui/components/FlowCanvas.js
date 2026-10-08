@@ -11,6 +11,7 @@ import ModeToggle from "@/components/ModeToggle";
 import CheckReport from "@/components/CheckReport";
 import Select from "@/components/Select";
 import HelpTip from "@/components/HelpTip";
+import Reinstall from "@/components/Reinstall";
 import { HELP } from "@/lib/help";
 import Link from "next/link";
 import { LuBrainCircuit } from "react-icons/lu";
@@ -294,7 +295,8 @@ function Canvas({ project, workflows, schema, docs, notes }) {
       {view === "procedure" && wf in drafts ? (
         <div className="empty"><h1>아직 저장하지 않은 절차다</h1><p className="muted">단계를 더하고 저장하면 절차 문서가 만들어진다.</p></div>
       ) : view === "procedure" ? (
-        <Procedure key={wf} project={project} wf={wf} doc={docs[wf]} notes={notes[wf] ?? ""} path={schema.workflow_notes?.[wf]} />
+        <Procedure key={wf} project={project} wf={wf} doc={docs[wf]} notes={notes[wf] ?? ""} path={schema.workflow_notes?.[wf]}
+          docPath={schema.workflows?.[wf]?.path} canSave={!!schema.docs} />
       ) : (
       <div className={`flow-main${sideAnim ? " side-anim" : ""}`} style={{ "--side-w": `${sideW}px` }}>
         <div className="flow-canvas">
@@ -441,7 +443,7 @@ function Canvas({ project, workflows, schema, docs, notes }) {
             {manage.name !== wf && nameProblem(manage.name) && <p className="error">{nameProblem(manage.name)}</p>}
             <p className="hint">커맨드와 절차 문서, 이 절차에 더한 지시 파일이 새 이름을 따라간다.</p>
           </>) : (
-            <p><code>/{wf}</code> 절차와 그 커맨드를 지운다. 이 절차에 더한 지시 파일(<code>.ai/project/workflows/{wf}.md</code>)은 남긴다.</p>
+            <p><code>/{wf}</code> 절차와 그 커맨드를 지운다. 이 절차에 더한 지시 파일{schema.workflow_notes?.[wf] && <>(<code>{schema.workflow_notes[wf]}</code>)</>}은 남긴다.</p>
           )}
         </Modal>
       )}
@@ -491,7 +493,7 @@ function NewWorkflowDialog({ value, onChange, problem, onCancel, onCreate }) {
 }
 
 // 생성된 절차를 읽고, 이 프로젝트가 절차 끝에 더하는 지시를 고친다. 생성된 부분은 설정과 단계가 정하므로 여기서 고치지 않는다.
-function Procedure({ project, wf, doc, notes, path }) {
+function Procedure({ project, wf, doc, notes, path, docPath, canSave }) {
   const [text, setText] = useState(notes);
   const [edit, setEdit] = useState(false);
   const [report, setReport] = useState(null);
@@ -509,12 +511,14 @@ function Procedure({ project, wf, doc, notes, path }) {
     <div className="proc">
       <section className="card">
         <div className="card-head">
-          <h2>Generated Procedure <code className="key fname">.ai/workflows/{wf}.md</code></h2>
+          <h2>Generated Procedure {docPath && <code className="key fname">{docPath}</code>}</h2>
           <ModeToggle edit={edit} onChange={setEdit} />
         </div>
-        <div className="md-view proc-doc"><Markdown>{doc || ""}</Markdown></div>
+        {/* 절차 문서 경로를 내지 않는 옛 고정 사본이면 빈 문서로 보이지 않게 재설치를 안내한다 */}
+        {docPath ? <div className="md-view proc-doc"><Markdown>{doc || ""}</Markdown></div> : <Reinstall what="생성된 절차 문서를 보기" compact />}
       </section>
-      {edit && (
+      {edit && !canSave && <Reinstall what="절차 지시를 저장" compact />}
+      {edit && canSave && (
         <section className="card draft">
           <div className="card-head">
             <h2 className="label-help">Project Instructions<HelpTip text={HELP["procedure.notes"]} /></h2>

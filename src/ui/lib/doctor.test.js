@@ -5,29 +5,65 @@ import { explain, SECTIONS, STATUS_TIMEOUT_MS, REMOTE_TIMEOUT_DEFAULT, REMOTE_TI
 
 test("explain", () => {
   const b = "/demo";
-  assert.deepEqual(explain({ state: "bad", what: "git hooks enabled", detail: "run `git config core.hooksPath script/githooks`" }, b).run.kind, "hooks");
-  assert.equal(explain({ state: "warn", what: ".ai/project/glossary.md", detail: "2 placeholder(s) still to fill" }, b).href, "/demo/project/glossary");
-  assert.match(explain({ state: "warn", what: ".ai/project/glossary.md", detail: "2 placeholder(s) still to fill" }, b).body, /2곳/);
-  assert.equal(explain({ state: "bad", what: "3 files differ from the config", detail: "" }, b).run.kind, "render");
-  assert.equal(explain({ state: "bad", what: "script/verify-project.sh", detail: "" }, b).run.kind, "verify");
-  const unset = explain({ state: "bad", what: "script/harness-verify.sh", detail: "not set up — no commands yet" }, b);
-  assert.equal(unset.label, "SETUP");
-  assert.equal(unset.href, "/demo/project/commands");
-  assert.match(explain({ state: "bad", what: "script/harness-verify.sh", detail: "fails at 테스트" }, b).title, /테스트/);
+  assert.equal(explain({ section: "project facts", state: "warn", what: ".ai/project/glossary.md", detail: "2 placeholder(s) still to fill" }, b).href, "/demo/project/glossary");
+  assert.match(explain({ section: "project facts", state: "warn", what: ".ai/project/glossary.md", detail: "2 placeholder(s) still to fill" }, b).body, /2곳/);
+  assert.match(explain({ section: "verification", state: "bad", what: "script/harness-verify.sh", detail: "fails at 테스트" }, b).title, /테스트/);
   // 모르는 줄은 원문 그대로
-  assert.deepEqual(explain({ state: "warn", what: "something new", detail: "why" }, b), { title: "something new", body: "why" });
+  assert.deepEqual(explain({ section: "config", state: "warn", what: "something new", detail: "why" }, b), { title: "something new", body: "why" });
 });
 
-test("the git hooks command comes from the doctor detail", () => {
-  const b = "/demo";
-  const root = explain({ state: "bad", what: "git hooks enabled", detail: "run `git config core.hooksPath script/githooks`" }, b);
-  assert.equal(root.run.cmd, "git config core.hooksPath script/githooks");
-  const sub = explain({ state: "bad", what: "git hooks enabled", detail: "run `git config core.hooksPath packages/api/script/githooks`" }, b);
-  assert.equal(sub.run.cmd, "git config core.hooksPath packages/api/script/githooks");
-  assert.equal(sub.run.kind, "hooks");
-  const none = explain({ state: "bad", what: "git hooks enabled", detail: "not a git repository" }, b);
-  assert.equal(none.run, undefined);
-  assert.match(none.title, /git 훅/);
+// doctor 항목의 네 키만으로 조치 종류를 고른다. 입력에 조치 키를 넣지 않는다
+const item = (section, what, detail = "", state = "bad") => ({ section, state, what, detail });
+const FIX_TABLE = [
+  [item("verification", "script/harness-verify.sh", "fails at test"), "verify"],
+  [item("verification", "script/harness-verify.sh", "does not pass"), "verify"],
+  [item("verification", "script/verify-project.sh (hand-written)", "verification does not pass yet"), "verify"],
+  [item("verification", "script/verify-project.sh"), "verify"],
+  [item("git", "git hooks enabled", "run `git config core.hooksPath script/githooks`"), "hooks"],
+  [item("generated files", "3 files differ from the config", "run `harness render`"), "render"],
+  [item("tools and connections", "adapter `github`", "file is missing"), "render"],
+];
+
+test("each row of the fix table picks its fix from the four item keys", () => {
+  for (const [i, kind] of FIX_TABLE) {
+    assert.deepEqual(Object.keys(i).sort(), ["detail", "section", "state", "what"]);
+    assert.equal(explain(i, "/demo").run?.kind, kind, JSON.stringify(i));
+  }
+});
+
+test("the same wording under another section gets no fix", () => {
+  for (const [i] of FIX_TABLE) {
+    const x = explain({ ...i, section: "references" }, "/demo");
+    assert.equal(x.run, undefined, JSON.stringify(i));
+  }
+});
+
+test("a passing item and an adapter that is only unverified get no fix", () => {
+  assert.equal(explain(item("git", "git hooks enabled", "", "ok"), "/demo").run, undefined);
+  assert.equal(explain(item("verification", "script/harness-verify.sh", "passes", "ok"), "/demo").run, undefined);
+  assert.equal(explain(item("tools and connections", "adapter `github`", "unverified — run `script/forge-selftest.sh`", "warn"), "/demo").run, undefined);
+});
+
+test("verification with no commands yet links to the commands tab and has no fix", () => {
+  const unset = explain(item("verification", "script/harness-verify.sh", "not set up — no commands yet"), "/demo");
+  assert.equal(unset.run, undefined);
+  assert.equal(unset.label, "SETUP");
+  assert.equal(unset.href, "/demo/project/commands");
+});
+
+test("the shown commands come from the schema, monorepo prefix included", () => {
+  const schema = { verify_script: "script/verify-project.sh", hooks_path: "packages/api/script/githooks" };
+  assert.equal(explain(FIX_TABLE[0][0], "/demo", schema).run.cmd, "bash script/verify-project.sh");
+  assert.equal(explain(FIX_TABLE[4][0], "/demo", schema).run.cmd, "git config core.hooksPath packages/api/script/githooks");
+  assert.equal(explain(FIX_TABLE[5][0], "/demo", schema).run.cmd, "harness render");
+});
+
+test("without a schema the fix stays and the verify and hooks commands are empty", () => {
+  for (const [i, kind] of FIX_TABLE.filter(([, k]) => k === "verify" || k === "hooks")) {
+    const x = explain(i, "/demo");
+    assert.equal(x.run.kind, kind);
+    assert.equal(x.run.cmd, "");
+  }
 });
 
 test("explain registry lines", () => {

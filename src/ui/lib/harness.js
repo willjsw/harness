@@ -4,7 +4,6 @@ import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { DOCS } from "./fields.js";
 import { STATUS_TIMEOUT_MS, remoteStatusTimeoutMs } from "./doctor.js";
 
 const run = promisify(execFile);
@@ -52,15 +51,25 @@ export async function readConfig(dir) {
   return JSON.parse(stdout);
 }
 
-// 쓰기는 전부 CLI 로 간다. `set` 이 검증·되돌림·렌더를 이미 한다.
+// 쓰기는 전부 CLI 로 간다. `set` · `write-doc` 이 검증·되돌림·렌더를 이미 한다.
 // timeout 은 그 명령이 끝나기를 기다리는 최대 시간(ms)이다. 넘기면 결과 없이 실패로 돌려준다.
-export async function harness(dir, args, { timeout = STATUS_TIMEOUT_MS } = {}) {
+// input 이 있으면 자식 프로세스의 표준 입력으로 넘긴다(`write-doc <이름> -` 의 본문).
+export async function harness(dir, args, { timeout = STATUS_TIMEOUT_MS, input } = {}) {
   try {
-    const { stdout, stderr } = await run(BIN, [...args, "--target", dir], { timeout });
+    const { stdout, stderr } = await runWithInput(BIN, [...args, "--target", dir], { timeout, input });
     return { ok: true, out: (stdout + stderr).trim() };
   } catch (e) {
     return { ok: false, out: ((e.stdout || "") + (e.stderr || "") || e.message).trim() };
   }
+}
+
+function runWithInput(cmd, args, { timeout, input }) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(cmd, args, { timeout, maxBuffer: 8 << 20 }, (err, stdout, stderr) =>
+      err ? reject(Object.assign(err, { stdout, stderr })) : resolve({ stdout, stderr }));
+    child.stdin?.on("error", () => {});   // 입력을 다 읽기 전에 끝난 명령 — 결과는 콜백이 알린다
+    child.stdin?.end(input ?? "");
+  });
 }
 
 // 기본값을 채운 단계 목록. 설정에 절차가 없을 때의 기본값은 CLI 만 안다 — 여기서 다시 풀지 않는다.
@@ -70,33 +79,24 @@ export async function readSteps(dir) {
   return JSON.parse(r.out);
 }
 
-export async function listWorkflows(dir) {
-  const d = path.join(dir, ".ai", "workflows");
-  let files = [];
-  try { files = (await fs.readdir(d)).filter((f) => f.endsWith(".md")).sort(); } catch {}
-  return Promise.all(files.map(async (f) => ({
-    name: f.slice(0, -3),
-    text: await fs.readFile(path.join(d, f), "utf8"),
+// 생성된 절차 문서. 경로는 schema 가 준 것만 쓴다 — 디렉터리를 나열하지 않는다.
+export async function listWorkflows(dir, schema) {
+  return Promise.all(Object.entries(schema?.workflows ?? {}).filter(([, w]) => w.path).map(async ([name, w]) => ({
+    name, text: await readText(dir, w.path),
   })));
 }
 
-export function docPath(dir, doc) {
-  if (!(doc in DOCS)) throw new Error(`unknown doc: ${doc}`);   // 경로를 입력에서 만들지 않는다
-  return path.join(dir, ".ai", "project", `${doc}.md`);
+// 프로젝트 문서. schema 에 없는 문서(옛 사본·모르는 이름)는 빈 문자열이다.
+export async function readDoc(dir, schema, doc) {
+  const rel = schema?.docs?.[doc]?.path;
+  return rel ? readText(dir, rel) : "";
 }
 
-export async function readDoc(dir, doc) {
-  try { return await fs.readFile(docPath(dir, doc), "utf8"); } catch { return ""; }
-}
-
-// 원형은 프로젝트에 고정된 하네스 사본의 것을 쓴다 — 그 프로젝트가 따르는 양식이다.
-export async function readDocTemplate(dir, doc) {
-  const f = path.join(dir, ".harness", "templates", "owned", ".ai", "project", `${doc}.md`);
-  try { return await fs.readFile(f, "utf8"); } catch { return ""; }
-}
-
-export async function writeDoc(dir, doc, text) {
-  await fs.writeFile(docPath(dir, doc), text.endsWith("\n") ? text : text + "\n", "utf8");
+// 원형은 그 프로젝트의 schema 를 답한 하네스의 것이다 — 그 프로젝트가 따르는 양식이다.
+export async function readDocTemplate(dir, schema, doc) {
+  const f = schema?.docs?.[doc]?.template;
+  if (!f) return "";
+  try { return await fs.readFile(path.isAbsolute(f) ? f : path.join(dir, f), "utf8"); } catch { return ""; }
 }
 
 // 오케스트레이터 CLI 로 한 번 묻는다. API 키를 따로 두지 않는다 — 사용자가 이미 로그인한 CLI 다.
@@ -109,23 +109,6 @@ export async function ask(dir, orchestrator, prompt, { cheap = false } = {}) {
         ...(cheap ? ["--model", "haiku"] : [])]];
   const { stdout } = await run(cmd, args, { cwd: dir, timeout: 300_000, maxBuffer: 8 << 20 });
   return stdout.trim();
-}
-
-// 설정 파일의 주석이 곧 스키마 문서다. 키 바로 위의 주석 줄을 그 키의 설명으로 쓴다.
-export async function readConfigNotes(dir) {
-  const lines = (await fs.readFile(path.join(dir, "harness.toml"), "utf8")).split("\n");
-  const notes = {};
-  let section = "", buf = [];
-  for (const ln of lines) {
-    const s = ln.trim();
-    const sec = s.match(/^\[([^\]]+)\]$/);
-    if (sec) { section = sec[1]; buf = []; continue; }
-    if (s.startsWith("#")) { const t = s.replace(/^#\s?/, ""); if (!/^─+$/.test(t)) buf.push(t); continue; }
-    const kv = s.match(/^([\w-]+)\s*=/);
-    if (kv && buf.length) notes[`${section}.${kv[1]}`] = buf.join("\n").trim();
-    if (s === "" || kv) buf = [];
-  }
-  return notes;
 }
 
 // 이 기기의 에이전트 CLI·결정 기록 도구. 기록(`~/.harness/tools.json`)을 읽고, sync 면 다시 찾는다.
@@ -146,12 +129,6 @@ export async function readSchema(dir) {
 export async function readRoleFiles(dir, role) {
   const read = async (rel) => { try { return await fs.readFile(path.join(dir, rel), "utf8"); } catch { return ""; } };
   return { contract: await read(role.contract), notes: await read(role.notes) };
-}
-
-export async function writeRoleNotes(dir, rel, text) {
-  const f = path.join(dir, rel);
-  await fs.mkdir(path.dirname(f), { recursive: true });
-  await fs.writeFile(f, text.endsWith("\n") ? text : text + "\n", "utf8");
 }
 
 export async function readText(dir, rel) {

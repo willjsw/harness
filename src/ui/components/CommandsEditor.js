@@ -7,7 +7,7 @@ import HelpTip from "@/components/HelpTip";
 
 // 명령 탭 — 문서가 아니라 harness.toml 의 [commands]·[verify] 를 고친다.
 // 적고, ▷ 로 이 리포에서 실제로 돌려 보고, 저장한다. 저장하면 규칙 문서 3장과 검증 스크립트가 다시 생성된다.
-export default function CommandsEditor({ project, initial, legacy }) {
+export default function CommandsEditor({ project, initial, legacy, verifyScript }) {
   const fields = fieldsOf("commands");
   const [cmds, setCmds] = useState(initial.commands);
   const [checks, setChecks] = useState(initial.checks.length ? initial.checks : []);
@@ -43,7 +43,7 @@ export default function CommandsEditor({ project, initial, legacy }) {
       <p className="doc-intro">{DOCS.commands.intro}</p>
       {legacy && (
         <p className="notice warn">
-          손으로 쓴 <code>script/verify-project.sh</code> 가 있어 지금은 그 스크립트가 검증을 맡습니다.
+          손으로 쓴 검증 스크립트{verifyScript && <> <code>{verifyScript}</code></>} 가 있어 지금은 그 스크립트가 검증을 맡습니다.
           여기에 명령을 옮긴 뒤 그 파일을 지우면 이 설정으로 검증합니다.
         </p>
       )}

@@ -8,7 +8,7 @@ import nodePath from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { getProject, readConfig, harness, readDoc, readDocTemplate, writeDoc, ask, readTools, readSchema, writeRoleNotes, listProjects, HOME, readStatus } from "./harness.js";
+import { getProject, readConfig, harness, readDoc, readDocTemplate, ask, readTools, readSchema, listProjects, HOME, readStatus } from "./harness.js";
 
 // 목록 값은 끝에 쉼표를 붙여 넘긴다. `harness set` 은 쉼표가 있을 때만 배열로 쓴다 —
 // 항목이 하나면 문자열로 바뀌어 버린다.
@@ -72,11 +72,13 @@ export async function completeDoc(project, doc, values) {
   if (Object.keys(errors).length) return { errors };
 
   const { path } = await getProject(project);
-  const cfg = await readConfig(path);
-  const [template, current] = await Promise.all([readDocTemplate(path, doc), readDoc(path, doc)]);
+  const [cfg, schema] = await Promise.all([readConfig(path), readSchema(path)]);
+  const rel = schema?.docs?.[doc]?.path;
+  if (!rel) return { errors: { _: "E_CHECK_FAILED" }, detail: REINSTALL };
+  const [template, current] = await Promise.all([readDocTemplate(path, schema, doc), readDoc(path, schema, doc)]);
   const items = fieldsOf(doc).map((f) => `- ${f.label}: ${asText(values[f.k]) || UNKNOWN}`).join("\n");
   const prompt = [
-    `이 리포의 .ai/project/${doc}.md 를 완성한다. 에이전트가 근거로 읽는 문서다.`,
+    `이 리포의 ${rel} 를 완성한다. 에이전트가 근거로 읽는 문서다.`,
     "규칙:",
     "- 원형의 맨 위 HTML 주석을 그대로 두고, 장 제목과 표 구조를 유지한다.",
     "- `<!-- TBD ... -->` 자리를 사용자 입력과 리포에서 확인한 사실로 채운다.",
@@ -97,11 +99,13 @@ export async function completeDoc(project, doc, values) {
   }
 }
 
-// 저장 뒤 render — 규칙 문서가 이 본문을 담고 있어, 빠뜨리면 `harness check` 가 커밋을 막는다.
+// 고정 사본이 write-doc 을 모르면(schema 에 docs 가 없다) 이 안내를 보인다
+const REINSTALL = "이 프로젝트의 하네스 사본이 이 기능보다 오래됐습니다. 그 프로젝트에서 harness install 을 다시 돌린 뒤 시도해 주세요.";
+
+// 쓰기·render·실패 시 되돌림은 `harness write-doc` 이 한다. 이름이 목록 밖이면 CLI 의 거절을 그대로 돌려준다.
 export async function saveDoc(project, doc, text) {
   const { path } = await getProject(project);
-  await writeDoc(path, doc, text);
-  const r = await harness(path, ["render"]);
+  const r = await harness(path, ["write-doc", doc, "-"], { input: text });
   revalidatePath(`/${project}/project`, "layout");
   return r;
 }
@@ -132,36 +136,25 @@ export async function syncTools(project) {
   return t ? { ok: true, out: `synced ${t.synced_at}` } : { ok: false, out: "harness tools --sync failed" };
 }
 
-// 역할의 추가 지시를 저장하고 render — 에이전트 정의가 이 본문을 담는다. 역할과 경로는 schema 가 아는 것만 받는다.
-const NOTES_HEAD = "<!--\n이 파일은 프로젝트가 소유한다. 하네스 갱신이 덮지 않는다.\n`harness render` 가 이 본문을 이 역할의 에이전트 정의 끝(\"이 프로젝트에서\")에 붙인다.\n-->\n\n";
+// 역할의 추가 지시. 머리 주석·render 는 `harness write-doc` 이 한다 — 에이전트 정의가 이 본문을 담는다.
 export async function saveRoleNotes(project, role, text) {
   const { path } = await getProject(project);
-  const schema = await readSchema(path);
-  const r = schema?.roles?.[role];
-  if (!r) return { ok: false, out: `unknown role: ${role}` };
-  const body = text.trim() ? (text.trimStart().startsWith("<!--") ? text : NOTES_HEAD + text) : "";
-  await writeRoleNotes(path, r.notes, body);
-  const out = await harness(path, ["render"]);
+  const r = await harness(path, ["write-doc", `roles/${role}`, "-"], { input: text });
   revalidatePath(`/${project}/agents`);
-  return out;
+  return r;
 }
 
-// 절차 끝에 붙는 이 프로젝트의 지시. 절차 이름과 경로는 schema 가 아는 것만 받는다.
-const WF_HEAD = "<!--\n이 파일은 프로젝트가 소유한다. 하네스 갱신이 덮지 않는다.\n`harness render` 가 이 본문을 이 절차 끝(\"이 프로젝트에서\")에 붙인다.\n-->\n\n";
+// 절차 끝에 붙는 이 프로젝트의 지시. 머리 주석·render 는 `harness write-doc` 이 한다.
 export async function saveWorkflowNotes(project, wf, text) {
   const { path } = await getProject(project);
-  const rel = (await readSchema(path))?.workflow_notes?.[wf];
-  if (!rel) return { ok: false, out: `unknown workflow: ${wf}` };
-  const body = text.trim() ? (text.trimStart().startsWith("<!--") ? text : WF_HEAD + text) : "";
-  await writeRoleNotes(path, rel, body);
-  const out = await harness(path, ["render"]);
+  const r = await harness(path, ["write-doc", `workflows/${wf}`, "-"], { input: text });
   revalidatePath(`/${project}/workflow`);
-  return out;
+  return r;
 }
 
-// 새 프로젝트: 디렉터리를 만들고(필요하면 git init) `harness install` 로 설치·등록한다.
-// 로컬 파일을 쓰는 동작이라 경로를 좁힌다 — 절대 경로, 홈 디렉터리 안쪽, 하네스 등록부 밖.
-// 등록부는 이름(디렉터리 이름)이 키라, 같은 이름의 다른 프로젝트가 있으면 덮지 않고 거부한다.
+// 새 프로젝트: `harness install --create [--git-init]` 한 번이 디렉터리 생성·git 시작·설치·등록을 한다.
+// 같은 이름의 거부는 CLI 가 아무것도 만들기 전에 하고, 그 안내문을 그대로 돌려준다.
+// UI 요청을 받는 자리라 경로를 좁힌다 — 절대 경로, 홈 디렉터리 안쪽, 하네스 등록부 밖.
 export async function createProject(dir, gitInit) {
   const home = os.homedir();
   if (!dir || !nodePath.isAbsolute(dir)) return { ok: false, out: "절대 경로를 적는다 (예: /Users/me/work/my-app)" };
@@ -169,17 +162,11 @@ export async function createProject(dir, gitInit) {
   if (target !== dir.replace(/\/+$/, "")) return { ok: false, out: "경로에 . 이나 .. 을 쓰지 않는다" };
   if (!target.startsWith(home + nodePath.sep) || target === home) return { ok: false, out: `홈 디렉터리(${home}) 안의 디렉터리만 만든다` };
   if (target === HOME || target.startsWith(HOME + nodePath.sep)) return { ok: false, out: "하네스 등록부 안에는 만들지 않는다" };
-  const name = nodePath.basename(target);
-  const taken = (await listProjects()).find((p) => p.name === name && p.path && p.path !== target);
-  if (taken) return { ok: false, out: `같은 이름의 프로젝트가 이미 등록돼 있다: ${taken.path}\n디렉터리 이름을 바꿔 만든다` };
-  await fs.mkdir(target, { recursive: true });
-  if (gitInit) {
-    try { await fs.access(nodePath.join(target, ".git")); }
-    catch { await promisify(execFile)("git", ["init", "-q"], { cwd: target }); }
-  }
-  const r = await harness(target, ["install"]);
+  const r = await harness(target, ["install", "--create", ...(gitInit ? ["--git-init"] : [])]);
   revalidatePath("/");
-  return { ...r, name: r.ok ? name : undefined };
+  // 등록 이름은 설정의 project.name 이다 — 등록부에서 이 경로의 이름을 찾는다
+  const name = r.ok ? ((await listProjects()).find((p) => p.path === target)?.name ?? nodePath.basename(target)) : undefined;
+  return { ...r, name };
 }
 
 // 새 프로젝트 디렉터리를 macOS 폴더 선택 창으로 고른다. 창에서 새 폴더도 만들 수 있다.
@@ -210,12 +197,6 @@ export async function setValues(project, pairs) {
 export async function projectStatus(project, remote = false) {
   const { path } = await getProject(project);
   return readStatus(path, remote);
-}
-
-// 손으로 쓴 옛 검증 스크립트가 있는가 — 있으면 run-lint-test.sh 가 그것을 돈다(CLI 의 legacy_verify 와 같은 기준)
-async function legacyVerify(dir) {
-  try { return !(await fs.readFile(nodePath.join(dir, "script/verify-project.sh"), "utf8")).includes("verify-project: not filled in yet"); }
-  catch { return false; }
 }
 
 // 명령 탭의 ▷ — 적은 명령이 이 리포에서 실제로 도는지 저장 전에 돌려 본다.
@@ -283,23 +264,13 @@ export async function metricsData(project, range, trace) {
   try { return JSON.parse(r.out); } catch { return { error: "지표를 읽지 못했습니다." }; }
 }
 
-// Doctor 화면의 ▷ 실행. 정해 둔 조치만 받는다 — 화면에서 임의 명령을 넘기지 못한다.
+// Doctor 화면의 ▷ 조치 → 하네스 명령. 정해 둔 조치만 받는다 — 화면에서 임의 명령을 넘기지 못한다.
+const DOCTOR_FIXES = new Map([["hooks", ["fix", "hooks"]], ["verify", ["fix", "verify"]], ["render", ["render"]], ["upgrade", ["install"]]]);
 export async function doctorFix(project, kind) {
   const { path } = await getProject(project);
-  const run = async (cmd, args) => {
-    try {
-      const { stdout, stderr } = await promisify(execFile)(cmd, args, { cwd: path, timeout: 300000, maxBuffer: 8 << 20 });
-      return { ok: true, out: (stdout + stderr).trim() };
-    } catch (e) {
-      return { ok: false, out: `${e.stdout || ""}${e.stderr || ""}`.trim() || String(e.message) };
-    }
-  };
-  let r;
-  if (kind === "hooks") r = await run("git", ["config", "core.hooksPath", "script/githooks"]);
-  else if (kind === "verify") r = await run("bash", [(await legacyVerify(path)) ? "script/verify-project.sh" : "script/harness-verify.sh"]);
-  else if (kind === "render") r = await harness(path, ["render"]);
-  else if (kind === "upgrade") r = await harness(path, ["install"]);
-  else return { ok: false, out: `unknown fix: ${kind}` };
+  const args = DOCTOR_FIXES.get(kind);
+  if (!args) return { ok: false, out: `unknown fix: ${kind}` };
+  const r = await harness(path, args, { timeout: 300000 });   // 검증은 테스트를 돌리므로 오래 걸릴 수 있다
   revalidatePath("/");
   return { ...r, out: (r.out || "").slice(-4000) };   // 긴 테스트 출력은 끝부분만
 }

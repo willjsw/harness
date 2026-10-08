@@ -5,12 +5,14 @@ import { LuPlay, LuRefreshCw } from "react-icons/lu";
 import { doctorFix } from "@/lib/actions";
 import { loadStatus } from "@/lib/status-cache";
 import { SECTIONS, explain } from "@/lib/doctor";
+import Reinstall from "@/components/Reinstall";
 
 const LEVEL = { bad: "FAIL", warn: "WARN", ok: "OK" };
 const newer = (a, b) => a && b && a.localeCompare(b, undefined, { numeric: true }) > 0;
 
 // 프로젝트 하나의 doctor 결과. 절마다 묶고, 막힌 것부터 보인다. 바로 고칠 수 있는 것은 ▷ 로 실행한다.
-export default function DoctorView({ project, global }) {
+// schema 는 그 프로젝트의 하네스가 낸 것이다. ▷ 조치의 보일 명령과, 사본이 fix 를 아는지(docs 키)를 여기서 본다.
+export default function DoctorView({ project, global, schema }) {
   const base = `/${encodeURIComponent(project)}`;
   const [st, setSt] = useState(undefined);
   const [loading, setLoading] = useState(false);
@@ -43,7 +45,7 @@ export default function DoctorView({ project, global }) {
   const order = ["harness", ...Object.keys(SECTIONS), ...Object.keys(groups)].filter((s, n, a) => groups[s] && a.indexOf(s) === n)
     .sort((a, b) => !groups[a].some((i) => i.state !== "ok") - !groups[b].some((i) => i.state !== "ok"));   // 손볼 절이 먼저
   // 라벨은 상태에서 오지만, 아직 설정하지 않은 항목은 SETUP 으로 따로 센다
-  for (const i of items) i.label = (i.fix ?? explain(i, base)).label ?? LEVEL[i.state];
+  for (const i of items) i.label = (i.fix ?? explain(i, base, schema)).label ?? LEVEL[i.state];
   const count = (l) => items.filter((i) => i.label === l).length;
   const [bad, setup, warn] = [count("FAIL"), count("SETUP"), count("WARN")];
 
@@ -76,7 +78,7 @@ export default function DoctorView({ project, global }) {
           <section key={s} className="card doc-section">
             <h2>{s === "harness" ? "하네스 버전" : SECTIONS[s] ?? s}
               <span className="muted small">{open.length ? `${open.length}건 확인 필요` : "모두 통과"}</span></h2>
-            {open.length > 0 && <ul className="doc-items">{open.map((i, n) => <Item key={n} i={i} base={base} project={project} onDone={load} />)}</ul>}
+            {open.length > 0 && <ul className="doc-items">{open.map((i, n) => <Item key={n} i={i} base={base} project={project} schema={schema} onDone={load} />)}</ul>}
             {passed.length > 0 && (
               <details className="doc-passed">
                 <summary className="muted small">통과 {passed.length}건</summary>
@@ -90,8 +92,12 @@ export default function DoctorView({ project, global }) {
   );
 }
 
-function Item({ i, base, project, onDone }) {
-  const x = i.fix ?? explain(i, base);
+// fix 를 모르는 옛 사본에서 hooks · verify 조치는 돌리지 않고 재설치를 안내한다. render · upgrade 는 그대로 돈다
+const NEEDS_FIX = new Set(["hooks", "verify"]);
+
+function Item({ i, base, project, schema, onDone }) {
+  const x = i.fix ?? explain(i, base, schema);
+  const stale = x.run && NEEDS_FIX.has(x.run.kind) && !schema?.docs;
   const [out, setOut] = useState(null);
   const [busy, setBusy] = useState(false);
   const run = async () => {
@@ -108,12 +114,13 @@ function Item({ i, base, project, onDone }) {
       <div className="doc-main">
         <b>{x.title}</b>
         {x.body && <p>{x.body}</p>}
-        {x.run && (
+        {x.run && stale && <Reinstall what="이 조치를 실행" compact />}
+        {x.run && !stale && (
           <div className="cmd-run">
-            <button type="button" className="play" aria-label={`실행: ${x.run.cmd}`} title="실행" aria-busy={busy} disabled={busy} onClick={run}>
+            <button type="button" className="play" aria-label={`실행: ${x.run.cmd || x.run.kind}`} title="실행" aria-busy={busy} disabled={busy} onClick={run}>
               <LuPlay size={13} aria-hidden="true" />
             </button>
-            <code>{x.run.cmd}</code>
+            {x.run.cmd && <code>{x.run.cmd}</code>}
           </div>
         )}
         {x.cmd && <div className="cmd-run"><code>{x.cmd}</code></div>}
