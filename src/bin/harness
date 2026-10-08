@@ -1782,7 +1782,19 @@ def cmd_render(cfg, target, args):
     # 설정이 바뀌면 만들던 파일이 빠진다. 남겨 두면 옛 forge 어댑터나 쓰지 않는 역할의 계약이
     # 리포에 그대로 있어, 사람도 에이전트도 어느 쪽이 현재인지 알 수 없다.
     made = {rel for rel, _c, _m in items}
-    removed = prune(target, made, MANIFEST) + prune(target, set(managed_paths) | made, MANIFEST_MANAGED)
+    # forge 템플릿을 끄면 지난 렌더가 만든 것은 정리한다. 단 하네스가 만든 내용과 달라진 것(사내 양식으로 갈아 끼운 것)은
+    # 리포의 파일이므로 지우지 않고 넘긴다 — 매니페스트에서 빠져 다음부터 사용자 파일이다
+    kept = set()
+    if not cfg["forge"]["templates"]:
+        before = set(previous(target, MANIFEST))
+        on = dict(cfg, forge=dict(cfg["forge"], templates=True))
+        for rel, content, _m in forge_templates(on, target):
+            p = target / rel
+            if rel in before and p.is_file() and not p.is_symlink() \
+                    and p.read_text(encoding="utf-8", errors="replace") != content:
+                kept.add(rel)
+                print("render: %s differs from the harness template — kept as the repository's own" % rel)
+    removed = prune(target, made | kept, MANIFEST) + prune(target, set(managed_paths) | made | kept, MANIFEST_MANAGED)
 
     # 관리 파일의 해시는 이번에 깐 내용으로 계산한다. 고정 사본의 해시는 install 이 기록한 것을 옮긴다 —
     # 여기서 다시 계산하면 고친 사본의 해시가 기록된다. 사본이 없는 루트(소스 리포)는 사본 줄을 쓰지 않는다.
@@ -2974,7 +2986,8 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
     # 기본값이 있는 절(권한 · 준비 점검)은 옛 설정에 없을 수 있다
     defaulted = (section == "permissions" and key in PERMISSIONS_DEFAULTS
                  or section == "doctor" and key in DOCTOR_DEFAULTS
-                 or section == "verify" and key in VERIFY_DEFAULTS)
+                 or section == "verify" and key in VERIFY_DEFAULTS
+                 or section == "forge" and key in FORGE_DEFAULTS)
     if hit is None and (command or defaulted) and not any(ln.strip() == want for ln in lines):
         lines += ["\n" if lines and lines[-1].strip() else "", "%s\n" % want]   # 옛 설정에는 절이 없다
     if hit is None and (re.fullmatch(r"roles\.[\w-]+", section) and key in OPTIONAL_ROLE_KEYS
@@ -3635,6 +3648,8 @@ def cmd_schema(cfg, _target, _args):
         "legacy_verify": legacy_verify(_target),
         # 기본값을 채운 준비 점검 설정. 설정 파일에 [doctor] 가 없어도 설정 화면이 그 값을 그린다
         "doctor": cfg["doctor"],
+        # 옛 설정에 없을 수 있는 forge 키의 현재 값. 설정 화면이 원문에 없는 키를 이 값으로 그린다
+        "forge": {k: cfg["forge"][k] for k in FORGE_DEFAULTS},
         "workflow_notes": {wf: "%s/%s.md" % (WORKFLOW_NOTES, wf) for wf in cfg["workflows"]},
         # 절차 목록: 제목과, 이 프로젝트가 만든 것인지(하네스 기본 조각이 없는 것)
         "workflows": {wf: {"title": body.get("title", ""), "custom": fragment(wf, "_head") is None}

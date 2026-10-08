@@ -4091,6 +4091,16 @@ sedi '/^templates = /d' "$o/harness.toml"
 grep -q '^templates' "$o/harness.toml" && bad "the old config still has the key" || ok
 "$root/bin/harness" render --target "$o" >/dev/null 2>&1; check "render without forge.templates exits 0" "$?" "0"
 [ -f "$o/.gitlab/merge_request_templates/Default.md" ] && ok || bad "a config without forge.templates did not make the templates"
+# 옛 설정에서도 set 으로 끌 수 있고, 손으로 바꾼 템플릿은 끌 때 지우지 않고 리포의 것으로 넘긴다
+printf 'company mr\n' > "$o/.gitlab/merge_request_templates/Default.md"
+"$root/bin/harness" set --target "$o" forge.templates false > "$work/ftoff-oldset.log" 2>&1; check "set forge.templates on a config without the key" "$?" "0"
+grep -q '^templates = false' "$o/harness.toml" && ok || bad "set did not add forge.templates to the old config"
+check "a hand-edited template is kept when turning templates off" "$(cat "$o/.gitlab/merge_request_templates/Default.md" 2>/dev/null)" "company mr"
+[ -e "$o/.gitlab/issue_templates/Task.md" ] && bad "an unedited template is left after turning templates off" || ok
+grep -qxF ".gitlab/merge_request_templates/Default.md" "$o/.harness/generated" && bad "the kept template is still in the manifest" || ok
+"$root/bin/harness" check --target "$o" >/dev/null 2>&1; check "check passes after keeping a hand-edited template" "$?" "0"
+"$root/bin/harness" schema --target "$o" | python3 -c 'import json,sys; print(json.load(sys.stdin)["forge"])' > "$work/ftoff-schema.txt"
+has "$work/ftoff-schema.txt" "'templates': False" "schema does not carry forge.templates for the settings screen"
 # 참·거짓이 아닌 값은 거부한다
 sedi 's/^templates = .*$/templates = "no"/' "$t/harness.toml"
 "$root/bin/harness" render --target "$t" > "$work/ftoff-bad.log" 2>&1; check "render with a non-boolean forge.templates exits 2" "$?" "2"
