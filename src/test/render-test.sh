@@ -4406,6 +4406,61 @@ check "the existing schema keys stay" \
   "$(schema101 "$root/bin/harness" "$t" 'all(k in s for k in ("agents", "script_roles", "orchestrator", "orchestrator_model", "roles", "commands", "checks", "legacy_verify", "doctor", "workflow_notes", "workflows"))')" "True"
 unset -f schema101
 
+echo "UT-106 the clone key: one per clone, shared by its worktrees, apart for subprojects, opaque, and expanded on the command line"
+k106="$work/key106"; rm -rf "$k106"; mkdir -p "$k106"
+kg106() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+plant106() { mkdir -p "$1/script" && cp "$root/templates/managed/script/_clone_key.py" "$1/script/"; }
+# 그 하네스 루트에 둔 모듈이 구한 키
+ck106() { python3 "$1/script/_clone_key.py" expand '{clone}'; }
+r106="$k106/repo"; plant106 "$r106"; plant106 "$r106/a"; plant106 "$r106/b"
+git init -q "$r106" && kg106 "$r106" add -A && kg106 "$r106" commit -q -m init || bad "could not set up the clone key repository"
+kg106 "$r106" worktree add -q --detach "$k106/wt" || bad "could not add a linked worktree"
+git clone -q "$r106" "$k106/c1" && git clone -q "$r106" "$k106/c2" || bad "could not clone the repository twice"
+plain106="$k106/plain"; plant106 "$plain106"
+kr106=$(ck106 "$r106"); kw106=$(ck106 "$k106/wt"); kc1=$(ck106 "$k106/c1"); kc2=$(ck106 "$k106/c2")
+ka106=$(ck106 "$r106/a"); kb106=$(ck106 "$r106/b"); kp106=$(ck106 "$plain106")
+check "a repository and its linked worktree share the key" "$kw106" "$kr106"
+[ "$kc1" != "$kc2" ] && [ "$kc1" != "$kr106" ] && ok || bad "two clones of one remote share a key"
+[ "$ka106" != "$kb106" ] && [ "$ka106" != "$kr106" ] && ok || bad "two subdirectories of one repository share a key"
+check "outside git the key is the same when asked again" "$(ck106 "$plain106")" "$kp106"
+check "a root outside git has a key" "$(printf '%s' "$kp106" | grep -cE '^c-[0-9a-f]{16}$')" "1"
+for k in "$kr106" "$kw106" "$kc1" "$kc2" "$ka106" "$kb106" "$kp106"; do
+  printf '%s\n' "$k" | grep -qE '^c-[0-9a-f]{16}$' && ok || bad "a key is not c- and 16 hex digits: $k"
+  case "$k" in *repo*|*plain*|*key106*|*/*) bad "a key carries a piece of its path: $k" ;; *) ok ;; esac
+done
+# 명령줄 — {clone} 과 옛 별칭 {project} 는 같은 값, 자리표시가 없으면 그대로, 인자가 없으면 아무것도 내지 않고 1
+ex106="$plain106/script/_clone_key.py"
+check "expand puts the key in place of {clone}" "$(python3 "$ex106" expand '{clone}/x')" "$kp106/x"
+check "expand turns {project} into the same key" "$(python3 "$ex106" expand '{project}/x')" "$kp106/x"
+check "expand leaves a value without a placeholder as it is" "$(python3 "$ex106" expand 'plain $HOME/~')" 'plain $HOME/~'
+python3 "$ex106" > "$work/ck106.out" 2>&1; check "no arguments exit code" "$?" "1"
+check "no arguments print nothing" "$(cat "$work/ck106.out")" ""
+python3 "$ex106" expand > "$work/ck106.out" 2>&1; check "expand without a value exit code" "$?" "1"
+check "expand without a value prints nothing" "$(cat "$work/ck106.out")" ""
+for d in "$r106" "$k106/wt" "$plain106"; do
+  [ -e "$d/script/__pycache__" ] && bad "the clone key module left bytecode in $d/script" || ok
+done
+# 이름공간 — 키 모양의 project.name 은 설정 검증이 거부한다. 비슷하지만 키가 아닌 이름은 받는다
+t="$k106/named"; setup "$t"
+name106() { python3 - "$t/harness.toml" "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+open(p, "w", encoding="utf-8").write(re.sub(r'(?m)^(\[project\]\nname = ).*$', lambda m: m.group(1) + '"%s"' % sys.argv[2], s, count=1))
+PY
+}
+name106 c-0123456789abcdef
+"$root/bin/harness" render --target "$t" > "$work/ck106-name.out" 2> "$work/ck106-name.err"; check "render with a key-shaped project.name" "$?" "2"
+has "$work/ck106-name.err" "error: project.name \`c-0123456789abcdef\` has the form of a clone key (c- and 16 hex digits)" "the refusal does not name the key-shaped project.name"
+has "$work/ck106-name.err" "help: choose another project.name in harness.toml" "the refusal does not say what to do"
+name106 c-0123456789ABCDEF
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render with a name that is not quite a key" "$?" "0"
+# 생성 파일에는 키가 들어가지 않는다
+kt106=$(ck106 "$t")
+grep -rlF "$kt106" "$t" > "$work/ck106-gen.txt"
+check "no generated file carries the clone key" "$(cat "$work/ck106-gen.txt")" ""
+no_hangul "$work/ck106-name.err" "the clone key refusal"
+unset -f kg106 plant106 ck106 name106
+
 echo
 if [ "$fail" -eq 0 ]; then
   echo "render-test: ${pass} passed"

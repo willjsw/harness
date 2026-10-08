@@ -119,6 +119,10 @@ METRICS_DEFAULTS = {"dir": "$HOME/.harness/{project}/metrics", "retention_days":
                     "max_total_mb": 100, "stale_after_hours": 6, "capture_logs": "errors"}
 
 
+# 클론 키의 모양. 등록부 최상위에서 클론의 상태 디렉터리를 옛 이름 디렉터리와 가르므로 project.name 으로 쓰지 못한다.
+CLONE_KEY = re.compile(r"c-[0-9a-f]{16}")
+
+
 # 이슈별 작업 트리. dir 의 확장은 쓰는 시점에 한다 — 값이 실행 환경에 달려 있다.
 WORKTREE_DEFAULTS = {"dir": "$HOME/.harness/{project}/worktrees", "include": [".claude/settings.local.json"]}
 # 하네스 루트 기준 상대 경로: `/` 로 시작하지 않고, `..` 조각·공백·glob 문자가 없다
@@ -448,6 +452,10 @@ def vendor(cfg: dict, role: str) -> str:
 
 
 def validate(cfg: dict):
+    name = cfg["project"]["name"]
+    if isinstance(name, str) and CLONE_KEY.fullmatch(name):
+        die("error: project.name `%s` has the form of a clone key (c- and 16 hex digits)\n\n"
+            "help: choose another project.name in harness.toml" % name)
     c = cfg["commit"]
     if c["issue_ref"] not in ("suffix", "prefix"):
         die("error: commit.issue_ref must be `suffix` or `prefix` (got %r)" % c["issue_ref"])
@@ -3977,6 +3985,31 @@ def metrics_module():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+_CLONE_KEY_MODULE = None
+_CLONE_KEYS = {}
+
+
+def clone_key_module():
+    """클론 키 모듈 — 대상 리포에 깔리는 `script/_clone_key.py` 의 원형. 계산은 이것 하나가 한다."""
+    global _CLONE_KEY_MODULE
+    if _CLONE_KEY_MODULE is None:
+        import importlib.util
+        sys.dont_write_bytecode = True
+        spec = importlib.util.spec_from_file_location("harness_clone_key", TEMPLATES / "managed" / "script" / "_clone_key.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _CLONE_KEY_MODULE = mod
+    return _CLONE_KEY_MODULE
+
+
+def clone_key(root: Path) -> str:
+    """하네스 루트 root 의 클론 키. 한 실행에서 루트마다 한 번만 계산한다."""
+    k = str(root)
+    if k not in _CLONE_KEYS:
+        _CLONE_KEYS[k] = clone_key_module().clone_key(root)
+    return _CLONE_KEYS[k]
 
 
 def cmd_metrics(cfg, target, args):
