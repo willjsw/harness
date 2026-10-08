@@ -45,12 +45,18 @@ refuse() {
   refuse "verify.pre_push is on but script/run-lint-test.sh is missing" "help: harness render"
 head=$(git rev-parse HEAD)
 for sha in $pushed; do
-  case "$sha" in
-    *[!0]*) [ "$sha" = "$head" ] || refuse "this push sends a revision other than the checked-out HEAD, which verification cannot see"               "help: check out that branch, then push" ;;
+  case "$sha" in   # 지우는 ref(모두 0)는 보지 않는다. 주석 태그는 가리키는 커밋으로 푼다
+    *[!0]*) [ "$(git rev-parse -q --verify "$sha^{commit}" 2>/dev/null)" = "$head" ] ||
+              refuse "this push sends a revision other than the checked-out HEAD, which verification cannot see" \
+                "help: check out that branch, then push" ;;
   esac
 done
-[ -z "$(git status --porcelain)" ] ||
-  refuse "the working tree has uncommitted changes — verification would check them, not what is pushed"     "help: commit or stash them, then push again"
+clean() { [ -z "$(git status --porcelain)" ]; }
+clean || refuse "the working tree has uncommitted changes — verification would check them, not what is pushed" \
+  "help: commit or stash them, then push again"
 "$root/script/run-lint-test.sh" </dev/null || refuse "verification failed" "help: fix it, commit, then push again"
+# 검증이 작업 트리를 고쳤으면 통과한 것은 push 하는 HEAD 가 아니다
+clean || refuse "verification changed the working tree, so what passed is not what is pushed" \
+  "help: commit what it changed (or make that step stop writing to tracked files), then push again"
 
 exit 0

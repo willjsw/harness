@@ -3766,6 +3766,13 @@ has "$work/pp101.out" "uncommitted changes" "pre-push does not say why it refuse
 g101 checkout -q -- src/a.txt
 pp101 "$(printf '%040d' 1)"; check "pre-push refuses a revision other than HEAD" "$?" "1"
 pp101 "$h101"; check "pre-push passes a clean HEAD" "$?" "0"
+g101 tag -a v101 -m v101; pp101 "$(g101 rev-parse v101)"; check "pre-push passes an annotated tag on HEAD" "$?" "0"
+"$root/bin/harness" checks --target "$t" '[{"name":"mut","run":"echo m >> src/a.txt"}]' >/dev/null 2>&1
+g101 add -A && g101 commit -qm mut; h101=$(g101 rev-parse HEAD)
+pp101 "$h101"; check "pre-push refuses when verification changes the working tree" "$?" "1"
+has "$work/pp101.out" "verification changed the working tree" "pre-push does not say verification changed the tree"
+g101 checkout -q -- src/a.txt; "$root/bin/harness" checks --target "$t" '[]' >/dev/null 2>&1
+g101 add -A && g101 commit -qm unmut; h101=$(g101 rev-parse HEAD)
 mv "$t/script/run-lint-test.sh" "$t/script/run-lint-test.sh.off"; pp101 "$h101"; check "pre-push refuses when the verification script is missing" "$?" "1"
 mv "$t/script/run-lint-test.sh.off" "$t/script/run-lint-test.sh"
 "$root/bin/harness" set --target "$t" verify.post_commit true verify.pre_push false >/dev/null 2>&1
