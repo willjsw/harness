@@ -2015,10 +2015,10 @@ def registry() -> Path:
     return Path(os.environ.get("HARNESS_HOME") or Path.home() / ".harness")
 
 
-def read_registration(d: Path):
-    """등록 디렉터리 d 의 project.json — (이름, 경로). 파일이 없으면 None.
+def read_registration(d: Path, file: str = "project.json"):
+    """등록 디렉터리 d 의 등록 파일(기본 project.json) — (이름, 경로). 파일이 없으면 None.
     읽히지 않거나 객체가 아니거나 값이 비어 있지 않은 문자열이 아니면 그 자리는 None 이다."""
-    f = d / "project.json"
+    f = d / file
     if not os.path.isfile(f):
         return None
     try:
@@ -2086,67 +2086,142 @@ def register(cfg, target: Path):
             (registry() / r["key"] / "project.json").unlink(missing_ok=True)
 
 
+# 실행 지표 기록기(script/metric.py)가 지표 디렉터리에 두는 표지. 잠금은 기록기가 열어 둔 채 기다릴 수 있고 정리 표지는
+# 기록기가 다시 만든다 — 옮기지도 지우지도 않는다
+METRICS_LOCK = ".lock"
+METRICS_MARKS = (METRICS_LOCK, ".pruned")
+# 옮기는 중인 파일의 임시 이름 머리. 같은 디렉터리에 다 쓴 뒤 제 이름으로 드러낸다 — 이 이름은 어느 기록기도 읽지 않는다
+MOVE_TMP = ".harness-move-"
+# 다 옮긴 옛 이름 디렉터리의 등록 표지. project.json 이 아니라 등록 목록(`harness projects`)에는 없고, 옛 버전이 그 뒤로
+# 그 자리에 남긴 기록도 다음 install · render 가 옮긴다
+LEGACY_DONE = ".moved.json"
+
+
 def legacy_dir(cfg, target: Path):
-    """옮길 옛 이름 디렉터리 — 옛 버전이 `<등록부>/<project.name>/` 에 남긴 등록이 이 하네스 루트를 가리킬 때만. 아니면 None."""
+    """옮길 옛 이름 디렉터리 — 옛 버전이 `<등록부>/<project.name>/` 에 남긴 등록(또는 다 옮김 표지)이 이 하네스 루트를
+    가리킬 때만. 아니면 None."""
     name = cfg["project"]["name"]
     if not isinstance(name, str) or not name or CLONE_KEY.fullmatch(name) or name in (".", "..") or "/" in name:
         return None
     d = registry() / name
-    _name, path = read_registration(d) or (None, None)
-    if path is None or os.path.realpath(path) != os.path.realpath(target):
-        return None
-    return d
+    for f in ("project.json", LEGACY_DONE):
+        _name, path = read_registration(d, f) or (None, None)
+        if path is not None and os.path.realpath(path) == os.path.realpath(target):
+            return d
+    return None
 
 
-# 실행 지표 기록기(script/metric.py)가 지표 디렉터리 안에서 잡는 잠금 파일. 지표를 합칠 때 같은 잠금을 잡는다.
-METRICS_LOCK = ".lock"
+def read_nofollow(path: str) -> bytes:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        chunks = []
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                return b"".join(chunks)
+            chunks.append(b)
+    finally:
+        os.close(fd)
 
 
-def write_all(fd: int, data: bytes):
-    while data:
-        data = data[os.write(fd, data):]
+def write_all(fd: int, data: bytes) -> int:
+    """data 를 다 쓴다. 쓴 바이트 수를 돌려준다 — 도중에 실패하면 OSError 에 written 으로 붙인다."""
+    done = 0
+    try:
+        while done < len(data):
+            done += os.write(fd, data[done:])
+    except OSError as e:
+        e.written = done
+        raise
+    return done
 
 
 def append_file(src: str, dst: str):
     """src 의 내용을 dst 끝에 덧붙인다. dst 가 줄 중간에서 끝나면 줄을 바꾼 뒤 붙인다.
 
-    추가 쓰기 모드로 연다 — 그 사이 다른 기록기가 덧붙인 줄이 있어도 그 뒤에 쓰고 덮지 않는다."""
-    with open(src, "rb") as f:
-        data = f.read()
+    추가 쓰기 모드로 한 번에 쓴다 — 그 사이 다른 기록기가 덧붙인 줄이 있어도 그 뒤에 쓰고 덮지 않는다. 링크는 따라가지 않는다.
+    쓰다 실패하면 이번에 붙인 앞부분을 잘라 되돌린다. 그 뒤에 다른 기록기가 덧붙였으면 그 줄까지 잘리므로 두고 실패를 올린다."""
+    data = read_nofollow(src)
     if not data:
         return
-    with open(dst, "rb") as f:
-        f.seek(0, os.SEEK_END)
-        if f.tell():
-            f.seek(-1, os.SEEK_END)
-            if f.read(1) != b"\n":
-                data = b"\n" + data
-    fd = os.open(dst, os.O_WRONLY | os.O_APPEND)
+    fd = os.open(dst, os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW)
     try:
-        write_all(fd, data)
+        size = os.fstat(fd).st_size
+        if size and os.pread(fd, 1, size - 1) != b"\n":
+            data = b"\n" + data
+        try:
+            write_all(fd, data)
+        except OSError as e:
+            done = getattr(e, "written", 0)
+            if done:
+                end = os.lseek(fd, 0, os.SEEK_CUR)
+                if os.fstat(fd).st_size == end:
+                    os.ftruncate(fd, end - done)
+            raise
     finally:
         os.close(fd)
 
 
 def place_file(src: str, dst: str) -> bool:
-    """src 를 dst 자리로 옮긴다. dst 가 이미 있거나 그 사이 생겼으면 덮지 않고 아무것도 바꾸지 않은 채 False."""
+    """src 를 dst 이름으로 드러낸다. src 는 그대로 둔다. 덮지 않는다 — dst 가 이미 있거나 그 사이 생겼으면 False.
+
+    하드 링크를 만들 수 없으면 같은 디렉터리의 임시 이름에 다 쓴 뒤에만 dst 로 드러낸다. 실패하면 임시 파일을 지운다 —
+    dst 가 반쯤 쓰인 채 남아 다음 실행이 그것을 온전한 기록으로 보는 일이 없다."""
     try:
         os.link(src, dst)
+        return True
     except FileExistsError:
         return False
     except OSError:
-        # 하드 링크를 만들 수 없는 곳(다른 파일 시스템 등) — 새로 만들 수 있을 때만 쓴다
+        pass
+    fd, tmp = tempfile.mkstemp(prefix=MOVE_TMP, dir=os.path.dirname(dst))
+    try:
         try:
-            fd = os.open(dst, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
-        except FileExistsError:
-            return False
-        try:
-            with open(src, "rb") as f:
-                write_all(fd, f.read())
+            write_all(fd, read_nofollow(src))
+            os.fsync(fd)
         finally:
             os.close(fd)
+        try:
+            os.link(tmp, dst)
+            return True
+        except FileExistsError:
+            return False
+        except OSError:
+            # 하드 링크를 전혀 만들 수 없는 파일 시스템 — 이름이 비어 있을 때만 바꿔 단다
+            if os.path.lexists(dst):
+                return False
+            os.rename(tmp, dst)
+            return True
+    finally:
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+
+
+def merge_file(src: str, dst: str, append: bool):
+    """src 를 dst 로 옮긴다. dst 가 없으면 온전히 드러낸 뒤에만 src 를 지운다. dst 가 있으면 append 일 때 끝에 덧붙이고,
+    아니면 dst 를 남긴다(이어 온 새 기록이다). src 는 dst 에 반영된 뒤에만 지운다."""
+    if same_file(src, dst):
+        # 한 파일의 두 이름 — 지난번에 드러내고 옛 이름을 지우기 전에 멈춘 것이다. 새 이름이 남는다
+        os.unlink(src)
+        return
+    if not os.path.lexists(dst) and place_file(src, dst):
+        os.unlink(src)
+        return
+    if append:
+        append_file(src, dst)
     os.unlink(src)
-    return True
+
+
+def clean_tmp(d: str):
+    """d 바로 아래의 임시 이름 파일을 지운다 — 옮기다 멈춘 실행이 남긴 것이다. 옮기기는 등록부 잠금 안에서 하나만 돈다."""
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for x in names:
+        f = os.path.join(d, x)
+        if x.startswith(MOVE_TMP) and os.path.isfile(f) and not os.path.islink(f):
+            os.unlink(f)
 
 
 def private_tree(d: str):
@@ -2174,68 +2249,87 @@ def overlaps(a: str, b: str) -> bool:
     return ra == rb or ra.startswith(rb.rstrip("/") + "/") or rb.startswith(ra.rstrip("/") + "/")
 
 
-def unmovable(old: str, new: str):
-    """옛 기록을 새 자리로 옮기면 안 되는 사유. 옮겨도 되면 None.
+def link_on_way(base: str, path: str) -> bool:
+    """base 아래에서 path 까지의 경로 성분(path 포함) 중 링크가 있는가. base 와 그 위는 보지 않는다 — 사용자 환경이다.
+    없는 성분에서 멈춘다. path 가 base 아래가 아니면 가를 수 없으므로 있다고 본다."""
+    base, path = os.path.normpath(base), os.path.normpath(path)
+    head = base.rstrip("/") + "/"
+    if not path.startswith(head):
+        return True
+    cur = base
+    for part in path[len(head):].split("/"):
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            return True
+        if not os.path.lexists(cur):
+            return False
+    return False
 
-    옛 기록이 링크이거나 새 자리와 같은 대상을 가리키면 합치기가 같은 파일을 자기 자신에 덧붙이고 지워 기록이 사라진다.
+
+def links_inside(d: str) -> bool:
+    """d 아래(d 자신은 빼고)에 링크가 있는가. 링크는 따라 들어가지 않는다."""
+    for top, dirs, files in os.walk(d):
+        if any(os.path.islink(os.path.join(top, x)) for x in dirs + files):
+            return True
+    return False
+
+
+def unmovable(old: str, new: str, base: str):
+    """옛 기록을 새 자리로 옮기면 안 되는 사유. 옮겨도 되면 None. base 는 자리표시가 풀리기 전까지의 경로다.
+
+    옛 쪽이든 새 쪽이든 링크를 거치면 합치기가 다른 파일에 쓰거나, 같은 파일을 자기 자신에 덧붙이고 지워 기록이 사라진다.
     그런 것은 건드리지 않고 남긴다 — 링크는 사람이 정리한다."""
     if os.path.islink(old):
         return "a symbolic link"
     if overlaps(old, new):
         return "overlaps the new path"
-    if not os.path.isdir(old):
-        return "overlaps the new path" if same_file(old, new) else None
-    for top, dirs, files in os.walk(old):
-        if any(os.path.islink(os.path.join(top, x)) for x in dirs + files):
-            return "holds a symbolic link"
-        for x in files:
-            if same_file(os.path.join(top, x), os.path.join(new, os.path.relpath(os.path.join(top, x), old))):
-                return "overlaps the new path"
+    if link_on_way(base, old) or (os.path.isdir(old) and links_inside(old)):
+        return "holds a symbolic link"
+    if link_on_way(base, new) or (os.path.isdir(new) and links_inside(new)):
+        return "a symbolic link at the new path"
     return None
 
 
-def move_state_dir(old: str, new: str, lock: str = None):
-    """기록 디렉터리를 파일마다 새 자리로 옮긴다. 같은 이름이 있으면 스팬 파일은 덧붙이고 그 밖은 옛 것을 지운다.
+def move_state_dir(old: str, new: str, marks=()):
+    """기록 디렉터리의 파일을 새 자리로 옮긴다. 같은 이름이 있으면 스팬 파일은 덧붙이고 그 밖은 새 것을 남긴다.
 
-    lock 을 주면 옛 · 새 디렉터리의 그 잠금 파일을 잡은 채 옮긴다 — 기록기가 같은 잠금 아래에서 쓰므로 합치는 동안
-    끼어들지 않는다. 옛 잠금 파일은 다 옮긴 뒤 지운다."""
+    marks 는 기록기의 표지(잠금 · 정리 표지)다. 주면 첫 표지를 잠금으로 보고 옛 · 새 디렉터리 양쪽에서 잡은 채 옮긴다 —
+    기록기가 같은 잠금 아래에서 쓰므로 합치는 동안 끼어들지 않는다. 표지는 옮기지 않는다. 옛 디렉터리와 그 안의 표지는
+    남긴다 — 잠금을 열어 둔 채 기다리던 기록기가 잠금을 얻은 뒤에도 그 자리에 쓸 수 있고, 그것은 다음 실행이 옮긴다."""
     os.makedirs(os.path.dirname(new), mode=0o700, exist_ok=True)
     os.makedirs(new, mode=0o700, exist_ok=True)
     with contextlib.ExitStack() as held:
-        if lock:
+        if marks:
             for d in (old, new):
-                fd = os.open(os.path.join(d, lock), os.O_RDWR | os.O_CREAT, 0o600)
+                fd = os.open(os.path.join(d, marks[0]), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
                 held.callback(os.close, fd)
                 fcntl.flock(fd, fcntl.LOCK_EX)
         for top, _dirs, files in os.walk(old):
             for x in files:
-                src = os.path.join(top, x)
-                if lock and src == os.path.join(old, lock):
+                if top == old and x in marks:
                     continue
+                src = os.path.join(top, x)
                 dst = os.path.join(new, os.path.relpath(src, old))
                 os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
-                if place_file(src, dst):
-                    continue
-                if re.fullmatch(r"spans-.*\.jsonl", x):
-                    append_file(src, dst)
-                # 커서는 새 것이 이어 온 기록이다. 잠금·정리 표지는 새 자리의 것이 맞다
-                os.unlink(src)
-        if lock and os.path.lexists(os.path.join(old, lock)):
-            os.unlink(os.path.join(old, lock))
-    for top, _dirs, _files in os.walk(old, topdown=False):
-        try:
-            os.rmdir(top)
-        except OSError:
-            pass
+                clean_tmp(os.path.dirname(dst))
+                merge_file(src, dst, append=re.fullmatch(r"spans-.*\.jsonl", x) is not None)
     private_tree(new)
 
 
 def move_state_file(old: str, new: str):
-    """기록 파일을 옮긴다. 새 파일이 있거나 그 사이 생겼으면 옛 내용을 끝에 덧붙이고 옛 파일을 지운다."""
+    """기록 파일을 옮긴다. 새 파일이 있거나 그 사이 생겼으면 옛 내용을 끝에 덧붙인다. 옛 파일이 있던 디렉터리는 남긴다."""
     os.makedirs(os.path.dirname(new), mode=0o700, exist_ok=True)
-    if not place_file(old, new):
-        append_file(old, new)
-        os.unlink(old)
+    clean_tmp(os.path.dirname(new))
+    merge_file(old, new, append=True)
+
+
+def has_records(old: str, marks=()) -> bool:
+    """옛 자리에 옮길 기록이 남았는가 — 파일이면 있는지, 디렉터리면 표지 말고 파일이 있는지."""
+    if not os.path.lexists(old):
+        return False
+    if os.path.islink(old) or not os.path.isdir(old):
+        return True
+    return any(not (top == old and x in marks) for top, _dirs, files in os.walk(old) for x in files)
 
 
 def worktree_entries(top: str) -> list:
@@ -2283,11 +2377,71 @@ def migrate_worktrees(target: Path, old_dir: str, new_dir: str, say):
         say(("left worktree %s at %s — %s" % (name, old, why)) if why else ("moved worktree %s to %s" % (name, new)))
 
 
+def legacy_moves(cfg, target: Path, old_dir: Path):
+    """옛 이름 디렉터리에서 옮길 것 — (항목, 옛 경로, 새 경로, 기준 경로, 옮기는 법, 표지) 목록과 worktree 디렉터리의
+    (옛 경로, 새 경로, 기준 경로). 설정이 off 거나 두 경로가 같으면 뺀다. 기준 경로는 자리표시가 든 성분 앞까지다."""
+    name, key = cfg["project"]["name"], clone_key(target)
+    full = lambda v: os.path.expandvars(os.path.expanduser(v))
+
+    def both(value):
+        if not isinstance(value, str) or value == "off":
+            return None
+        parts = value.split("/")
+        at = next((i for i, x in enumerate(parts) if "{clone}" in x or "{project}" in x), None)
+        if at is None:
+            return None
+        old = full(value.replace("{clone}", name).replace("{project}", name))
+        new = full(expand_key(value, target))
+        return None if old == new else (old, new, full("/".join(parts[:at])) or "/")
+
+    reg = str(registry())
+    items = [("import state", (str(old_dir / "state"), str(registry() / key / "state"), reg), move_state_dir, ()),
+             ("run metrics", both(cfg["metrics"]["dir"]), move_state_dir, METRICS_MARKS),
+             ("usage log", both(cfg["usage"]["log_path"]), move_state_file, ())]
+    return [(item, *pair, how, marks) for item, pair, how, marks in items if pair is not None], both(cfg["worktree"]["dir"])
+
+
+def worktrees_under(target: Path, old_dir: str) -> list:
+    """old_dir 바로 아래에 등록된 이 리포의 worktree — (경로, 잠겼는가)."""
+    r = git(target, "rev-parse", "--show-toplevel")
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    real_old = os.path.realpath(old_dir)
+    return [(p, locked) for p, locked in worktree_entries(r.stdout.strip()) if os.path.dirname(os.path.realpath(p)) == real_old]
+
+
+def worktrees_unmovable(old: str, new: str, base: str):
+    """옛 worktree 디렉터리를 통째로 남길 사유 — 옛 기록과 같은 규칙. 옮겨도 되면 None."""
+    if not os.path.lexists(old):
+        return None
+    if os.path.islink(old):
+        return "a symbolic link"
+    if overlaps(old, new):
+        return "overlaps the new path"
+    if link_on_way(base, old):
+        return "holds a symbolic link"
+    if link_on_way(base, new):
+        return "a symbolic link at the new path"
+    return None
+
+
+def legacy_left(cfg, target: Path, old_dir: Path) -> int:
+    """옛 이름 디렉터리에서 아직 옮기지 않은 것의 수 — 기록이 남은 항목, 그리고 옛 자리의 worktree(통째로 남길 디렉터리면 1)."""
+    moves, wt = legacy_moves(cfg, target, old_dir)
+    n = sum(has_records(old, marks) for _item, old, _new, _base, _how, marks in moves)
+    if wt is not None:
+        n += 1 if worktrees_unmovable(*wt) else len(worktrees_under(target, wt[0]))
+    return n
+
+
 def migrate_legacy(cfg, target: Path, who: str):
     """옛 버전이 이름으로 남긴 기기 단위 상태(가져오기 커서 · 실행 지표 · 사용 기록 · 이슈 worktree)를 이 클론의 키 아래로 옮긴다.
 
     옛 이름 디렉터리의 등록이 이 하네스 루트를 가리킬 때만 돈다. 등록부 잠금 안에서 부른다. 옮기지 못한 것은 사유와 함께
-    알리고 남긴다 — 다음 install · render 가 다시 옮긴다. 종료 코드에 닿지 않는다."""
+    알리고 남긴다 — 다음 install · render 가 다시 옮긴다. 종료 코드에 닿지 않는다.
+
+    파일만 옮기고 디렉터리와 기록기의 표지(잠금 등)는 남긴다. 옛 버전이 아직 그 자리에 쓸 수 있어서다. 다 옮기면 옛 등록을
+    '다 옮김' 표지로 바꿔 등록 목록에서 빼고, 그 뒤로 옛 자리에 생기는 기록도 계속 옮긴다."""
     old_dir = legacy_dir(cfg, target)
     if old_dir is None:
         return
@@ -2297,58 +2451,38 @@ def migrate_legacy(cfg, target: Path, who: str):
     if os.path.islink(old_dir):
         say("kept %s — a symbolic link" % old_dir)
         return
-    full = lambda v: os.path.expandvars(os.path.expanduser(v))
-
-    def both(value):
-        """설정 값의 (옛 경로, 새 경로). off 거나 두 경로가 같으면 None."""
-        if not isinstance(value, str) or value == "off":
-            return None
-        old = full(value.replace("{clone}", name).replace("{project}", name))
-        new = full(expand_key(value, target))
-        return None if old == new else (old, new)
-
-    moves = [("import state", (str(old_dir / "state"), str(registry() / key / "state")), move_state_dir),
-             ("run metrics", both(cfg["metrics"]["dir"]), lambda o, n: move_state_dir(o, n, METRICS_LOCK)),
-             ("usage log", both(cfg["usage"]["log_path"]), move_state_file)]
-    for item, pair, how in moves:
-        if pair is None or not os.path.lexists(pair[0]):
+    moves, wt = legacy_moves(cfg, target, old_dir)
+    for item, old, new, base, how, marks in moves:
+        if not has_records(old, marks):
             continue
-        why = unmovable(*pair)
+        why = unmovable(old, new, base)
         if why:
-            say("left %s at %s — %s" % (item, pair[0], why))
+            say("left %s at %s — %s" % (item, old, why))
             continue
         try:
-            how(*pair)
-            say("moved %s to %s" % (item, pair[1]))
+            how(old, new, marks) if marks else how(old, new)
+            say("moved %s to %s" % (item, new))
         except OSError as e:
-            say("left %s at %s — %s" % (item, pair[0], type(e).__name__))
-    wt = both(cfg["worktree"]["dir"])
+            say("left %s at %s — %s" % (item, old, type(e).__name__))
     if wt is not None:
-        why = "a symbolic link" if os.path.islink(wt[0]) else "overlaps the new path" if overlaps(*wt) else None
+        why = worktrees_unmovable(*wt)
         if why:
             say("left worktrees at %s — %s" % (wt[0], why))
         else:
             migrate_worktrees(target, wt[0], wt[1], say)
 
-    if read_registration(registry() / key) is None:
-        (registry() / key).mkdir(mode=0o700, parents=True, exist_ok=True)
-        (registry() / key / "project.json").write_text(json.dumps({"path": str(target), "name": name}) + "\n",
-                                                       encoding="utf-8")
-    # 등록 말고 남은 것이 빈 디렉터리뿐이면 통째로 지운다. 남은 것이 있으면 등록까지 그대로 둔다 — 다음에 다시 옮긴다
-    left = [os.path.join(top, x) for top, dirs, files in os.walk(old_dir)
-            for x in files + [d for d in dirs if os.path.islink(os.path.join(top, d))]]
-    if all(x == str(old_dir / "project.json") for x in left):
-        try:
-            shutil.rmtree(old_dir)
-            say("removed %s" % old_dir)
-            return
-        except OSError:
-            pass
-    try:
-        n = len([x for x in os.listdir(old_dir) if x != "project.json"])
-    except OSError:
-        n = 0
-    say("kept %s — %d item(s) left there" % (old_dir, n))
+    kd = registry() / key
+    if read_registration(kd) is None and not os.path.islink(kd):
+        kd.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (kd / "project.json").write_text(json.dumps({"path": str(target), "name": name}) + "\n", encoding="utf-8")
+    n = legacy_left(cfg, target, old_dir)
+    if n:
+        say("kept %s — %d item(s) left there" % (old_dir, n))
+    elif os.path.isfile(old_dir / "project.json") and not os.path.islink(old_dir / "project.json"):
+        # 다 옮겼다. 디렉터리와 기록기 표지는 남기고, 등록은 '다 옮김' 표지로 바꾼다 — 등록 목록에서는 빠지고,
+        # 옛 버전이 그 뒤로 남기는 기록은 다음 install · render 가 옮긴다
+        os.replace(old_dir / "project.json", old_dir / LEGACY_DONE)
+        say("cleared %s — its directories and lock files stay for older versions; render moves what they add" % old_dir)
 
 
 def cmd_projects(_cfg, _target, _args):
@@ -2376,11 +2510,21 @@ def report_same_name(cfg, target: Path):
 
 
 def unregister(target: Path):
-    """이 하네스 루트를 가리키는 project.json 을 키 디렉터리와 옛 이름 디렉터리 양쪽에서 지운다. 기록은 남긴다."""
+    """이 하네스 루트를 가리키는 project.json 을 키 디렉터리와 옛 이름 디렉터리 양쪽에서 지운다. 옛 이름 디렉터리의
+    '다 옮김' 표지도 지워 그 뒤로는 옮기지 않는다. 기록은 남긴다."""
     clones, legacy = registrations()
     for r in clones + legacy:
         if r["path"] == str(target):
             (registry() / (r["key"] or r["name"]) / "project.json").unlink(missing_ok=True)
+    try:
+        entries = list(os.scandir(registry()))
+    except OSError:
+        entries = []
+    for e in entries:
+        if not e.name.startswith(".") and not CLONE_KEY.fullmatch(e.name) and os.path.isdir(e.path):
+            _name, path = read_registration(Path(e.path), LEGACY_DONE) or (None, None)
+            if path == str(target):
+                (Path(e.path) / LEGACY_DONE).unlink(missing_ok=True)
 
 
 def source_tree(p: Path) -> bool:
@@ -3049,7 +3193,7 @@ def doctor_items(cfg, target, remote=False):
     else:
         line("warn", "this clone is registered to another path", at)
     old = legacy_dir(cfg, target)
-    if old is not None:
+    if old is not None and legacy_left(cfg, target, old):
         line("warn", "state under the old name directory is not moved", "run `harness render` to move `%s`" % old)
 
     section("git")
