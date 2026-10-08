@@ -4307,6 +4307,18 @@ in101 --git-init --target "$p108/sub"; check "install --git-init refused after g
 [ ! -e "$p108/sub/.git" ] && ok || bad "a refused install left the git repository it started"
 [ ! -e "$p108/sub/harness.toml" ] && ok || bad "a refused install left the config it laid down"
 [ -L "$p108/sub/.github/ISSUE_TEMPLATE" ] && ok || bad "a refused install touched what was already there"
+# 그 사이 다른 것이 새 디렉터리에 파일을 만들었으면 그 디렉터리는 남긴다 — git init 이 실패하는 동안 생긴 파일
+fg109="$work/fakegit109"; mkdir -p "$fg109"
+cat > "$fg109/git" <<SH
+#!/bin/sh
+if [ "\$1" = init ]; then echo note > "$c101/i/notes109.txt"; echo "fatal: cannot init" >&2; exit 1; fi
+exec "$(command -v git)" "\$@"
+SH
+chmod +x "$fg109/git"
+PATH="$fg109:$PATH" in101 --create --git-init --target "$c101/i/repo109"; check "install --create --git-init when git init fails" "$?" "2"
+check "a file another process made in the new directory is kept" "$(cat "$c101/i/notes109.txt" 2>/dev/null)" "note"
+[ ! -e "$c101/i/repo109" ] && ok || bad "the empty directory this run made is left"
+has "$work/in101.out" "something else is in it now" "install does not say it kept a directory that is no longer empty"
 r="$c101/d/repo101"; mkdir -p "$r"
 ( cd "$r" && git init -q . && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m first ) || bad "could not prepare a repository"
 head101=$(git -C "$r" rev-parse HEAD)
