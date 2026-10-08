@@ -93,6 +93,20 @@ COMMAND_KEYS = [("build", "빌드"), ("test", "테스트 전체"), ("test_single
                 ("format_check", "코드 검사"), ("format_fix", "코드 자동 수정")]
 VERIFY_SCRIPT = "script/harness-verify.sh"
 VERIFY_UNSET = 3                                   # 검증 스크립트의 "아직 명령을 정하지 않았다"
+# 검증을 언제·무엇을 돌리나. 단계마다 마지막으로 통과한 작업 트리를 기억해, 그 뒤 바뀐 파일이 단계의
+# paths 에 걸릴 때만 다시 돈다(incremental). on = "push" 인 단계는 커밋 전 검증(--commit)에서 빠지고
+# push 전(pre-push 훅)과 CI 에서만 돈다.
+VERIFY_DEFAULTS = {"post_commit": False, "pre_push": True, "incremental": True,
+                   "script_tests": True, "test_paths": [], "test_on": "commit"}
+VERIFY_STAGES = ("commit", "push")
+# 하네스 스크립트 회귀 테스트. 관리 파일이라 하네스를 갱신할 때만 바뀌므로 그때만 다시 돈다
+# 서로 독립이라 동시에 돈다. 실패한 것만 전체 출력을 낸다
+SCRIPT_TESTS = ("하네스 스크립트 회귀",
+                'rc=0; for t in script/test-*.sh; do ( l=$(mktemp); if "$t" >"$l" 2>&1; then tail -1 "$l"; '
+                'else cat "$l" >&2; rm -f "$l"; exit 1; fi; rm -f "$l" ) & done; '
+                'for p in $(jobs -p); do wait "$p" || rc=1; done; exit $rc', ["script/**"], "commit")
+# 단계의 경로 하나: 하네스 루트 기준 glob. `*` 는 `/` 도 넘는다(`src/**` == `src/*`)
+VERIFY_PATH = re.compile(r"(?!/)(?!(.*/)?\.\.(/|$))[^\s]+")
 # 옛 방식 — 사람이 손으로 쓰던 검증 스크립트와 명령 문서. 새로 깔지 않지만, 있으면 존중한다.
 LEGACY_VERIFY = "script/verify-project.sh"
 LEGACY_VERIFY_TEMPLATE = "verify-project: not filled in yet"   # 채우지 않은 원형의 마지막 줄
@@ -132,8 +146,9 @@ def metrics_cfg(cfg: dict) -> dict:
 
 
 def QUIET_ENV() -> dict:
-    """점검(doctor)이 검증을 돌릴 때의 환경 — 실행 지표를 남기지 않는다. 열 때마다 실행이 쌓이지 않게."""
-    return dict(os.environ, HARNESS_METRICS="off")
+    """점검(doctor)이 검증을 돌릴 때의 환경 — 실행 지표를 남기지 않고, 프로젝트 검증만 본다(하네스 스크립트 회귀는 뺀다).
+    열 때마다 실행이 쌓이지 않고 수십 초씩 걸리지 않게."""
+    return dict(os.environ, HARNESS_METRICS="off", HARNESS_SCRIPT_TESTS="off")
 
 
 def legacy_verify(target) -> bool:
@@ -143,37 +158,101 @@ def legacy_verify(target) -> bool:
 
 
 def verify_steps(cfg: dict) -> list:
-    """검증이 도는 순서. 계층 의존 검사가 먼저다 — 싸고, 위반이면 어차피 설계를 고쳐야 한다."""
-    c = cfg["commands"]
-    return ([(x["name"], x["run"]) for x in cfg["verify"]["checks"]]
-            + [(label, c[k]) for k, label in (("format_check", "코드 검사"), ("test", "테스트")) if c.get(k)])
+    """프로젝트 검증 단계 (이름, 명령, 경로, 시점). 계층 의존 검사가 먼저다 — 싸고, 위반이면 어차피 설계를 고쳐야 한다."""
+    c, v = cfg["commands"], cfg["verify"]
+    return ([(x["name"], x["run"], x.get("paths", []), x.get("on", "commit")) for x in v["checks"]]
+            + [("코드 검사", c["format_check"], [], "commit")] * bool(c.get("format_check"))
+            + [("테스트", c["test"], v["test_paths"], v["test_on"])] * bool(c.get("test")))
+
+
+# 생성되는 검증 스크립트의 몸통. 단계 목록만 설정에서 오고 나머지는 고정이다.
+VERIFY_SH = r'''# 프로젝트 검증 — harness.toml 의 [verify] 가 정한 단계를 차례로 돈다. `script/run-lint-test.sh` 가 부른다.
+#
+#   script/harness-verify.sh [--commit] [--no-cache]
+#     --commit    on = "commit" 단계만 (커밋 전). 없으면 전부 (push 전 · CI)
+#     --no-cache  통과 기록을 보지 않고 전부 다시 돈다. HARNESS_VERIFY_CACHE=off 도 같다
+#
+# 단계마다 마지막으로 통과한 작업 트리(추적·미추적, 무시 파일 제외)의 해시를 git 공통 디렉터리에 남긴다.
+# 그 뒤 바뀐 파일이 단계의 경로에 하나도 걸리지 않으면 건너뛴다. 경로가 없는 단계는 무엇이든 바뀌면 돈다.
+# 기록은 트리 내용만 본다 — 도구 버전·환경 변수가 바뀌었으면 --no-cache 로 돈다. git 밖이면 기록 없이 전부 돈다.
+# 종료 코드: 0 통과 · 1 실패 · 2 인자 오류 · %(unset)d 아직 명령을 정하지 않았다
+set -uo pipefail
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+# 직접 불러도 단계들이 한 실행 아래에 모이게 자기 한 번을 스팬으로 감싼다
+[ "${HARNESS_METRIC_SELF:-}" = harness-verify ] || [ ! -x script/metric.py ] || \
+  exec env HARNESS_METRIC_SELF=harness-verify script/metric.py wrap --name harness-verify --kind script --attr script=harness-verify -- "$PWD/script/harness-verify.sh" "$@"
+
+stage=push
+cache=%(cache)s
+for a in "$@"; do
+  case "$a" in
+    --commit) stage=commit ;;
+    --no-cache) cache=0 ;;
+    *) echo "usage: script/harness-verify.sh [--commit] [--no-cache]" >&2; exit 2 ;;
+  esac
+done
+[ "${HARNESS_VERIFY_CACHE:-}" = off ] && cache=0
+
+tree="" rec=""
+if [ "$cache" = 1 ] && rec=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+  rec="$rec/harness-verify"
+  idx=$(mktemp)
+  # 실제 인덱스를 건드리지 않는다 — 사본에 작업 트리를 올려 그 트리 해시만 얻는다
+  cp "$(git rev-parse --path-format=absolute --git-path index)" "$idx" 2>/dev/null || rm -f "$idx"
+  tree=$(GIT_INDEX_FILE="$idx" git add -A . 2>/dev/null && GIT_INDEX_FILE="$idx" git write-tree 2>/dev/null) || tree=""
+  rm -f "$idx"
+fi
+
+# touches <기준 트리> <현재 트리> [glob ...] — 두 트리 사이에 바뀐 파일 하나라도 glob 에 걸리는가. glob 이 없으면 무엇이든.
+# 이름 변경은 옛 경로와 새 경로를 둘 다 본다(--no-renames). 경로는 따옴표·이스케이프 없이 NUL 로 받는다(-z)
+touches() {
+  local a="$1" b="$2" f g; shift 2
+  while IFS= read -r -d '' f; do
+    [ $# -gt 0 ] || return 0
+    for g in "$@"; do
+      # shellcheck disable=SC2254
+      case "$f" in $g) return 0 ;; esac
+    done
+  done < <(git diff -z --no-renames --relative --name-only "$a" "$b")
+  return 1
+}
+
+# step <이름> <commit|push> <명령> [경로 glob ...]
+step() {
+  local name="$1" on="$2" cmd="$3" key="" last=""; shift 3
+  if [ "$stage" = commit ] && [ "$on" = push ]; then echo "verify: skip $name (push stage)"; return 0; fi
+  if [ -n "$tree" ]; then
+    key="$rec/$(printf '%%s\n%%s' "$name" "$cmd" | git hash-object --stdin)"
+    last=$(cat "$key" 2>/dev/null || true)
+    if [ -n "$last" ] && git cat-file -e "$last^{tree}" 2>/dev/null \
+       && ! touches "$last" "$tree" "$@"; then
+      echo "verify: skip $name (unchanged since it last passed)"
+      return 0
+    fi
+  fi
+  echo "verify: $name"
+  if [ -x script/metric.py ]; then
+    script/metric.py wrap --name "verify/$name" --kind script --attr script=harness-verify -- bash -c "$cmd"
+  else
+    bash -c "$cmd"
+  fi || { echo "verify: FAIL $name" >&2; exit 1; }
+  [ -z "$key" ] || { mkdir -p "$rec" && echo "$tree" > "$key"; }
+}
+
+'''
 
 
 def verify_script(cfg: dict) -> str:
+    v = cfg["verify"]
     steps = verify_steps(cfg)
-    body = "".join("step %s %s\n" % (shlex.quote(n), shlex.quote(r)) for n, r in steps) + 'echo "verify: ok"\n' if steps else (
+    line = lambda n, r, paths, on: "step %s\n" % " ".join(shlex.quote(x) for x in (n, on, r, *paths))
+    # 점검(doctor)은 HARNESS_SCRIPT_TESTS=off 로 이 단계를 부르지 않는다 — 부르지 않았으니 통과 기록도 남지 않는다
+    scripts = '[ "${HARNESS_SCRIPT_TESTS:-}" = off ] || ' + line(*SCRIPT_TESTS) if v["script_tests"] else ""
+    body = (scripts + "".join(line(*s) for s in steps) + 'echo "verify: ok"\n' if steps else (
         'echo "verify: not set up — harness.toml has no [commands] or [verify] checks yet" >&2\n'
         'echo "help: harness set commands.test \\"<test command>\\"   (or Project Settings → Commands)" >&2\n'
-        "exit %d\n" % VERIFY_UNSET)
-    return ("#!/usr/bin/env bash\n" + BANNER_SH +
-            "# 프로젝트 검증 — harness.toml 의 [verify] 검사, commands.format_check, commands.test 를 차례로 돈다.\n"
-            "# `script/run-lint-test.sh` 가 부른다. 단계마다 이름을 찍고, 실패하면 그 이름으로 멈춘다.\n"
-            "# 종료 코드: 0 통과 · 1 실패 · %d 아직 명령을 정하지 않았다\n"
-            "set -uo pipefail\n"
-            'cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"\n'
-            "# 직접 불러도 단계들이 한 실행 아래에 모이게 자기 한 번을 스팬으로 감싼다\n"
-            '[ "${HARNESS_METRIC_SELF:-}" = harness-verify ] || [ ! -x script/metric.py ] || \\\n'
-            '  exec env HARNESS_METRIC_SELF=harness-verify script/metric.py wrap --name harness-verify --kind script '
-            '--attr script=harness-verify -- "$PWD/script/harness-verify.sh" "$@"\n\n'
-            "# 단계마다 실행 지표를 남긴다(script/metric.py). 기록기가 없으면 그냥 돈다\n"
-            "step() {\n"
-            '  echo "verify: $1"\n'
-            "  if [ -x script/metric.py ]; then\n"
-            '    script/metric.py wrap --name "verify/$1" --kind script --attr script=harness-verify -- bash -c "$2"\n'
-            "  else\n"
-            '    bash -c "$2"\n'
-            '  fi || { echo "verify: FAIL $1" >&2; exit 1; }\n'
-            "}\n\n" % VERIFY_UNSET) + body
+        "exit %d\n" % VERIFY_UNSET))
+    return "#!/usr/bin/env bash\n" + BANNER_SH + VERIFY_SH % {"unset": VERIFY_UNSET, "cache": int(v["incremental"])} + body
 
 
 def commands_doc(cfg: dict, target: Path = None) -> str:
@@ -189,8 +268,17 @@ def commands_doc(cfg: dict, target: Path = None) -> str:
     rows = ["| 작업 | 명령 |", "|---|---|"] + ["| %s | %s |" % (label, cell(c[k])) for k, label in COMMAND_KEYS]
     rows.append("| 검증 일괄 | `script/run-lint-test.sh` |")
     steps = verify_steps(cfg)
-    tail = ("\n\n검증(`%s`)은 이 순서로 돈다: %s." % (VERIFY_SCRIPT, " → ".join(n for n, _ in steps))) if steps else ""
+    tail = ("\n\n검증(`%s`)은 이 순서로 돈다: %s." % (VERIFY_SCRIPT, " → ".join(
+        n + (" (push 전)" if on == "push" else "") for n, _r, _p, on in steps))) if steps else ""
     return "\n".join(rows) + tail
+
+
+def verify_when(what: str, paths, on):
+    """검증 단계 하나의 경로·시점이 성립하는가."""
+    if not (isinstance(paths, list) and all(isinstance(p, str) and VERIFY_PATH.fullmatch(p) for p in paths)):
+        die("error: %s paths must be a list of repository-relative globs like \"src/**\" (got %r)" % (what, paths))
+    if on not in VERIFY_STAGES:
+        die("error: %s on must be one of %s (got %r)" % (what, ", ".join(VERIFY_STAGES), on))
 
 
 def normalize(cfg: dict):
@@ -205,6 +293,8 @@ def normalize(cfg: dict):
     for k, _ in COMMAND_KEYS:
         cmds.setdefault(k, "")
     cfg.setdefault("verify", {}).setdefault("checks", [])
+    for k, x in VERIFY_DEFAULTS.items():   # 검증 시점 · 증분 — 옛 설정에는 없다
+        cfg["verify"].setdefault(k, list(x) if isinstance(x, list) else x)
     for k, x in METRICS_DEFAULTS.items():
         cfg.setdefault("metrics", {}).setdefault(k, x)
     for k, x in WORKTREE_DEFAULTS.items():   # 이슈별 작업 트리 — 옛 설정에는 없다
@@ -418,10 +508,19 @@ def validate(cfg: dict):
     if not isinstance(checks, list):
         die("error: verify.checks must be a list of { name, run }")
     for n, x in enumerate(checks, 1):
-        if (not isinstance(x, dict) or set(x) - {"name", "run"}
+        if (not isinstance(x, dict) or set(x) - {"name", "run", "paths", "on"}
                 or not all(isinstance(x.get(k), str) and x[k].strip() and "\n" not in x[k] for k in ("name", "run"))):
             die("error: verify.checks[%d] needs a name and a run command, one line each (got %r)\n\n"
                 "help: a check longer than one line belongs in a script — run = \"script/check-deps.sh\"" % (n, x))
+        verify_when("verify.checks[%d]" % n, x.get("paths", []), x.get("on", "commit"))
+    v = cfg["verify"]
+    unknown = sorted(set(v) - set(VERIFY_DEFAULTS) - {"checks"})
+    if unknown:
+        die("error: unknown key(s) in [verify]: %s\n\nhelp: the keys are checks, %s" % (", ".join(unknown), ", ".join(VERIFY_DEFAULTS)))
+    for k in ("post_commit", "pre_push", "incremental", "script_tests"):
+        if not isinstance(v[k], bool):
+            die("error: verify.%s must be true or false (got %r)" % (k, v[k]))
+    verify_when("verify.test", v["test_paths"], v["test_on"])
 
     m = cfg["metrics"]
     unknown = sorted(set(m) - set(METRICS_DEFAULTS))
@@ -1173,6 +1272,37 @@ def forge_templates(cfg: dict, at: Path = None) -> list:
     return out
 
 
+POST_COMMIT_HOOK = "script/githooks/post-commit"   # verify.post_commit 이 켜질 때만 생성한다
+# verify.pre_push 가 켜지면 pre-push 훅 끝에 들어가는 줄. 리뷰어와 CI 가 받는 리비전을 push 전에 검증한다
+PRE_PUSH_VERIFY = r"""
+# push 전 검증 — on = "push" 단계까지 전부. 통과 기록이 있는 단계는 건너뛴다(verify.incremental).
+# 검증은 작업 트리를 본다. 그래서 push 하는 리비전이 체크아웃한 HEAD 이고 작업 트리가 그것과 같을 때만 통과시킨다
+refuse() {
+  [ -n "$root" ] && "$root/script/usage-log.sh" block pre-push verify >/dev/null 2>&1
+  echo "blocked: $1" >&2
+  echo "  $2" >&2
+  exit 1
+}
+[ -n "$root" ] && [ -x "$root/script/run-lint-test.sh" ] ||
+  refuse "verify.pre_push is on but script/run-lint-test.sh is missing" "help: harness render"
+head=$(git rev-parse HEAD)
+for sha in $pushed; do
+  case "$sha" in   # 지우는 ref(모두 0)는 보지 않는다. 주석 태그는 가리키는 커밋으로 푼다
+    *[!0]*) [ "$(git rev-parse -q --verify "$sha^{commit}" 2>/dev/null)" = "$head" ] ||
+              refuse "this push sends a revision other than the checked-out HEAD, which verification cannot see" \
+                "help: check out that branch, then push" ;;
+  esac
+done
+clean() { [ -z "$(git status --porcelain)" ]; }
+clean || refuse "the working tree has uncommitted changes — verification would check them, not what is pushed" \
+  "help: commit or stash them, then push again"
+"$root/script/run-lint-test.sh" </dev/null || refuse "verification failed" "help: fix it, commit, then push again"
+# 검증이 작업 트리를 고쳤으면 통과한 것은 push 하는 HEAD 가 아니다
+clean || refuse "verification changed the working tree, so what passed is not what is pushed" \
+  "help: commit what it changed (or make that step stop writing to tracked files), then push again"
+"""
+
+
 def plan(cfg: dict, target: Path = None, at: Path = None) -> list:
     """생성되는 파일 전부. (경로, 내용, 권한)
 
@@ -1186,9 +1316,13 @@ def plan(cfg: dict, target: Path = None, at: Path = None) -> list:
         if not src.is_file():
             continue
         rel = src.relative_to(gen).as_posix()
+        if rel == POST_COMMIT_HOOK and not cfg["verify"]["post_commit"]:
+            continue
         text = src.read_text(encoding="utf-8")
         mode = 0o755 if os.access(src, os.X_OK) else 0o644
-        out.append((rel, substitute(text, dict(v, PROJECT_COMMANDS=commands_doc(cfg, target)), str(src), target), mode))
+        out.append((rel, substitute(text, dict(v, PROJECT_COMMANDS=commands_doc(cfg, target),
+                                               PRE_PUSH_VERIFY=PRE_PUSH_VERIFY * cfg["verify"]["pre_push"]),
+                                    str(src), target), mode))
 
     out.append(("script/harness.env", harness_env(v), 0o644))
     out.append((VERIFY_SCRIPT, verify_script(cfg), 0o755))
@@ -2595,6 +2729,11 @@ def toml_value(raw: str) -> str:
         return raw
     if re.fullmatch(r"-?[0-9]+", raw):
         return raw
+    if raw.startswith("["):   # JSON 배열 — 원소가 하나인 목록과 빈 목록도 적을 수 있다
+        try:
+            return json.dumps([str(x) for x in json.loads(raw)], ensure_ascii=False).replace('","', '", "')
+        except (ValueError, TypeError):
+            die("error: %r is not a JSON array of strings" % raw)
     if "," in raw:
         return "[%s]" % ", ".join('"%s"' % x.strip() for x in raw.split(",") if x.strip())
     return '"%s"' % raw
@@ -2619,7 +2758,8 @@ def set_line(lines: list, dotted: str, raw: str, where: Path):
     command = section == "commands" and key in {k for k, _ in COMMAND_KEYS}
     # 기본값이 있는 절(권한 · 준비 점검)은 옛 설정에 없을 수 있다
     defaulted = (section == "permissions" and key in PERMISSIONS_DEFAULTS
-                 or section == "doctor" and key in DOCTOR_DEFAULTS)
+                 or section == "doctor" and key in DOCTOR_DEFAULTS
+                 or section == "verify" and key in VERIFY_DEFAULTS)
     if hit is None and (command or defaulted) and not any(ln.strip() == want for ln in lines):
         lines += ["\n" if lines and lines[-1].strip() else "", "%s\n" % want]   # 옛 설정에는 절이 없다
     if hit is None and (re.fullmatch(r"roles\.[\w-]+", section) and key in OPTIONAL_ROLE_KEYS
@@ -3072,14 +3212,29 @@ def cmd_checks(cfg, target, args):
         assert len(args.args) == 1 and isinstance(checks, list) and all(isinstance(x, dict) for x in checks)
     except (ValueError, AssertionError):
         die("usage: harness checks [<json>]\n\nexample: harness checks '[{\"name\":\"module boundaries\",\"run\":\"script/check-deps.sh\"}]'")
-    rows = "".join("  { name = %s, run = %s },\n" % (json.dumps(str(x.get("name", "")), ensure_ascii=False),
-                                                   json.dumps(str(x.get("run", "")), ensure_ascii=False)) for x in checks)
-    block = "[verify]\nchecks = [\n%s]\n" % rows
+    q = lambda x: json.dumps(x, ensure_ascii=False)
+    rows = "".join("  { %s },\n" % ", ".join(["name = %s" % q(str(x.get("name", ""))), "run = %s" % q(str(x.get("run", "")))]
+                                             + ["%s = %s" % (k, q(x[k])) for k in ("paths", "on") if k in x])
+                   for x in checks)
+    block = "checks = [\n%s]\n" % rows
     p = target / "harness.toml"
     original = p.read_text(encoding="utf-8")
     lines = original.splitlines(keepends=True)
     span = section_span(lines, "[verify]")
-    text = (original.rstrip("\n") + "\n\n" + block) if span is None else "".join(lines[:span[0]]) + block + "".join(lines[span[1]:])
+    if span is None:
+        text = original.rstrip("\n") + "\n\n[verify]\n" + block
+    else:
+        # checks 배열만 갈아 끼운다 — 같은 절의 다른 키(시점 · 증분)와 주석은 그대로 둔다
+        i = next((n for n in range(*span) if re.match(r"\s*checks\s*=", lines[n])), None)
+        if i is None:
+            text = "".join(lines[:span[0] + 1]) + block + "".join(lines[span[0] + 1:])
+        else:
+            j = i + 1
+            if "]" not in lines[i].split("#", 1)[0]:
+                while j < span[1] and lines[j].split("#", 1)[0].strip() != "]":
+                    j += 1
+                j += 1
+            text = "".join(lines[:i]) + block + "".join(lines[j:])
     p.write_text(text, encoding="utf-8")
     try:
         cfg = load(target)

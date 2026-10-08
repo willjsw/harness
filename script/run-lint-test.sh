@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # 검증 일괄. 하나라도 실패하면 0이 아닌 종료 코드.
-# 커밋 전 수동 실행, post-commit 훅에서 1회 자동 실행, CI 에서 실행.
 #
-# **하네스 검사와 프로젝트 검증을 나눈다.** 위쪽은 어느 리포에서나 같고, 아래쪽은
-# 프로젝트가 harness.toml 의 [commands]·[verify] 에 적은 명령이다.
+#   script/run-lint-test.sh [--commit] [--no-cache]
+#     --commit    커밋 전 검증 — on = "push" 단계를 뺀다. 없으면 전부 (pre-push 훅 · CI)
+#     --no-cache  통과 기록을 보지 않고 전부 다시 돈다
+#
+# **하네스 검사와 프로젝트 검증을 나눈다.** 위쪽은 어느 리포에서나 같고, 아래쪽은 harness.toml 의
+# [commands]·[verify] 에서 생성되는 `script/harness-verify.sh` 다. 언제 무엇을 돌릴지는 거기서 정한다.
 set -euo pipefail
 # 하네스 루트. 모노레포에서는 리포 루트가 아닐 수 있으므로 스크립트 자신의 위치에서 잡는다.
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -19,30 +22,11 @@ for cli in .harness/bin/harness src/bin/harness; do
   fi
 done
 
-# 2) 셸 회귀 테스트. 셸은 어느 포맷터도 보지 않으므로 여기서 돈다.
-#    가드와 루프 제어는 조용히 망가져도 통과만 하므로 검사 없이는 고장을 알 수 없다.
-#    원격도 리뷰 도구도 부르지 않는다 — 성공하면 마지막 줄만 남긴다.
-for t in script/test-review-loop.sh script/test-carryover-issue.sh \
-         script/test-sync-task-issues.sh script/test-rollback-work.sh \
-         script/test-secret-scan.sh script/test-bash-guard.sh script/test-usage-log.sh \
-         script/test-forge-labels.sh script/test-forge-setup.sh script/test-work-preflight.sh; do
-  [ -x "$t" ] || continue
-  log=$(mktemp)
-  if ! "$t" > "$log" 2>&1; then
-    cat "$log" >&2
-    rm -f "$log"
-    exit 1
-  fi
-  tail -1 "$log"
-  rm -f "$log"
-done
-
-# 3) 프로젝트 검증 — 계층 의존 규칙·코드 검사·테스트. 명령은 harness.toml 의 [verify]·[commands] 가 갖고,
-#    `script/harness-verify.sh` 가 그것으로 생성된다.
+# 2) 검증 단계 — 하네스 스크립트 회귀 테스트, 계층 의존 규칙·코드 검사·테스트.
 #    손으로 쓴 옛 검증 스크립트(script/verify-project.sh)가 있으면 그것을 대신 돈다 — 설정으로 옮기면 지운다.
 old=script/verify-project.sh
 if [ -f "$old" ] && ! grep -q "verify-project: not filled in yet" "$old"; then
   bash "$old" || exit 1
 else
-  script/harness-verify.sh || exit 1
+  script/harness-verify.sh "$@" || exit 1
 fi

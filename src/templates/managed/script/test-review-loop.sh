@@ -16,6 +16,8 @@ set -uo pipefail
 # 훅이 넘긴 GIT_DIR·GIT_INDEX_FILE 같은 리포 지역 변수를 비운다. 남아 있으면 임시 리포를 만드는
 # git init 이 임시 디렉터리 대신 그 변수가 가리키는 리포를 다시 초기화한다.
 unset $(git rev-parse --local-env-vars 2>/dev/null)
+# 실행 지표를 끈 바깥 환경(doctor 등)을 물려받지 않는다 — 리뷰어 사용량이 지표에 남는지 보는 케이스가 있다
+unset HARNESS_METRICS
 
 command -v python3 >/dev/null || { echo "python3 is required to run this test" >&2; exit 2; }
 

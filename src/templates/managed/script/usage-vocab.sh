@@ -14,7 +14,7 @@ USAGE_EVENTS="block preflight review command note other"
 USAGE_SOURCES="commit-msg pre-push pre-commit work-preflight review-mr bash-guard test-caller other"
 
 # 상세에 쓸 수 있는 고정 라벨.
-USAGE_LABELS="issue-closed issue-query-failed open-mr mr-query-failed fetch-failed standalone spec-missing plan format protected-branch agent-sync force-push no-verify remote-delete arch-doc"
+USAGE_LABELS="issue-closed issue-query-failed open-mr mr-query-failed fetch-failed standalone spec-missing plan format protected-branch agent-sync force-push no-verify remote-delete arch-doc verify"
 
 # 상세에 쓸 수 있는 키=값 의 `키:값정규식` 목록. **키마다 값 형식을 따로 정한다** —
 # 값을 영숫자 일반으로 열어 두면 호출부가 잘못 넘긴 사람 이름·식별자가 그대로 기록에 남는다.

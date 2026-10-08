@@ -160,16 +160,30 @@ git config core.hooksPath script/githooks   # 모노레포면 서브프로젝트
 
 ## 검증 루프
 
-모든 커밋 앞에 같은 관문이 있다.
+관문은 셋이고, 뒤로 갈수록 넓다. 같은 트리를 두 번 검증하지 않는다.
 
 ```
-코드 변경 → run-lint-test.sh ─▶ 생성물 일치(harness check)
-                              ─▶ 셸 회귀 테스트
-                              ─▶ 프로젝트 검증(harness-verify.sh)
-                                        │
-                                   통과 ─▶ 커밋
-                                   실패 ─▶ 커밋 안 함
+코드 변경 → run-lint-test.sh --commit ─▶ 생성물 일치(harness check)
+                                       ─▶ 커밋 단계 검증(harness-verify.sh --commit)
+                                                 │
+                                            통과 ─▶ 커밋 (pre-commit: 생성물 일치 · 시크릿)
+                                            실패 ─▶ 커밋 안 함
+push      → pre-push 훅 → run-lint-test.sh  ─▶ push 단계까지 전부. 실패하면 push 차단
+머지 전   → CI         → run-lint-test.sh  ─▶ 통과 기록 없이 전수
 ```
+
+| 무엇이 | 어디서 정하나 |
+|---|---|
+| 단계 목록과 순서 | `[verify].checks` · `[commands]` |
+| 단계를 다시 돌릴 경로 | 검사의 `paths`, 테스트의 `test_paths`. 비우면 무엇이든 바뀌면 |
+| 커밋 전에 돌지, push 전에만 돌지 | 검사의 `on`, 테스트의 `test_on` (`commit` · `push`) |
+| 통과한 트리를 기억해 안 바뀐 단계를 건너뛸지 | `incremental` (끄거나 `--no-cache`) |
+| push 전 검증 · 커밋 직후 재검증 | `pre_push` · `post_commit` |
+| 하네스 스크립트 회귀 테스트 | `script_tests` — `script/` 가 바뀔 때만 돈다 |
+
+**통과 기록은 단계마다 마지막으로 통과한 작업 트리의 해시다** (`<git 공통 디렉터리>/harness-verify/`). 그 뒤
+바뀐 파일이 단계의 경로에 하나도 걸리지 않으면 건너뛴다. 기록은 트리 내용만 보므로 도구 버전·환경이
+바뀌었으면 `--no-cache` 로 돈다. CI 는 새 클론이라 언제나 전수다.
 
 **생성물 일치를 먼저 본다** — 설정과 어긋난 훅·권한으로 도는 상태에서 나머지를 검증해 봐야
 의미가 없다. 프로젝트 검증 안에서는 계층 의존 검사를 포맷·테스트보다 먼저 둔다. 싸고, 위반이면

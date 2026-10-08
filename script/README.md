@@ -14,10 +14,10 @@
 
 | 스크립트 | 용도 | 호출 시점 |
 |---|---|---|
-| `run-lint-test.sh` | 검증 일괄 — 생성물 일치 + 셸 회귀 테스트 + 프로젝트 검증 | 커밋 전 수동, post-commit 훅, CI |
+| `run-lint-test.sh` | 검증 일괄 — 생성물 일치 + `harness-verify.sh`. `--commit` 이면 push 단계를 뺀다 | 커밋 전 `--commit`, pre-push 훅, CI (`verify.post_commit` 이면 post-commit 훅도) |
 | `metric.py` | 실행 지표 기록 — 명령·단계·에이전트·스크립트를 스팬으로 남긴다. `wrap -- <명령>` 은 출력·종료 코드를 바꾸지 않는다. 보관·로테이션은 `harness.toml` 의 `[metrics]` | 스크립트·`run-agent.py`·`harness run` |
 | `run-agent.py` | CLI 러너 역할 하나를 실행 계획(`harness.plan.json`)대로 한 번 돌리는 공용 실행기. `--check` 는 실행하지 않고 러너 설치·로그인만 확인한다 — 0=준비됨, 2=실행 불가, 3=미로그인, 4=확인 못 함 | 절차의 CLI 러너 단계, `harness doctor --remote` |
-| `harness-verify.sh` | **생성.** `harness.toml` 의 `[verify]` 검사 → 코드 검사 → 테스트. 0=통과, 1=실패, 3=명령을 아직 정하지 않음 | `run-lint-test.sh` |
+| `harness-verify.sh` | **생성.** `harness.toml` 의 `[verify]` — 스크립트 회귀 → 검사 → 코드 검사 → 테스트. 단계마다 통과한 작업 트리를 기억해 경로가 안 바뀐 단계는 건너뛴다. 0=통과, 1=실패, 3=명령을 아직 정하지 않음 | `run-lint-test.sh` |
 | `work-preflight.sh` | 착수 판정 — 이슈 → 열린 리뷰 요청 → 분해 → 명세 순으로 확인하고 `plan`/`standalone` 출력. 0=가능, 1=불가(닫힌 이슈 포함), 2=실패(이슈 조회 실패 포함) | 착수 전과 위임 직전 |
 | `check-open-mrs.sh` | 이슈에 연결된 **열린** 리뷰 요청 조회. 0=없음, 1=있음, 2=실패 | `work-preflight.sh` 의 첫 검사 |
 | `sync-task-issues.sh` | 원격 통합 브랜치의 분해를 읽어 **없는 task 이슈만 생성.** 머지 전이면 중단(승인 게이트). 동시 실행은 잠금으로 막고, 막지 못한 경합은 만들기 전에 잡는다. `--dry-run` | 착수 단계(분해가 있을 때만) |

@@ -243,7 +243,8 @@ export async function saveCommands(project, commands, checks, before) {
     if (!r.ok) return r;
     out.push(r.out);
   }
-  const clean = checks.map((c) => ({ name: c.name.trim(), run: c.run.trim() })).filter((c) => c.name || c.run);
+  // paths · on 처럼 화면이 그리지 않는 필드는 그대로 넘긴다 — 빼면 저장할 때 설정에서 지워진다
+  const clean = checks.map((c) => ({ ...c, name: c.name.trim(), run: c.run.trim() })).filter((c) => c.name || c.run);
   if (JSON.stringify(clean) !== JSON.stringify(before.checks)) {
     const r = await harness(path, ["checks", JSON.stringify(clean)]);
     if (!r.ok) return r;

@@ -116,7 +116,7 @@
 | 코드 자동 수정 | 정하지 않음 |
 | 검증 일괄 | `script/run-lint-test.sh` |
 
-검증(`script/harness-verify.sh`)은 이 순서로 돈다: CLI 가 컴파일된다 → UI 단위 테스트 → 테스트.
+검증(`script/harness-verify.sh`)은 이 순서로 돈다: CLI 가 컴파일된다 → UI 단위 테스트 → 테스트 (push 전).
 
 프로젝트 자동화 스크립트는 `script/project/` 에 두고 `script/project/README.md` 표에 한 줄 추가한다.
 `script/` 바로 아래는 하네스 것이라 갱신이 덮는다.
@@ -323,9 +323,12 @@ relates to <상위 이슈>
 ## 8. 검증 루프
 
 1. 코드 변경
-2. `script/run-lint-test.sh` 실행 — 생성물 일치 + 셸 회귀 테스트 + 프로젝트 검증
+2. `script/run-lint-test.sh --commit` 실행 — 생성물 일치 + 커밋 단계 검증. 마지막으로 통과한 뒤 바뀐 경로에 걸린 단계만 돈다
 3. 통과 시에만 커밋. 실패 시 커밋하지 않고 실패 원인을 보고
 4. 커밋 시 pre-commit 훅이 생성물 일치를 다시 검사 — **어긋나면 커밋이 차단된다**
+5. push 시 pre-push 훅이 검증 전부(push 단계 포함)를 돈다 — **실패하면 push 가 차단된다**. CI 가 머지 전에 한 번 더 전수로 돈다
+
+무엇을 언제 돌릴지는 `harness.toml` 의 `[verify]` 가 정한다 (단계별 `paths` · `on`, `pre_push` · `post_commit` · `incremental`).
 
 훅은 `harness install` 이 `core.hooksPath` 가 비어 있을 때 켠다. 켜지지 않았으면 `harness doctor` 가 켜는 명령을 알려 준다
 
