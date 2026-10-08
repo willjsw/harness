@@ -141,7 +141,7 @@ if __name__ == "__main__":
 # ponytail: 의존은 변수 이름으로만 찾는다. 앞 블록이 만든 파일·함수를 쓰는 블록이 생기면 그 블록이 실패한다 —
 #           그때는 그 블록에서 대상을 새로 만든다
 shard_py='
-import os, re, shlex, subprocess, sys, tempfile, time
+import os, re, shlex, shutil, subprocess, sys, tempfile, time
 src = os.path.abspath(sys.argv[1])
 text = open(src, encoding="utf-8").read()
 start = text.index("\necho \"UT-") + 1
@@ -212,6 +212,7 @@ for p, log in procs:
         bad += 1
         sys.stdout.write(out)
     sys.stdout.flush()
+shutil.rmtree(tmp, ignore_errors=True)   # 실패한 셸의 로그는 위에서 이미 다 냈다
 print("\nrender-test: %d passed%s  (%d shards, %s)" % (passed, ", %d failed" % failed if failed else "", jobs,
                                                         " ".join("%.0fs" % took[n] for n in sorted(took))))
 sys.exit(1 if bad else 0)
@@ -3740,15 +3741,33 @@ echo b > "$t/src/a.txt"
 check "runs: first, then only the src change" "$(wc -l < "$ran" | tr -d ' ')" "2"
 ( cd "$t" && script/harness-verify.sh --no-cache ) >/dev/null 2>&1
 check "--no-cache reruns" "$(wc -l < "$ran" | tr -d ' ')" "3"
+# 이름 변경으로 src 밖으로 옮긴 것과 한글 경로도 src 의 변경으로 센다
+mv "$t/src/a.txt" "$t/docs/moved.txt"
+( cd "$t" && script/harness-verify.sh --commit ) >/dev/null 2>&1
+check "a file moved out of src reruns the test" "$(wc -l < "$ran" | tr -d ' ')" "4"
+mkdir -p "$t/src/한글"; echo x > "$t/src/한글/파일.txt"
+( cd "$t" && script/harness-verify.sh --commit ) >/dev/null 2>&1
+check "a non-ASCII path under src reruns the test" "$(wc -l < "$ran" | tr -d ' ')" "5"
 "$root/bin/harness" set --target "$t" verify.test_on push >/dev/null 2>&1
 echo c > "$t/src/a.txt"
 ( cd "$t" && script/harness-verify.sh --commit ) > "$work/incr.out" 2>&1
 has "$work/incr.out" "skip 테스트 (push stage)" "a push-stage test ran before commit"
 ( cd "$t" && script/harness-verify.sh ) >/dev/null 2>&1
-check "the push stage runs without --commit" "$(wc -l < "$ran" | tr -d ' ')" "4"
+check "the push stage runs without --commit" "$(wc -l < "$ran" | tr -d ' ')" "6"
 # 훅: post-commit 은 켤 때만 생기고, pre-push 는 켜져 있으면 검증을 돈다
 [ ! -e "$t/script/githooks/post-commit" ] && ok || bad "post-commit exists while verify.post_commit is off"
 has "$t/script/githooks/pre-push" "run-lint-test.sh" "pre-push does not verify"
+# pre-push 는 작업 트리를 검증하므로 push 하는 것이 깨끗한 HEAD 일 때만 통과시킨다
+g101() { git -C "$t" -c user.name=t -c user.email=t@example.invalid "$@"; }
+pp101() { ( cd "$t" && printf 'refs/heads/f %s refs/heads/f %040d\n' "$1" 0 | script/githooks/pre-push origin none ) > "$work/pp101.out" 2>&1; }
+g101 add -A && g101 commit -qm init; h101=$(g101 rev-parse HEAD)
+echo dirty >> "$t/src/a.txt"; pp101 "$h101"; check "pre-push refuses uncommitted changes" "$?" "1"
+has "$work/pp101.out" "uncommitted changes" "pre-push does not say why it refused the dirty tree"
+g101 checkout -q -- src/a.txt
+pp101 "$(printf '%040d' 1)"; check "pre-push refuses a revision other than HEAD" "$?" "1"
+pp101 "$h101"; check "pre-push passes a clean HEAD" "$?" "0"
+mv "$t/script/run-lint-test.sh" "$t/script/run-lint-test.sh.off"; pp101 "$h101"; check "pre-push refuses when the verification script is missing" "$?" "1"
+mv "$t/script/run-lint-test.sh.off" "$t/script/run-lint-test.sh"
 "$root/bin/harness" set --target "$t" verify.post_commit true verify.pre_push false >/dev/null 2>&1
 [ -x "$t/script/githooks/post-commit" ] && ok || bad "post-commit was not generated when turned on"
 hasnt "$t/script/githooks/pre-push" "run-lint-test.sh" "pre-push still verifies after turning it off"

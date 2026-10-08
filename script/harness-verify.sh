@@ -38,17 +38,17 @@ if [ "$cache" = 1 ] && rec=$(git rev-parse --path-format=absolute --git-common-d
   rm -f "$idx"
 fi
 
-# touches <바뀐 파일 목록> [glob ...] — 목록의 파일 하나라도 glob 에 걸리는가. glob 이 없으면 무엇이든
+# touches <기준 트리> <현재 트리> [glob ...] — 두 트리 사이에 바뀐 파일 하나라도 glob 에 걸리는가. glob 이 없으면 무엇이든.
+# 이름 변경은 옛 경로와 새 경로를 둘 다 본다(--no-renames). 경로는 따옴표·이스케이프 없이 NUL 로 받는다(-z)
 touches() {
-  local changed="$1" f g; shift
-  [ -n "$changed" ] || return 1
-  [ $# -gt 0 ] || return 0
-  while IFS= read -r f; do
+  local a="$1" b="$2" f g; shift 2
+  while IFS= read -r -d '' f; do
+    [ $# -gt 0 ] || return 0
     for g in "$@"; do
       # shellcheck disable=SC2254
       case "$f" in $g) return 0 ;; esac
     done
-  done <<< "$changed"
+  done < <(git diff -z --no-renames --relative --name-only "$a" "$b")
   return 1
 }
 
@@ -60,7 +60,7 @@ step() {
     key="$rec/$(printf '%s\n%s' "$name" "$cmd" | git hash-object --stdin)"
     last=$(cat "$key" 2>/dev/null || true)
     if [ -n "$last" ] && git cat-file -e "$last^{tree}" 2>/dev/null \
-       && ! touches "$(git diff --relative --name-only "$last" "$tree")" "$@"; then
+       && ! touches "$last" "$tree" "$@"; then
       echo "verify: skip $name (unchanged since it last passed)"
       return 0
     fi

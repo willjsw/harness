@@ -15,7 +15,9 @@ set -u
 root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." 2>/dev/null && pwd)
 [ -f "$root/script/harness.env" ] || root=$(git rev-parse --show-toplevel 2>/dev/null)
 
+pushed=""
 while read -r _local_ref _local_sha remote_ref _remote_sha; do
+  pushed="$pushed $_local_sha"
   case "$remote_ref" in
     {{PROTECTED_REF_CASE}}) ;;
     *) continue ;;
