@@ -7,9 +7,9 @@
 
 ### 구성 요소
 
-- `src/bin/harness` — CLI 본체. 설정을 읽어 검증(`validate()`)하고, 생성물을 만들고(`plan()` · `render`), 검사하고(`check`), 점검하고(`doctor`), 설정을 고치고(`set` · `steps` · `checks`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`). 명령 전부가 여기 있다. doctor 는 점검 결과를 항목 목록으로 모으고 텍스트·JSON 으로 그린다. `status` 는 그 목록을 쓴다. 지표 집계와 세션 가져오기는 옆의 `src/bin/harness_metrics.py` 모듈이 갖는다. 둘 다 python3 표준 라이브러리만 쓴다
+- `src/bin/harness` — CLI 본체. 설정을 읽어 검증(`validate()`)하고, 생성물을 만들고(`plan()` · `render`), 검사하고(`check`), 점검하고(`doctor`), 설정을 고치고(`set` · `steps` · `checks`), 프로젝트 문서·메모를 쓰고(`write-doc`), Doctor 조치를 돌고(`fix`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`). 명령 전부가 여기 있다. doctor 는 점검 결과를 항목 목록으로 모으고 텍스트·JSON 으로 그린다. `status` 는 그 목록을 쓴다. 지표 집계와 세션 가져오기는 옆의 `src/bin/harness_metrics.py` 모듈이 갖는다. 둘 다 python3 표준 라이브러리만 쓴다
 - `src/templates/` — 대상 리포로 가는 것 전부. `harness.toml`(기본 설정) · `generated/`({{VAR}} 치환) · `managed/`(그대로 복사) · `owned/`(없을 때만 복사) · `agents/`(역할 어댑터 본문과 선언) · `workflows/<절차>/`(절차 조각) · `forge/<kind>/`(forge 명령 사전 조각) · `adr/<style>/`(결정 기록 문서 세트) · `ci/<host>/`(CI 골격) · `vendors.toml`(에이전트 CLI 등록부)
-- `src/ui/` — Next.js 앱. `harness start-server` 가 필요할 때 빌드하고 루프백에 백그라운드로 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다
+- `src/ui/` — Next.js 앱. `harness start-server` 가 필요할 때 빌드하고 루프백에 백그라운드로 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다 — 설정, 문서·메모 저장, Doctor 조치, 새 프로젝트 만들기 모두 그렇다. 파일 경로는 짓지 않고 `harness schema` 에서 받는다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
 - 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다. `script/project/` 는 프로젝트 것이다 — 하네스는 그 안의 `README.md` 만 없을 때 깐다
 - 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치), 등록부 최상위의 `ui.pid`(백그라운드 UI 서버 기록) · `ui.log`(그 기동의 설치·빌드·서버 출력). 설치 등록부는 프로젝트 이름 하나에 경로 하나다 — `install` 은 같은 이름이 아직 쓰이는 다른 경로에 등록돼 있으면 거부한다

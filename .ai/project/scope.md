@@ -25,6 +25,7 @@
 
 - 대상 리포에 하네스를 설치·갱신·검사·점검·제거한다 (`install` · `render` · `check` · `doctor` · `uninstall`)
 - 설정 값·절차 단계·검증 검사를 CLI 로 바꾸고 생성물을 따라 바꾼다 (`set` · `steps` · `checks`)
+- 프로젝트 문서와 역할·절차 메모를 CLI 로 쓰고 생성물을 따라 바꾼다 (`write-doc`). Doctor 조치를 CLI 로 돈다 (`fix`)
 - 설정된 오케스트레이터로 절차를 시작한다 (`run`). 절차는 `/prework` · `/work` · `/retro` 셋이 기본이고 프로젝트가 더할 수 있다. 이슈별 worktree 에서 절차를 돌려 같은 리포의 여러 이슈를 동시에 진행할 수 있다
 - 웹 UI 로 설정·절차·에이전트·프로젝트 문서·실행 지표·점검 결과를 보고 고친다 (`start-server` · `stop-server` · `server-status`)
 - 원격 이슈 추적기에 설정된 이슈 라벨을 준비한다 (`forge-setup`). 사람이 부를 때만 원격에 쓴다
