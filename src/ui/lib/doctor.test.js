@@ -148,3 +148,23 @@ test("explain managed file lines", () => {
   assert.equal(copy.cmd, "harness install");
   assert.equal(explain(m("no manifest of managed files", "run `harness render`", "warn"), b).run.kind, "render");
 });
+
+test("explain unsafe manifest lines", () => {
+  const b = "/demo";
+  const u = (section, what, detail = "") => ({ section, state: "bad", what, detail });
+  const marker = explain(u("managed files", "unsafe manifest line", ".harness/managed:3 (a merge conflict marker)"), b);
+  assert.notEqual(marker.title, "unsafe manifest line");
+  assert.match(marker.body, /\.harness\/managed/);
+  assert.match(marker.body, /harness install/);
+  assert.equal(marker.run, undefined);
+  assert.equal(marker.cmd, undefined);
+  const dots = explain(u("generated files", "unsafe manifest line", ".harness/generated:12 (has a .. component)"), b);
+  assert.match(dots.body, /\.harness\/generated/);
+  assert.doesNotMatch(dots.body, /harness install/);
+  assert.equal(dots.run, undefined);
+  assert.equal(dots.cmd, undefined);
+  const more = explain(u("managed files", "2 more unsafe manifest line(s)"), b);
+  assert.match(more.title, /2개/);
+  assert.equal(more.run, undefined);
+  assert.equal(more.cmd, undefined);
+});

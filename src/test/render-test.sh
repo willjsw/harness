@@ -3072,24 +3072,6 @@ rm -f "$u/docs/spec/README.md"; cp "$u/.harness/managed" "$work/u87-mf"
 has "$work/u87-9.err" "docs/decisions/README.md" "the render refusal does not name the user file"
 [ -e "$u/docs/spec/README.md" ] && bad "the refused render laid an owned file" || ok
 cmp -s "$u/.harness/managed" "$work/u87-mf" && ok || bad "the refused render rewrote the manifest"
-# .harness 가 심볼릭 링크면 사본을 갈아 끼우지 않는다 — 링크 너머의 파일을 지우게 된다
-ln87="$work/link87"; out87="$work/link87-outside"; rm -rf "$ln87" "$out87"; mkdir -p "$ln87" "$out87/keep-dir"
-( cd "$ln87" && git init -q . )
-printf 'outside\n' > "$out87/keep.txt"; printf 'nested\n' > "$out87/keep-dir/nested.txt"
-ln -s "$out87" "$ln87/.harness"
-"$root/bin/harness" install --target "$ln87" > "$work/u87-10.out" 2> "$work/u87-10.err"; check "install through a symlinked .harness" "$?" "2"
-has "$work/u87-10.err" "  --> .harness (a symbolic link)" "the refusal does not say .harness is a symbolic link"
-check "the link target's file is kept" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
-check "the link target's nested file is kept" "$(cat "$out87/keep-dir/nested.txt" 2>/dev/null)" "nested"
-[ -e "$out87/bin" ] && bad "the refused install wrote into the link target" || ok
-[ -e "$HARNESS_HOME/link87/project.json" ] && bad "the refused install registered the project" || ok
-"$root/bin/harness" install --target "$ln87" --adopt > "$work/u87-11.out" 2> "$work/u87-11.err"; check "install --adopt through a symlinked .harness" "$?" "2"
-check "the link target survives --adopt" "$(cat "$out87/keep.txt" 2>/dev/null)" "outside"
-# 설치된 리포의 .harness 를 링크로 바꿔도 같다
-cp -R "$u/.harness" "$out87/pinned"; rm -rf "$u/.harness.bak"; mv "$u/.harness" "$u/.harness.bak"; ln -s "$out87/pinned" "$u/.harness"
-"$root/bin/harness" install --target "$u" > "$work/u87-12.out" 2> "$work/u87-12.err"; check "reinstall through a symlinked .harness" "$?" "2"
-[ -f "$out87/pinned/bin/harness" ] && [ -f "$out87/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
-rm "$u/.harness"; mv "$u/.harness.bak" "$u/.harness"
 # 쓸 경로의 부모가 파일이면 무엇이든 쓰기 전에 멈춘다 — 소유 파일의 부모도 본다
 pf87="$work/parent87"; rm -rf "$pf87"; mkdir -p "$pf87"; ( cd "$pf87" && git init -q . )
 printf 'not a dir\n' > "$pf87/script"
@@ -3106,73 +3088,6 @@ rm "$u/script/review-mr.sh"; mkdir "$u/script/review-mr.sh"; cp "$u/.harness/man
 has "$work/u87-14.err" "  --> script/review-mr.sh (a directory)" "the refusal does not say the managed path is a directory"
 cmp -s "$u/.harness/managed" "$work/u87-mf2" && ok || bad "the refused render rewrote the manifest"
 rmdir "$u/script/review-mr.sh"
-# 링크를 따라 쓰지 않는다 — 매니페스트에 있는 관리 파일이 바깥 파일 링크로 바뀌어도, 부모가 바깥 디렉터리 링크여도
-sl87="$work/symlink87"; so87="$work/symlink87-outside"; rm -rf "$sl87" "$so87"; mkdir -p "$sl87" "$so87/dir"
-( cd "$sl87" && git init -q . )
-"$root/bin/harness" install --target "$sl87" >/dev/null 2>&1 || bad "could not install the symlink repo"
-printf 'outside file\n' > "$so87/file.sh"
-rm "$sl87/script/review-mr.sh"; ln -s "$so87/file.sh" "$sl87/script/review-mr.sh"; cp "$sl87/.harness/managed" "$work/u87-mf3"
-"$root/bin/harness" render --target "$sl87" > "$work/u87-15.out" 2> "$work/u87-15.err"; check "render where a managed file became a link outside" "$?" "2"
-has "$work/u87-15.err" "  --> script/review-mr.sh (a symbolic link)" "the refusal does not say the managed path is a symbolic link"
-check "the file behind the link is untouched" "$(cat "$so87/file.sh")" "outside file"
-cmp -s "$sl87/.harness/managed" "$work/u87-mf3" && ok || bad "the refused render rewrote the manifest"
-"$root/bin/harness" install --target "$sl87" --adopt > "$work/u87-16.out" 2> "$work/u87-16.err"; check "reinstall --adopt over the link" "$?" "2"
-check "the file behind the link survives the reinstall" "$(cat "$so87/file.sh")" "outside file"
-rm "$sl87/script/review-mr.sh"; "$root/bin/harness" render --target "$sl87" >/dev/null 2>&1 || bad "could not restore the symlink repo"
-printf 'outside nested\n' > "$so87/dir/keep.txt"
-mv "$sl87/script" "$sl87/script.real"; ln -s "$so87/dir" "$sl87/script"
-"$root/bin/harness" render --target "$sl87" > "$work/u87-17.out" 2> "$work/u87-17.err"; check "render where script is a link to a directory outside" "$?" "2"
-has "$work/u87-17.err" "  --> script (a symbolic link)" "the refusal does not say the parent is a symbolic link"
-check "the directory behind the link keeps its file" "$(cat "$so87/dir/keep.txt")" "outside nested"
-check "nothing was written behind the link" "$(ls "$so87/dir" | tr '\n' ' ')" "keep.txt "
-# 정리·제거·넘겨받기·설정 씨앗·사본 걷기도 링크를 따라가지 않는다 — 무엇이든 쓰거나 지우기 전에 멈춘다
-lk87="$work/linkall87"; lo87="$work/linkall87-outside"; rm -rf "$lk87" "$lo87"; mkdir -p "$lk87" "$lo87"
-( cd "$lk87" && git init -q . )
-"$root/bin/harness" install --target "$lk87" >/dev/null 2>&1 || bad "could not install the link repo"
-[ -f "$lk87/docs/adr/README.md" ] && ok || bad "the decision-record README was not installed"
-mv "$lk87/docs/adr" "$lo87/adr"; ln -s "$lo87/adr" "$lk87/docs/adr"
-cp "$lk87/harness.toml" "$work/u87-lk.toml"; cp "$lk87/.harness/managed" "$work/u87-lk.mf"; cp "$lk87/.harness/generated" "$work/u87-lk.gen"
-# 정리가 지울 옛 경로의 부모가 링크
-"$root/bin/harness" set --target "$lk87" adr.dir docs/decisions > "$work/u87-18.out" 2> "$work/u87-18.err"; check "set whose prune would go through a link" "$?" "2"
-has "$work/u87-18.err" "  --> docs/adr (a symbolic link)" "the refusal does not name the linked directory prune would remove from"
-has "$work/u87-18.err" "reverted — the config is unchanged" "set did not revert"
-[ -f "$lo87/adr/README.md" ] && ok || bad "prune removed the README behind the link"
-cmp -s "$lk87/harness.toml" "$work/u87-lk.toml" && ok || bad "set left the config changed"
-cmp -s "$lk87/.harness/managed" "$work/u87-lk.mf" && cmp -s "$lk87/.harness/generated" "$work/u87-lk.gen" && ok || bad "the refused set rewrote a manifest"
-[ -e "$lk87/docs/decisions" ] && bad "the refused set wrote the new decision-record directory" || ok
-# 제거가 지울 경로의 부모가 링크
-"$root/bin/harness" uninstall --target "$lk87" > "$work/u87-19.out" 2> "$work/u87-19.err"; check "uninstall through a link" "$?" "2"
-has "$work/u87-19.err" "  --> docs/adr" "the uninstall refusal does not name the link"
-has "$work/u87-19.err" "nothing was removed" "the uninstall refusal does not say nothing was removed"
-[ -f "$lo87/adr/README.md" ] && ok || bad "uninstall removed the README behind the link"
-[ -f "$lk87/CLAUDE.md" ] && [ -d "$lk87/.harness" ] && ok || bad "the refused uninstall removed harness files"
-rm "$lk87/docs/adr"; mv "$lo87/adr" "$lk87/docs/adr"
-# --purge 가 지울 소유 파일의 부모가 링크
-mv "$lk87/.ai/project" "$lo87/project"; ln -s "$lo87/project" "$lk87/.ai/project"
-"$root/bin/harness" uninstall --target "$lk87" --purge --yes > "$work/u87-20.out" 2> "$work/u87-20.err"; check "uninstall --purge through a linked owned directory" "$?" "2"
-[ -f "$lo87/project/scope.md" ] && ok || bad "--purge removed an owned file behind the link"
-rm "$lk87/.ai/project"; mv "$lo87/project" "$lk87/.ai/project"
-# 넘겨받을 사용자 파일이 링크면 옮기지 않는다
-ad87="$work/adoptlink87"; rm -rf "$ad87"; mkdir -p "$ad87"; ( cd "$ad87" && git init -q . )
-printf 'my notes outside\n' > "$lo87/notes.md"; ln -s "$lo87/notes.md" "$ad87/CLAUDE.md"
-"$root/bin/harness" install --target "$ad87" --adopt > "$work/u87-21.out" 2> "$work/u87-21.err"; check "install --adopt over a linked user file" "$?" "2"
-has "$work/u87-21.err" "  --> CLAUDE.md (a symbolic link)" "the refusal does not say the user file is a link"
-check "the file behind the link is untouched" "$(cat "$lo87/notes.md")" "my notes outside"
-[ -L "$ad87/CLAUDE.md" ] && [ ! -e "$ad87/CLAUDE.md.orig" ] && ok || bad "the refused adopt moved the link"
-# 대상이 없는 harness.toml 링크를 따라 기본 설정을 쓰지 않는다
-sd87="$work/seedlink87"; rm -rf "$sd87"; mkdir -p "$sd87"; ( cd "$sd87" && git init -q . )
-ln -s "$lo87/seeded.toml" "$sd87/harness.toml"
-"$root/bin/harness" install --target "$sd87" > "$work/u87-22.out" 2> "$work/u87-22.err"; check "install over a dangling harness.toml link" "$?" "2"
-has "$work/u87-22.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
-[ -e "$lo87/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
-# 소스 리포가 옛 사본을 걷을 때 .harness/ 아래 링크는 링크만 걷는다
-src87="$work/source87"; rm -rf "$src87"; mkdir -p "$src87/src/bin" "$lo87/oldbin"
-cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src87/src/bin/"; cp -R "$root/templates" "$src87/src/templates"
-( cd "$src87" && git init -q . )
-printf 'outside bin\n' > "$lo87/oldbin/keep"; mkdir -p "$src87/.harness"; ln -s "$lo87/oldbin" "$src87/.harness/bin"
-"$src87/src/bin/harness" install --target "$src87" > "$work/u87-23.out" 2> "$work/u87-23.err"; check "install on a source tree with a linked .harness/bin" "$?" "0"
-check "the directory behind the old copy's link keeps its file" "$(cat "$lo87/oldbin/keep" 2>/dev/null)" "outside bin"
-[ -e "$src87/.harness/bin" ] && bad "the old copy's link was not cleared" || ok
 cat "$work"/u87-*.out "$work"/u87-*.err > "$work/u87-all.log"; no_hangul "$work/u87-all.log" "user file refusal output"
 
 echo "UT-88 the manifest of managed files and the pinned copy: sha256 lines, the old path-list form, and comparing against it"
@@ -3809,6 +3724,343 @@ hasnt "$t/script/githooks/pre-push" "run-lint-test.sh" "pre-push still verifies 
 "$root/bin/harness" check --target "$t" >/dev/null 2>&1; check "check after toggling hooks" "$?" "0"
 "$root/bin/harness" set --target "$t" verify.test_on later >/dev/null 2>&1; check "refuse an unknown stage" "$?" "2"
 "$root/bin/harness" checks --target "$t" '[{"name":"a","run":"true","paths":["/abs"]}]' >/dev/null 2>&1; check "refuse an absolute path" "$?" "2"
+
+echo "UT-104 the harness changes the target repo only through safe paths: no symbolic link under the harness root, no path outside it"
+# 경로를 지점마다 조립하면 링크를 따라 리포 밖의 파일을 바꾸는 지점이 남는다. 링크 대상과 피해 파일은 하네스 루트 바깥에 둔다.
+out101="$work/outside101"; rm -rf "$out101" "$work"/p101-*; mkdir -p "$out101"
+same101() { # same101 <파일> <사본> <설명> — 바이트 단위로 같은지 본다
+  cmp -s "$1" "$2" && ok || bad "$3"
+}
+# 경로 규칙과 공용 함수 — 모듈로 읽어 부른다
+gp="$work/guard101"; rm -rf "$gp"; mkdir -p "$gp" "$out101/gp-dir"
+printf 'outside target\n' > "$out101/gp-dir/f.txt"; cp "$out101/gp-dir/f.txt" "$work/p101-gp.copy"
+python3 - "$root/bin/harness" "$gp" "$out101" > "$work/p101-unit.out" 2>&1 <<'PY'
+import contextlib, importlib.machinery, importlib.util, io, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+spec = importlib.util.spec_from_loader("harness_cli", loader)
+h = importlib.util.module_from_spec(spec); loader.exec_module(h)
+root, outside = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+
+def guarded(rel, verb):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        try:
+            h.guarded_path(root, rel, verb)
+            code = 0
+        except SystemExit as e:
+            code = e.code
+    return code, err.getvalue()
+
+print("form", "|".join(str(h.path_form_fault(p)) for p in ("/etc/x", "a/../b", "a//b", "./a", "a/", "a b")))
+print("plain", "|".join(str(h.path_fault(root, p)) for p in ("script/review-mr.sh", ".harness/managed", "docs/workflow/changing.md")))
+print("absent", h.path_fault(root, "no/such/dir/file.md"))
+os.symlink(str(outside / "nowhere"), str(root / "dangling"))
+print("dangling", h.path_fault(root, "dangling"))
+(root / "sub").mkdir()
+with contextlib.redirect_stderr(io.StringIO()):
+    print("precheck", h.refuse_unsafe_paths(root, {"sub/f.txt": "write"}, "render"))
+(root / "sub").rmdir(); os.symlink(str(outside / "gp-dir"), str(root / "sub"))
+code, err = guarded("sub/f.txt", "write")
+print("recheck", code, "refusing to write through a symbolic link" in err, "  --> sub\n" in err)
+code, err = guarded("../victim.md", "remove")
+print("form-guard", code, "(has a .. component)" in err, "victim.md" in err)
+PY
+check "form reasons in order" "$(sed -n 's/^form //p' "$work/p101-unit.out")" \
+  "an absolute path|has a .. component|not a path|not a path|not a path|not a path"
+check "plain paths pass" "$(sed -n 's/^plain //p' "$work/p101-unit.out")" "None|None|None"
+check "a component that does not exist yet passes" "$(sed -n 's/^absent //p' "$work/p101-unit.out")" "None"
+check "a dangling link is a link" "$(sed -n 's/^dangling //p' "$work/p101-unit.out")" "('through a symbolic link', 'dangling')"
+check "the pre-check passes before the link appears" "$(sed -n 's/^precheck //p' "$work/p101-unit.out")" "False"
+check "the guard looks again right before the call" "$(sed -n 's/^recheck //p' "$work/p101-unit.out")" "2 True True"
+check "a malformed path is refused without printing it" "$(sed -n 's/^form-guard //p' "$work/p101-unit.out")" "2 True False"
+same101 "$out101/gp-dir/f.txt" "$work/p101-gp.copy" "the guard changed the file behind the link"
+[ "$(ls "$out101/gp-dir")" = "f.txt" ] && ok || bad "the guard wrote behind the link"
+
+# 매니페스트에 있는 관리 파일이 바깥 파일 링크
+m="$work/mlink101"; rm -rf "$m"; mkdir -p "$m"; ( cd "$m" && git init -q . )
+"$root/bin/harness" install --target "$m" >/dev/null 2>&1 || bad "could not install the link repo"
+printf 'outside file\n' > "$out101/file.sh"; cp "$out101/file.sh" "$work/p101-file.copy"
+rm "$m/script/review-mr.sh"; ln -s "$out101/file.sh" "$m/script/review-mr.sh"
+cp "$m/.harness/managed" "$work/p101-m.mf"; cp "$m/.harness/generated" "$work/p101-m.gen"
+"$root/bin/harness" render --target "$m" > "$work/p101-1.out" 2> "$work/p101-1.err"; check "render over a managed file linked outside" "$?" "2"
+has "$work/p101-1.err" "go through a symbolic link" "the refusal does not say the path goes through a link"
+has "$work/p101-1.err" "  --> script/review-mr.sh" "the refusal does not name the linked managed file"
+has "$work/p101-1.err" "nothing was changed" "the refusal does not say nothing was changed"
+has "$work/p101-1.err" "        harness render" "the refusal does not name the command to run again"
+hasnt "$work/p101-1.err" "not safe paths" "a linked manifest path was reported as a bad manifest line"
+same101 "$out101/file.sh" "$work/p101-file.copy" "render changed the file behind the link"
+same101 "$m/.harness/managed" "$work/p101-m.mf" "the refused render rewrote the managed manifest"
+same101 "$m/.harness/generated" "$work/p101-m.gen" "the refused render rewrote the generated manifest"
+"$root/bin/harness" install --target "$m" --adopt > "$work/p101-2.out" 2> "$work/p101-2.err"; check "install --adopt over the link" "$?" "2"
+same101 "$out101/file.sh" "$work/p101-file.copy" "install --adopt changed the file behind the link"
+rm "$m/script/review-mr.sh"; "$root/bin/harness" render --target "$m" >/dev/null 2>&1 || bad "could not restore the link repo"
+# 관리 · 생성 파일의 부모 디렉터리가 바깥 디렉터리 링크 — 링크 하나만 낸다
+mkdir -p "$out101/dir"; printf 'outside nested\n' > "$out101/dir/keep.txt"
+mv "$m/script" "$m/script.real"; ln -s "$out101/dir" "$m/script"
+"$root/bin/harness" render --target "$m" > "$work/p101-3.out" 2> "$work/p101-3.err"; check "render where script is a link to a directory outside" "$?" "2"
+check "one arrow line, the link itself" "$(grep '^  --> ' "$work/p101-3.err" | tr '\n' ' ')" "  --> script "
+check "the directory behind the link keeps its file" "$(cat "$out101/dir/keep.txt")" "outside nested"
+check "nothing was written behind the link" "$(ls "$out101/dir" | tr '\n' ' ')" "keep.txt "
+rm "$m/script"; mv "$m/script.real" "$m/script"
+# 링크된 .ai/project — 내용이 같아도 멈추고, 실제 디렉터리로 바꾸면 돈다
+cp -R "$m/.ai/project" "$out101/project"; rm -rf "$m/.ai/project"; ln -s "$out101/project" "$m/.ai/project"
+"$root/bin/harness" render --target "$m" > "$work/p101-4.out" 2> "$work/p101-4.err"; check "render with a linked .ai/project" "$?" "2"
+for s in "  --> .ai/project" "nothing was changed" "help: the harness does not write through symbolic links under the harness root"; do
+  has "$work/p101-4.err" "$s" "the linked .ai/project refusal does not say: $s"
+done
+rm "$m/.ai/project"; cp -R "$out101/project" "$m/.ai/project"
+"$root/bin/harness" render --target "$m" > "$work/p101-5.out" 2> "$work/p101-5.err"; check "render once .ai/project is a directory again" "$?" "0"
+# 정리가 지울 옛 경로의 부모가 링크 — 설정을 바꾸는 명령은 되돌린다
+mv "$m/docs/adr" "$out101/adr"; ln -s "$out101/adr" "$m/docs/adr"; cp "$out101/adr/README.md" "$work/p101-adr.copy"
+cp "$m/harness.toml" "$work/p101-m.toml"; cp "$m/.harness/managed" "$work/p101-m.mf"; cp "$m/.harness/generated" "$work/p101-m.gen"
+"$root/bin/harness" set --target "$m" adr.dir docs/decisions > "$work/p101-6.out" 2> "$work/p101-6.err"; check "set whose prune would go through a link" "$?" "2"
+has "$work/p101-6.err" "  --> docs/adr" "the refusal does not name the linked directory prune would remove from"
+has "$work/p101-6.err" "reverted — the config is unchanged" "set did not revert"
+same101 "$out101/adr/README.md" "$work/p101-adr.copy" "prune changed the README behind the link"
+same101 "$m/harness.toml" "$work/p101-m.toml" "set left the config changed"
+same101 "$m/.harness/managed" "$work/p101-m.mf" "the refused set rewrote the managed manifest"
+same101 "$m/.harness/generated" "$work/p101-m.gen" "the refused set rewrote the generated manifest"
+[ -e "$m/docs/decisions" ] && bad "the refused set wrote the new decision-record directory" || ok
+rm "$m/docs/adr"; mv "$out101/adr" "$m/docs/adr"
+# 소유 원형의 부모가 링크인 새 리포
+n="$work/ownlink101"; rm -rf "$n"; mkdir -p "$n/script" "$out101/proj"; ( cd "$n" && git init -q . )
+ln -s "$out101/proj" "$n/script/project"
+"$root/bin/harness" install --target "$n" > "$work/p101-7.out" 2> "$work/p101-7.err"; check "install where script/project links outside" "$?" "2"
+has "$work/p101-7.err" "  --> script/project" "the refusal does not name script/project"
+[ -e "$out101/proj/README.md" ] && bad "install laid the owned README behind the link" || ok
+# 넘겨받을 사용자 파일이 바깥 파일 링크
+a="$work/adoptlink101"; rm -rf "$a"; mkdir -p "$a"; ( cd "$a" && git init -q . )
+printf 'my notes outside\n' > "$out101/notes.md"; cp "$out101/notes.md" "$work/p101-notes.copy"
+ln -s "$out101/notes.md" "$a/CLAUDE.md"
+"$root/bin/harness" install --target "$a" --adopt > "$work/p101-8.out" 2> "$work/p101-8.err"; check "install --adopt over a linked user file" "$?" "2"
+has "$work/p101-8.err" "  --> CLAUDE.md" "the refusal does not name the linked user file"
+same101 "$out101/notes.md" "$work/p101-notes.copy" "the adopt changed the file behind the link"
+[ -L "$a/CLAUDE.md" ] && [ ! -e "$a/CLAUDE.md.orig" ] && [ ! -L "$a/CLAUDE.md.orig" ] && ok || bad "the refused adopt moved the link"
+# 하네스 루트 자신과 그 위의 링크는 보지 않는다
+ln -sfn "$m" "$work/rootlink101"
+"$root/bin/harness" render --target "$work/rootlink101" > "$work/p101-9.out" 2> "$work/p101-9.err"; check "render through a link to the harness root" "$?" "0"
+[ -e "$n/.harness" ] && bad "the install refused over script/project still wrote .harness/" || ok
+
+# install 의 사본 교체 — .harness 가 바깥 디렉터리 링크면 새 리포에서도 설치된 리포에서도 멈춘다
+hl="$work/hlink101"; rm -rf "$hl"; mkdir -p "$hl" "$out101/pin/keep-dir"; ( cd "$hl" && git init -q . )
+printf 'outside\n' > "$out101/pin/keep.txt"; printf 'nested\n' > "$out101/pin/keep-dir/nested.txt"
+ln -s "$out101/pin" "$hl/.harness"
+"$root/bin/harness" install --target "$hl" > "$work/p101-10.out" 2> "$work/p101-10.err"; check "install on a new repo with a linked .harness" "$?" "2"
+has "$work/p101-10.err" "  --> .harness" "the refusal does not name the linked .harness"
+check "the link target's file is kept" "$(cat "$out101/pin/keep.txt")" "outside"
+check "the link target's nested file is kept" "$(cat "$out101/pin/keep-dir/nested.txt")" "nested"
+check "nothing was written behind the link" "$(ls "$out101/pin" | tr '\n' ' ')" "keep-dir keep.txt "
+[ -e "$HARNESS_HOME/hlink101/project.json" ] && bad "the refused install registered the project" || ok
+cp "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy"
+cp -R "$m/.harness" "$out101/pinned"; mv "$m/.harness" "$m/.harness.real"; ln -s "$out101/pinned" "$m/.harness"
+"$root/bin/harness" install --target "$m" > "$work/p101-11.out" 2> "$work/p101-11.err"; check "reinstall with a linked .harness" "$?" "2"
+[ -f "$out101/pinned/bin/harness" ] && [ -f "$out101/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
+same101 "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy" "the refused reinstall changed the registry"
+rm "$m/.harness"; mv "$m/.harness.real" "$m/.harness"
+# 소스 리포의 옛 사본 정리 — .harness/bin 이 바깥 디렉터리 링크면 멈춘다
+s101="$work/source101"; rm -rf "$s101"; mkdir -p "$s101/src/bin" "$out101/oldbin"
+cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s101/src/bin/"; cp -R "$root/templates" "$s101/src/templates"
+( cd "$s101" && git init -q . )
+printf 'outside bin\n' > "$out101/oldbin/keep"; mkdir -p "$s101/.harness"; ln -s "$out101/oldbin" "$s101/.harness/bin"
+"$s101/src/bin/harness" install --target "$s101" > "$work/p101-12.out" 2> "$work/p101-12.err"; check "install on a source tree with a linked .harness/bin" "$?" "2"
+has "$work/p101-12.err" "  --> .harness/bin" "the refusal does not name the linked old copy"
+check "the directory behind the old copy's link is kept" "$(ls "$out101/oldbin" | tr '\n' ' ')" "keep "
+[ -L "$s101/.harness/bin" ] && ok || bad "the refused install removed the link"
+# 설정 씨앗 — 대상 없는 harness.toml 링크를 따라 쓰지 않는다
+sd="$work/seed101"; rm -rf "$sd"; mkdir -p "$sd"; ( cd "$sd" && git init -q . )
+ln -s "$out101/seeded.toml" "$sd/harness.toml"
+"$root/bin/harness" install --target "$sd" > "$work/p101-13.out" 2> "$work/p101-13.err"; check "install over a dangling harness.toml link" "$?" "2"
+has "$work/p101-13.err" "refusing to write through a symbolic link" "the refusal does not say it would write through a link"
+has "$work/p101-13.err" "  --> harness.toml" "the refusal does not name harness.toml"
+[ -e "$out101/seeded.toml" ] && bad "install wrote the default config behind the link" || ok
+# uninstall — 지울 경로의 부모가 링크면 아무것도 지우지 않는다
+mv "$m/docs/adr" "$out101/adr"; ln -s "$out101/adr" "$m/docs/adr"
+cp "$m/.harness/managed" "$work/p101-m.mf"; cp "$m/.harness/generated" "$work/p101-m.gen"
+"$root/bin/harness" uninstall --target "$m" > "$work/p101-14.out" 2> "$work/p101-14.err"; check "uninstall through a link" "$?" "2"
+has "$work/p101-14.err" "  --> docs/adr" "the uninstall refusal does not name the link"
+has "$work/p101-14.err" "nothing was changed" "the uninstall refusal does not say nothing was changed"
+has "$work/p101-14.err" "        harness uninstall" "the uninstall refusal does not name the command"
+same101 "$out101/adr/README.md" "$work/p101-adr.copy" "uninstall changed the README behind the link"
+same101 "$m/.harness/managed" "$work/p101-m.mf" "the refused uninstall changed the managed manifest"
+same101 "$m/.harness/generated" "$work/p101-m.gen" "the refused uninstall changed the generated manifest"
+missing101=$(cd "$m" && { cat .harness/generated; sed -E 's/^[0-9a-f]{64}  //' .harness/managed; } | while read -r f; do [ -e "$f" ] || echo "$f"; done)
+check "every manifest path is still there" "$missing101" ""
+rm "$m/docs/adr"; mv "$out101/adr" "$m/docs/adr"
+# uninstall --purge — 소유 파일의 부모가 링크면 확인 목록보다 먼저 멈춘다
+cp -R "$m/.ai/project" "$out101/purge-project"; rm -rf "$m/.ai/project"; ln -s "$out101/purge-project" "$m/.ai/project"
+"$root/bin/harness" uninstall --target "$m" --purge --yes > "$work/p101-15.out" 2> "$work/p101-15.err"; check "uninstall --purge --yes through a linked owned directory" "$?" "2"
+[ -f "$out101/purge-project/scope.md" ] && ok || bad "--purge removed an owned file behind the link"
+"$root/bin/harness" uninstall --target "$m" --purge < /dev/null > "$work/p101-16.out" 2> "$work/p101-16.err"; check "uninstall --purge without --yes through a link" "$?" "2"
+has "$work/p101-16.err" "  --> .ai/project" "the purge refusal does not name the link"
+hasnt "$work/p101-16.out" "purge target:" "the purge listed what it would remove before refusing the link"
+[ -f "$out101/purge-project/scope.md" ] && [ -d "$m/.harness" ] && ok || bad "the refused purge removed something"
+rm "$m/.ai/project"; cp -R "$out101/purge-project" "$m/.ai/project"
+# 링크가 없으면 uninstall 이 하네스 것을 지운다
+cp "$m/.harness/generated" "$work/p101-final.gen"
+"$root/bin/harness" uninstall --target "$m" > "$work/p101-17.out" 2> "$work/p101-17.err"; check "uninstall without links" "$?" "0"
+left101=$(cd "$m" && while read -r f; do [ -e "$f" ] && echo "$f"; done < "$work/p101-final.gen")
+check "the generated files are gone" "$left101" ""
+[ -e "$m/.harness" ] && bad "uninstall left .harness/" || ok
+grep -c 'refuse_link\|linked_component' "$root/bin/harness" > "$work/p101-names" || true
+check "no per-point link check is left in the CLI" "$(cat "$work/p101-names")" "0"
+
+# 매니페스트는 신뢰하지 않는 입력이다 — 어긋난 줄이 하나라도 있으면 바꾸는 명령은 아무것도 바꾸지 않는다
+mf="$work/mf101/manifest101"; rm -rf "$work/mf101"; mkdir -p "$mf"; ( cd "$mf" && git init -q . )
+"$root/bin/harness" install --target "$mf" >/dev/null 2>&1 || bad "could not install the manifest repo"
+printf 'victim\n' > "$work/mf101/victim.md"; cp "$work/mf101/victim.md" "$work/p101-victim.copy"
+printf 'outside file\n' > "$out101/abs.md"; cp "$out101/abs.md" "$work/p101-abs.copy"
+cp "$mf/.harness/generated" "$work/p101-mf.gen"; cp "$mf/.harness/managed" "$work/p101-mf.mf"; cp "$mf/harness.toml" "$work/p101-mf.toml"
+restore101() { cp "$work/p101-mf.gen" "$mf/.harness/generated"; cp "$work/p101-mf.mf" "$mf/.harness/managed"; }
+# 상위 경로 줄 — 리포 밖 파일을 지우지 않고, 고친 관리 · 생성 파일도 되돌리지 않는다
+printf '\n# edited\n' >> "$mf/script/review-mr.sh"; printf '\nedited\n' >> "$mf/AGENTS.md"
+cp "$mf/script/review-mr.sh" "$work/p101-mf.review"; cp "$mf/AGENTS.md" "$work/p101-mf.agents"
+printf '../victim.md\n' >> "$mf/.harness/generated"; n101=$(wc -l < "$mf/.harness/generated" | tr -d ' ')
+cp "$mf/.harness/generated" "$work/p101-mf.gen-bad"
+"$root/bin/harness" render --target "$mf" > "$work/p101-20.out" 2> "$work/p101-20.err"; check "render with a .. manifest line" "$?" "2"
+has "$work/p101-20.err" "  --> .harness/generated:$n101 (has a .. component)" "the refusal does not name the manifest line and its reason"
+has "$work/p101-20.err" "the harness manifest has 1 line(s) that are not safe paths under the harness root" "the refusal does not count the bad lines"
+has "$work/p101-20.err" "nothing was changed" "the refusal does not say nothing was changed"
+same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "render changed the file outside the harness root"
+same101 "$mf/.harness/generated" "$work/p101-mf.gen-bad" "the refused render rewrote the generated manifest"
+same101 "$mf/.harness/managed" "$work/p101-mf.mf" "the refused render rewrote the managed manifest"
+same101 "$mf/script/review-mr.sh" "$work/p101-mf.review" "the refused render put a managed file back"
+same101 "$mf/AGENTS.md" "$work/p101-mf.agents" "the refused render regenerated a file"
+# 설정을 바꾸는 명령은 설정을 쓰기 전에 멈춘다
+"$root/bin/harness" set --target "$mf" branches.base trunk > "$work/p101-21.out" 2> "$work/p101-21.err"; check "set with a bad manifest line" "$?" "2"
+"$root/bin/harness" steps --target "$mf" ship '{"title":"ship it","steps":[{"id":"a","type":"gate","title":"t"}]}' \
+  > "$work/p101-22.out" 2> "$work/p101-22.err"; check "steps with a bad manifest line" "$?" "2"
+"$root/bin/harness" checks --target "$mf" '[{"name":"lint","run":"true"}]' > "$work/p101-23.out" 2> "$work/p101-23.err"; check "checks with a bad manifest line" "$?" "2"
+for i in 21 22 23; do has "$work/p101-$i.err" "not safe paths under the harness root" "command $i did not name the bad manifest"; done
+same101 "$mf/harness.toml" "$work/p101-mf.toml" "a config command changed the config over a bad manifest"
+same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "a config command changed the file outside the harness root"
+restore101
+# 절대 경로 줄 — render · install · uninstall 모두 멈추고, 줄의 내용을 출력하지 않는다
+printf '%s  %s\n' "$(printf x | shasum -a 256 | cut -c1-64)" "$out101/abs.md" >> "$mf/.harness/managed"
+for c in render install uninstall; do
+  "$root/bin/harness" $c --target "$mf" > "$work/p101-24-$c.out" 2> "$work/p101-24-$c.err"; check "$c with an absolute manifest line" "$?" "2"
+  has "$work/p101-24-$c.err" "(an absolute path)" "$c does not give the absolute path reason"
+  cat "$work/p101-24-$c.out" "$work/p101-24-$c.err" | grep -qF "$out101/abs.md" && bad "$c printed the bad line's path" || ok
+done
+same101 "$out101/abs.md" "$work/p101-abs.copy" "a command changed the file the bad line names"
+[ -f "$mf/.harness/bin/harness" ] && [ -f "$mf/CLAUDE.md" ] && [ -f "$mf/script/review-mr.sh" ] && ok || bad "the refused uninstall removed harness files"
+restore101
+# 형식이 어긋난 줄
+for l in 'script/my file.sh' 'script//x.sh' './CLAUDE.md' 'script/'; do
+  printf '%s\n' "$l" >> "$mf/.harness/generated"
+  "$root/bin/harness" render --target "$mf" > "$work/p101-25.out" 2> "$work/p101-25.err"; check "render with the manifest line '$l'" "$?" "2"
+  has "$work/p101-25.err" "(not a path)" "the line '$l' is not reported as not a path"
+  cat "$work/p101-25.out" "$work/p101-25.err" >> "$work/p101-25-all.log"
+  restore101
+done
+# 병합 충돌 표지 — 표지 줄을 지우면 install 이 다시 쓴다
+printf '<<<<<<< HEAD\n=======\n>>>>>>> other\n' >> "$mf/.harness/managed"
+"$root/bin/harness" render --target "$mf" > "$work/p101-26.out" 2> "$work/p101-26.err"; check "render with conflict markers" "$?" "2"
+check "every marker line is reported" "$(grep -c '(a merge conflict marker)$' "$work/p101-26.err")" "3"
+has "$work/p101-26.err" "a merge left conflict markers in it" "the help does not explain the conflict markers"
+has "$work/p101-26.err" "        harness install" "the help does not name harness install"
+grep -vE '^(<<<<<<< |=======$|>>>>>>> )' "$mf/.harness/managed" > "$work/p101-unmarked"; cp "$work/p101-unmarked" "$mf/.harness/managed"
+same101 "$mf/.harness/managed" "$work/p101-mf.mf" "the marker lines were not removed"
+"$root/bin/harness" install --target "$mf" > "$work/p101-27.out" 2> "$work/p101-27.err"; check "install once the marker lines are gone" "$?" "0"
+# CR 줄 끝은 받는다
+for f in generated managed; do python3 -c 'import sys; p = sys.argv[1]; d = open(p, "rb").read(); open(p, "wb").write(d.replace(b"\n", b"\r\n"))' "$mf/.harness/$f"; done
+"$root/bin/harness" render --target "$mf" > "$work/p101-28.out" 2> "$work/p101-28.err"; check "render over CRLF manifests" "$?" "0"
+# uninstall 은 매니페스트가 없다고 판정하기 전에 본다
+rm "$mf/.harness/generated"; printf '../victim.md\n' > "$mf/.harness/managed"
+"$root/bin/harness" uninstall --target "$mf" > "$work/p101-29.out" 2> "$work/p101-29.err"; check "uninstall over a manifest of bad lines only" "$?" "2"
+has "$work/p101-29.err" "not safe paths under the harness root" "uninstall did not name the bad manifest"
+hasnt "$work/p101-29.err" "no harness manifest" "uninstall took a bad manifest for none"
+same101 "$work/mf101/victim.md" "$work/p101-victim.copy" "uninstall changed the file outside the harness root"
+
+# 읽기 명령은 멈추지 않고 어긋난 줄을 보고한다 — 그 줄의 경로는 읽지 않고, 줄의 내용을 옮기지 않는다
+ck="$work/ck101/check101"; rm -rf "$work/ck101"; mkdir -p "$ck"; ( cd "$ck" && git init -q . )
+"$root/bin/harness" install --target "$ck" >/dev/null 2>&1 || bad "could not install the check repo"
+printf 'victim\n' > "$work/ck101/victim.md"
+items101() { # items101 <리포> <출력> — doctor 항목 가운데 생성 · 관리 파일 절을 `section|state|what|detail` 로 찍는다
+  "$root/bin/harness" status --target "$1" > "$2.json" 2> "$2.err"
+  python3 - "$2.json" > "$2" <<'PY'
+import json, sys
+for i in json.load(open(sys.argv[1], encoding="utf-8"))["doctor"]["items"]:
+    if i["section"] in ("generated files", "managed files"):
+        print("%s|%s|%s|%s" % (i["section"], i["state"], i["what"], i["detail"]))
+PY
+}
+# 매니페스트에 있는 관리 파일이 링크여도 어긋난 줄이 아니다
+printf 'outside file\n' > "$out101/ck.sh"; mv "$ck/script/review-mr.sh" "$work/ck101/review-mr.sh"; ln -s "$out101/ck.sh" "$ck/script/review-mr.sh"
+"$root/bin/harness" check --target "$ck" > "$work/p101-30.out" 2> "$work/p101-30.err"
+hasnt "$work/p101-30.err" "not safe paths under the harness root" "check reported a linked manifest path as a bad line"
+items101 "$ck" "$work/p101-31.items"
+hasnt "$work/p101-31.items" "unsafe manifest line" "doctor reported a linked manifest path as a bad line"
+rm "$ck/script/review-mr.sh"; mv "$work/ck101/review-mr.sh" "$ck/script/review-mr.sh"
+cp "$ck/.harness/generated" "$work/p101-ck.gen"; cp "$ck/.harness/managed" "$work/p101-ck.mf"
+printf '../victim.md\n' >> "$ck/.harness/generated"; g101=$(wc -l < "$ck/.harness/generated" | tr -d ' ')
+printf '<<<<<<< HEAD\n' >> "$ck/.harness/managed"; k101=$(wc -l < "$ck/.harness/managed" | tr -d ' ')
+"$root/bin/harness" check --target "$ck" > "$work/p101-32.out" 2> "$work/p101-32.err"; check "check with bad manifest lines" "$?" "1"
+grep -qE "^  \.harness/generated:$g101 +has a \.\. component$" "$work/p101-32.err" && ok || bad "check does not name the .. line"
+grep -qE "^  \.harness/managed:$k101 +a merge conflict marker$" "$work/p101-32.err" && ok || bad "check does not name the marker line"
+has "$work/p101-32.err" "        harness install" "the check help does not name harness install for the marker"
+check "check reads nothing through the bad line" "$(cat "$work/ck101/victim.md")" "victim"
+printf '\n# edited\n' >> "$ck/script/review-mr.sh"
+"$root/bin/harness" check --target "$ck" > "$work/p101-33.out" 2> "$work/p101-33.err"; check "check with bad lines and an edited managed file" "$?" "1"
+has "$work/p101-33.err" "not safe paths under the harness root" "the bad lines are not reported beside the managed drift"
+has "$work/p101-33.err" "managed files differ from what the harness installed" "the managed drift is not reported beside the bad lines"
+cp "$root/templates/managed/script/review-mr.sh" "$ck/script/review-mr.sh"
+items101 "$ck" "$work/p101-34.items"
+grep -qx "generated files|bad|unsafe manifest line|.harness/generated:$g101 (has a .. component)" "$work/p101-34.items" && ok \
+  || bad "doctor does not report the .. line in generated files: $(cat "$work/p101-34.items")"
+grep -qx "managed files|bad|unsafe manifest line|.harness/managed:$k101 (a merge conflict marker)" "$work/p101-34.items" && ok \
+  || bad "doctor does not report the marker line in managed files: $(cat "$work/p101-34.items")"
+grep -q '^generated files|ok|' "$work/p101-34.items" && bad "the generated files section has an ok item beside a bad line" || ok
+grep -q '^managed files|ok|' "$work/p101-34.items" && bad "the managed files section has an ok item beside a bad line" || ok
+# 개수 제한과 내용을 옮기지 않는 것
+cp "$work/p101-ck.gen" "$ck/.harness/generated"; cp "$work/p101-ck.mf" "$ck/.harness/managed"
+for i in 1 2 3 4 5 6 7 8 9 10; do printf '../x%d.md\n' "$i" >> "$ck/.harness/managed"; done
+printf '%s  %s\n' "$(printf x | shasum -a 256 | cut -c1-64)" "$work/ck101/victim.md" >> "$ck/.harness/managed"
+items101 "$ck" "$work/p101-35.items"
+check "ten bad lines are listed" "$(grep -c '^managed files|bad|unsafe manifest line|' "$work/p101-35.items")" "10"
+grep -qx 'managed files|bad|1 more unsafe manifest line(s)|' "$work/p101-35.items" && ok || bad "the eleventh bad line is not summed up"
+"$root/bin/harness" check --target "$ck" > "$work/p101-36.out" 2> "$work/p101-36.err"; check "check with an absolute manifest line" "$?" "1"
+cat "$work/p101-35.items" "$work/p101-35.items.json" "$work/p101-35.items.err" "$work/p101-36.out" "$work/p101-36.err" \
+  | grep -qF "$work/ck101/victim.md" && bad "a read command printed the bad line's path" || ok
+cat "$work"/p101-*.items "$work"/p101-*.items.err >> "$work/p101-items.log"; no_hangul "$work/p101-items.log" "doctor items for bad manifest lines"
+
+# steps --rename — 새 이름 자리의 문서를 덮지 않고, 링크를 거쳐 옮기지 않는다
+rn="$work/rename101"; setup "$rn"; wd="$rn/.ai/project/workflows"
+"$root/bin/harness" steps --target "$rn" hotfix '{"title":"hot","steps":[{"id":"a","type":"gate","title":"t"}]}' >/dev/null 2>&1 \
+  || bad "could not add the hotfix workflow"
+mkdir -p "$wd"; printf 'hotfix notes\n' > "$wd/hotfix.md"; printf 'quickfix notes\n' > "$wd/quickfix.md"
+cp "$rn/harness.toml" "$work/p101-rn.toml"; cp "$wd/hotfix.md" "$work/p101-rn.hot"; cp "$wd/quickfix.md" "$work/p101-rn.quick"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-40.out" 2> "$work/p101-40.err"; check "rename onto existing notes" "$?" "2"
+for s in "a file is already at the new name" "  --> .ai/project/workflows/quickfix.md" "nothing was changed" "harness steps hotfix --rename quickfix"; do
+  has "$work/p101-40.err" "$s" "the rename refusal does not say: $s"
+done
+same101 "$wd/hotfix.md" "$work/p101-rn.hot" "the refused rename changed the old notes"
+same101 "$wd/quickfix.md" "$work/p101-rn.quick" "the refused rename overwrote the notes at the new name"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the refused rename changed the config"
+rm "$wd/quickfix.md"; mkdir "$wd/quickfix.md"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-41.out" 2> "$work/p101-41.err"; check "rename onto a directory" "$?" "2"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the rename onto a directory changed the config"
+rmdir "$wd/quickfix.md"
+mv "$wd" "$out101/workflows"; ln -s "$out101/workflows" "$wd"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-42.out" 2> "$work/p101-42.err"; check "rename through a linked notes directory" "$?" "2"
+has "$work/p101-42.err" "go through a symbolic link" "the linked notes directory is not reported as a link"
+has "$work/p101-42.err" "  --> .ai/project/workflows" "the refusal does not name the linked notes directory"
+check "the directory behind the link is untouched" "$(ls "$out101/workflows" | tr '\n' ' ')" "hotfix.md "
+same101 "$out101/workflows/hotfix.md" "$work/p101-rn.hot" "the rename changed the notes behind the link"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the rename through a link changed the config"
+rm "$wd"; mkdir "$wd"; printf 'outside notes\n' > "$out101/hot.md"; cp "$out101/hot.md" "$work/p101-rn.out"; ln -s "$out101/hot.md" "$wd/hotfix.md"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-43.out" 2> "$work/p101-43.err"; check "rename of linked notes" "$?" "2"
+has "$work/p101-43.err" "  --> .ai/project/workflows/hotfix.md" "the refusal does not name the linked notes"
+same101 "$out101/hot.md" "$work/p101-rn.out" "the rename changed the file behind the link"
+same101 "$rn/harness.toml" "$work/p101-rn.toml" "the rename of linked notes changed the config"
+rm "$wd/hotfix.md"; cp "$work/p101-rn.hot" "$wd/hotfix.md"
+"$root/bin/harness" steps --target "$rn" hotfix --rename quickfix > "$work/p101-44.out" 2> "$work/p101-44.err"; check "rename with nothing at the new name" "$?" "0"
+same101 "$wd/quickfix.md" "$work/p101-rn.hot" "the notes did not move to the new name"
+[ -e "$wd/hotfix.md" ] && bad "the old notes are still there after the rename" || ok
+"$root/bin/harness" steps --target "$rn" quickfix --delete > "$work/p101-45.out" 2> "$work/p101-45.err"; check "delete a renamed workflow" "$?" "0"
+[ -f "$wd/quickfix.md" ] && ok || bad "delete removed the person's notes"
+cat "$work"/p101-*.out "$work"/p101-*.err > "$work/p101-all.log"; no_hangul "$work/p101-all.log" "safe path output"
 
 echo
 if [ "$fail" -eq 0 ]; then
