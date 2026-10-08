@@ -88,7 +88,8 @@
 | forge | 이슈 추적기와 코드 리뷰 호스트를 묶어 부르는 말 (GitHub · GitLab · Jira) |
 | 어댑터 | forge 명령을 감싸는 스크립트(`script/forge/<kind>.sh`), 또는 역할 계약을 CLI 별 형식으로 옮긴 정의 파일(`.claude/agents/` · `.codex/agents/`) |
 | 자체 검사 | 어댑터가 계약을 지키는지 실제 forge 로 확인하는 것 (`script/forge-selftest.sh`) |
-| 등록부 | 설치된 프로젝트와 기기의 도구 기록 (`~/.harness/`). UI 가 이것으로 프로젝트를 전환한다 |
+| 클론 키 | 한 기기에서 하네스 루트 하나(클론 하나, 모노레포면 서브프로젝트 하나)를 가리키는 불투명 값(`c-` 와 16진 16자). git 공통 디렉터리와 리포 안의 위치에서 실행할 때 계산한다(`script/_clone_key.py`). 같은 클론의 worktree 는 같은 키다. 기기 단위 상태가 이것으로 나뉜다 |
+| 등록부 | 클론 키마다 `project.json` 하나(`~/.harness/<클론 키>/` — 경로와 이름)와 기기의 도구 기록. UI 가 `harness projects` 로 목록을 받아 프로젝트를 전환한다 |
 | 스팬 · 트레이스 | 실행 지표의 단위. 명령·단계·역할·스크립트 한 번이 스팬, 한 실행의 스팬 묶음이 트레이스 |
 | 결정 기록 | 되돌리기 비싼 결정의 "왜" (`docs/adr/`, Nygard 방식) |
 | 이슈 worktree | `harness run --worktree` 가 이슈 번호 이름으로 `worktree.dir` 아래에 만드는 git worktree |
@@ -105,6 +106,7 @@
 | 단계의 `kind` | 단계의 `type` (`workflows.<절차>.steps`) |
 | `AGENTS` 표 · `SCRIPT_ROLES` (CLI 안의 벤더·역할 분기) | 벤더 선언(`vendors.toml`)과 역할 선언(frontmatter) |
 | task 라벨 `new` | `Task` (`issues.labels.task`) |
+| `{project}` (`metrics.dir` · `usage.log_path` · `worktree.dir` 의 자리표시) | `{clone}`. 같은 값(클론 키)으로 풀린다 |
 
 ## 3. 명령어
 
@@ -144,7 +146,7 @@
 - `src/ui/` — Next.js 앱. `harness start-server` 가 필요할 때 빌드하고 루프백에 백그라운드로 띄운다. 화면은 홈(등록된 프로젝트 카드)·Harness(설정)·Project Settings(사실 문서·명령)·Workflows(단계 캔버스)·Agents(역할)·Metrics·Doctor. 쓰기는 CLI 명령을 서브프로세스로 부른다 — 설정, 문서·메모 저장, Doctor 조치, 새 프로젝트 만들기 모두 그렇다. 파일 경로는 짓지 않고 `harness schema` 에서 받는다
 - `src/test/render-test.sh` — 회귀 테스트. `src/test/fake-forge.sh` 는 forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)
 - 대상 리포에 깔리는 `script/` — 착수 판정(`work-preflight.sh`)·task 이슈 동기화·리뷰 루프(`review-mr.sh` · `post-review.sh` 와 그 공용 모듈 `_review.py` — 판정 데이터 검증·집계·등록 댓글 렌더링·리뷰 입력 맥락)·이월 이슈·되감기·가드(`hooks/`)·시크릿 스캔·사용 기록·지표 기록(`metric.py`)·역할 실행기(`run-agent.py`)·forge 어댑터(`forge/`). 정본은 `src/templates/managed/script/` 이고, 이 리포의 `script/` 는 거기서 설치된 사본이다. `script/project/` 는 프로젝트 것이다 — 하네스는 그 안의 `README.md` 만 없을 때 깐다
-- 기기 단위 상태 — 홈 아래 `.harness/`: 설치 등록부(`<프로젝트>/project.json`), 도구 기록(`tools.json`), 프로젝트별 지표·사용 기록·가져오기 커서, 이슈별 worktree(`<프로젝트>/worktrees/`, 기본 위치), 등록부 최상위의 `ui.pid`(백그라운드 UI 서버 기록) · `ui.log`(그 기동의 설치·빌드·서버 출력). 설치 등록부는 프로젝트 이름 하나에 경로 하나다 — `install` 은 같은 이름이 아직 쓰이는 다른 경로에 등록돼 있으면 거부한다
+- 기기 단위 상태 — 홈 아래 `.harness/`: 클론 키 디렉터리(`<클론 키>/`) 아래의 설치 등록부(`project.json` — 경로와 이름)·지표·사용 기록·가져오기 커서·이슈별 worktree(`worktrees/`, 기본 위치), 도구 기록(`tools.json`), 등록부 최상위의 `ui.pid`(백그라운드 UI 서버 기록) · `ui.log`(그 기동의 설치·빌드·서버 출력). 이름이 같은 클론이 여럿 등록될 수 있다 — `install` 은 같은 이름의 다른 등록을 알리기만 한다. 옛 버전이 이름으로 만든 디렉터리(`<project.name>/`)의 기록은 `install` · `render` 가 클론 키 아래로 옮긴다
 
 ### 데이터 흐름
 
@@ -152,7 +154,7 @@
 - UI: `harness start-server` → (UI 소스 해시가 `.next` 스탬프와 다르면) `next build` → 새 세션의 `next start`(루프백) → `ui.pid` · `ui.log`. 브라우저 → 루프백 HTTP → Next.js 서버 액션 → `src/bin/harness <명령>` 서브프로세스 → 파일 → 다시 UI. 저장 전 검사는 정적 검사와 저렴한 모델(오케스트레이터 CLI, 쓰기 도구 없이)로 한다
 - 절차 실행: `harness run` → 오케스트레이터 CLI → 절차 문서를 따라 역할(서브에이전트, 또는 `script/run-agent.py` 가 실행 계획대로 띄운 CLI)과 스크립트를 부른다. 리뷰 루프는 `work-preflight.sh`(이슈 확인 · 착수 판정) → 구현자 → `review-mr.sh`(리뷰 러너 점검 · diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → 리뷰어의 판정 데이터(JSON 블록) → `post-review.sh`(스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약·인라인 댓글 렌더링) → 종료 코드로 분기. `harness run --worktree` 는 원격 통합 브랜치에서 이슈별 worktree 를 만들고 그 안에서 오케스트레이터를 띄운 뒤, 끝나면 미커밋 변경·미push 커밋이 없을 때 제거한다
 - forge: 스크립트 → `script/forge.sh` 어댑터 함수(tracker 군 · review 군) → `gh` · `glab` · `jira`. 호출부는 forge 를 모르고 정규화된 JSON 을 받는다
-- 실행 지표: 명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) → 홈 아래 `.harness/<프로젝트>/metrics/spans-*.jsonl` → `harness metrics`(가져오기 · 집계) → UI Metrics 탭. 트레이스·부모 스팬은 환경 변수로 자식에게 넘어간다. 세션 가져오기는 run 스팬의 worktree 이름과 설정의 `worktree.dir` 로 worktree 실행 디렉터리를 다시 계산해 기록을 붙인다
+- 실행 지표: 명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) → 홈 아래 `.harness/<클론 키>/metrics/spans-*.jsonl` → `harness metrics`(가져오기 · 집계) → UI Metrics 탭. 트레이스·부모 스팬은 환경 변수로 자식에게 넘어간다. 세션 가져오기는 run 스팬의 worktree 이름과 설정의 `worktree.dir` 로 worktree 실행 디렉터리를 다시 계산해 기록을 붙인다
 
 ### 신뢰 경계
 
@@ -187,6 +189,7 @@
 - 역할 계약(`.ai/templates/`)은 자기 러너·모델·다음 역할을 모른다. 그것은 절차(`.ai/workflows/`)와 어댑터(`.claude/` · `.codex/`)와 실행 계획의 몫이다. 어댑터에는 도구 이름·권한 같은 결합 정보만 둔다
 - `src/ui/` → `src/bin/harness`(서브프로세스) → 파일. 반대 방향은 없다. UI 는 파일 경로를 짓지 않고 `harness schema` 에서 받는다
 - 기기 단위 상태(등록부·도구 기록·지표)는 홈 아래에 두고 리포에 두지 않는다. 리포에 두는 것은 클론한 사람에게도 같아야 하는 것뿐이다
+- 클론 키는 생성 파일에 들어가지 않는다 — 설정 값의 자리표시 `{clone}` 을 실행할 때 `script/_clone_key.py` 로 푼다. CLI · 지표 기록(`metric.py`) · 사용 기록(`usage-log.sh` · `usage-report.sh`)이 그 모듈 하나를 쓰고 계산을 다시 두지 않는다
 
 ### 검사하는 것
 
