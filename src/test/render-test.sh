@@ -5141,8 +5141,185 @@ PY
 check "metrics merge under the recorder's lock in both places" "$(sed -n 1p "$work/race110.txt")" "old=held new=held"
 check "the merged spans keep both lines" "$(sed -n 2p "$work/race110.txt")" '{"new":1} {"old":1} '
 check "merging the usage log keeps a line another recorder appended meanwhile" "$(sed -n 3p "$work/race110.txt")" " concurrent new-usage old-usage"
+# 조각보다 큰 기록 — 옮기기와 남은 줄 판정은 고정 크기 조각으로 읽는다. 조각을 몇 바이트로 줄여도 판정 · 옮긴 내용 · 덧붙인
+# 자리 · 출력이 한 조각에 다 들어갈 때와 같다. 잠금 아래의 스팬은 여러 조각을 쓰다 실패해도 붙인 것 전부를 되돌리고, 사용
+# 기록은 다른 기록기의 줄이 조각 사이에 끼어들어도 줄과 줄 사이에만 들어간다
+python3 - "$root/bin/harness" "$lg110/chunk" > "$work/chunk110.txt" 2>&1 <<'PY'
+import contextlib, errno, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]
+real_open, real_write = os.open, os.write
+read = lambda p: open(p).read() if os.path.exists(p) else ""
+OLD_USAGE = "a\n" + "b" * 30 + "\ncc\n" + "d" * 23
+OLD_SPANS = "".join('{"old":%d}\n' % i for i in range(7))
+
+def lay(tag, chunk):   # 옛 이름 디렉터리와 새 자리의 기록 — 새 자리에 같은 이름이 있어 덧붙여 합친다
+    home, root = d + "/" + tag + "/home", d + "/" + tag + "/root"
+    old = home + "/chunk110"
+    os.makedirs(old + "/metrics"); os.makedirs(root)
+    os.environ["HARNESS_HOME"] = home
+    cli.COPY_CHUNK = chunk
+    json.dump({"path": os.path.realpath(root)}, open(old + "/project.json", "w"))
+    open(old + "/usage.log", "w").write(OLD_USAGE)
+    open(old + "/metrics/spans-20260101.jsonl", "w").write(OLD_SPANS)
+    new = home + "/" + cli.clone_key(Path(root))
+    os.makedirs(new + "/metrics")
+    open(new + "/usage.log", "w").write("new-usage\n")
+    open(new + "/metrics/spans-20260101.jsonl", "w").write('{"new":1}\n')
+    cfg = {"project": {"name": "chunk110"}, "metrics": {"dir": home + "/{clone}/metrics"},
+           "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+    return cfg, Path(root), Path(old), old, new
+
+def migrate(cfg, root, old, new):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.migrate_legacy(cfg, root, "render")
+    return out.getvalue().replace(new, "<new>").replace(old, "<old>")
+
+def whole_run(tag, chunk):   # 처음 옮기고, 옛 기록기가 쓰던 줄을 마치고 한 줄 더 쓴 뒤 다시 옮긴다
+    cfg, root, old_dir, old, new = lay(tag, chunk)
+    left = [cli.legacy_left(cfg, root, old_dir)]
+    first = migrate(cfg, root, old, new)
+    left.append(cli.legacy_left(cfg, root, old_dir))
+    off = json.load(open(old + "/.moved-offsets.json"))[old + "/usage.log"]["off"]
+    with open(old + "/usage.log", "a") as f:
+        f.write("-end\ne\n")
+    left.append(cli.legacy_left(cfg, root, old_dir))
+    second = migrate(cfg, root, old, new)
+    left.append(cli.legacy_left(cfg, root, old_dir))
+    return {"left": left, "first": first, "off": off, "second": second, "usage": read(new + "/usage.log"),
+            "spans": read(new + "/metrics/spans-20260101.jsonl"), "old-usage": read(old + "/usage.log"),
+            "old-spans": os.path.exists(old + "/metrics/spans-20260101.jsonl")}
+
+real_read, real_pread, olds, biggest = os.read, os.pread, {}, [0]
+def old_open(p, flags, *a, **k):   # 옛 이름 디렉터리 아래에서 연 파일을 기억한다
+    fd = real_open(p, flags, *a, **k)
+    olds.pop(fd, None)
+    try:
+        if os.path.realpath(p).startswith(os.path.realpath(d + "/small/home/chunk110") + "/"):
+            olds[fd] = p
+    except (TypeError, ValueError):
+        pass
+    return fd
+
+def sized_read(fd, n):   # 옛 기록에서 한 번에 읽으려는 크기
+    if fd in olds:
+        biggest[0] = max(biggest[0], n)
+    return real_read(fd, n)
+
+def sized_pread(fd, n, at):
+    if fd in olds:
+        biggest[0] = max(biggest[0], n)
+    return real_pread(fd, n, at)
+
+os.open, os.read, os.pread = old_open, sized_read, sized_pread
+try:
+    small = whole_run("small", 5)
+finally:
+    os.open, os.read, os.pread = real_open, real_read, real_pread
+big = whole_run("big", 1 << 20)
+print("same" if small == big else "differs: %r / %r" % (small, big))
+print("left:", " ".join(map(str, small["left"])), "| off:", small["off"])
+print("usage:", small["usage"].replace("\n", " "))
+print("spans:", small["spans"].replace("\n", " "), "| old:", "kept" if small["old-spans"] else "gone")
+print("first:", " / ".join(small["first"].strip().split("\n")))
+
+fds, writes = {}, []
+def watch_open(p, flags, *a, **k):
+    fd = real_open(p, flags, *a, **k)
+    fds.pop(fd, None)
+    try:
+        rp = os.path.realpath(p)
+        if rp.startswith(watch + "/") and flags & (os.O_WRONLY | os.O_RDWR) and not os.path.basename(rp).startswith("."):
+            fds[fd] = rp
+    except (TypeError, ValueError):
+        pass
+    return fd
+
+def third_write_fails(fd, data):   # 새 자리의 파일마다 두 번은 쓰이고 세 번째에 디스크가 찬다
+    if fd in fds:
+        writes.append(fds[fd])
+        if writes.count(fds[fd]) >= 3:
+            raise OSError(errno.ENOSPC, "no space left on device")
+    return real_write(fd, data)
+
+cfg, root, old_dir, old, new = lay("fail", 5)
+watch = os.path.realpath(new)
+os.open, os.write = watch_open, third_write_fails
+try:
+    failed = migrate(cfg, root, old, new)
+finally:
+    os.open, os.write = real_open, real_write
+print("failed:", " / ".join(failed.strip().split("\n")))
+print("spans-after-failure:", read(watch + "/metrics/spans-20260101.jsonl").replace("\n", " "), "| old:",
+      "kept" if read(old + "/metrics/spans-20260101.jsonl") == OLD_SPANS else "changed",
+      "| offsets:", "written" if os.path.exists(old + "/.moved-offsets.json") else "none")
+again = migrate(cfg, root, old, new)
+usage = read(watch + "/usage.log").split("\n")
+print("after-failure-retry:", read(watch + "/metrics/spans-20260101.jsonl") == '{"new":1}\n' + OLD_SPANS,
+      all(x in usage for x in ("a", "b" * 30, "cc")))
+
+def interleaving(fd, data):   # 잠금 없이 덧붙이는 다른 기록기 — 새 사용 기록에 쓰일 때마다 그 바로 전에 한 줄을 덧붙인다
+    if fds.get(fd, "").endswith("/usage.log"):
+        o = real_open(fds[fd], os.O_WRONLY | os.O_APPEND)
+        real_write(o, b"R\n")
+        os.close(o)
+    return real_write(fd, data)
+
+cfg, root, old_dir, old, new = lay("race", 8)
+watch = os.path.realpath(new)
+open(old + "/usage.log", "w").write("".join("u%d\n" % i for i in range(1, 10)))
+os.open, os.write = watch_open, interleaving
+try:
+    migrate(cfg, root, old, new)
+finally:
+    os.open, os.write = real_open, real_write
+lines = read(watch + "/usage.log").split("\n")[:-1]
+print("interleaved:", lines.count("R") > 1, "| ours:", " ".join(x for x in lines if x != "R"),
+      "| whole:", all(x == "R" or x == "new-usage" or (len(x) == 2 and x[0] == "u") for x in lines))
+print("largest-read:", "within a chunk or the 4KiB head" if 0 < biggest[0] <= 4096 else biggest[0])
+
+cfg, root, old_dir, old, new = lay("shrink", 5)
+real_append = cli.append_range
+def shrink_then_append(src, start, end, dst, undo, lines):   # 남은 줄을 가른 뒤 덧붙이기 바로 전에 옛 사용 기록이 줄어든다
+    if lines:
+        os.truncate(old + "/usage.log", 10)
+    return real_append(src, start, end, dst, undo, lines)
+
+cli.append_range = shrink_then_append
+try:
+    out = migrate(cfg, root, old, new)
+finally:
+    cli.append_range = real_append
+print("shrunk:", "render: left usage log at <old>/usage.log — OSError" in out.split("\n"),
+      "| offsets:", "written" if os.path.exists(old + "/.moved-offsets.json") else "none")
+PY
+[ "$?" -eq 0 ] || bad "the chunked move checks did not run: $(tail -3 "$work/chunk110.txt")"
+check "a chunk smaller than the records moves and judges the same as one chunk" "$(sed -n 1p "$work/chunk110.txt")" "same"
+check "remaining lines are judged across chunks, and the place is after the last whole line" "$(sed -n 2p "$work/chunk110.txt")" "left: 2 0 1 0 | off: 36"
+check "usage lines longer than a chunk move whole, and the finished line follows once" "$(sed -n 3p "$work/chunk110.txt")" \
+  "usage: new-usage a $(printf 'b%.0s' $(seq 30)) cc $(printf 'd%.0s' $(seq 23))-end e "
+check "spans larger than a chunk are appended whole" "$(sed -n 4p "$work/chunk110.txt")" \
+  'spans: {"new":1} {"old":0} {"old":1} {"old":2} {"old":3} {"old":4} {"old":5} {"old":6}  | old: gone'
+check "the chunked move says what it moved" "$(sed -n 5p "$work/chunk110.txt")" \
+  "first: render: moved run metrics to <new>/metrics / render: moved usage log to <new>/usage.log / render: cleared <old> — files older versions may still write to stay there; render moves what they add"
+check "a chunked append that fails is reported" "$(sed -n 6p "$work/chunk110.txt")" \
+  "failed: render: left run metrics at <old>/metrics — OSError / render: left usage log at <old>/usage.log — OSError / render: kept <old> — 2 item(s) left there"
+check "a chunked append under the recorder's lock that fails takes back every chunk it wrote" "$(sed -n 7p "$work/chunk110.txt")" \
+  'spans-after-failure: {"new":1}  | old: kept | offsets: none'
+check "the run after a failed chunked append moves the whole records" "$(sed -n 8p "$work/chunk110.txt")" "after-failure-retry: True True"
+check "another recorder's lines land between whole usage lines while moving in chunks" "$(sed -n 9p "$work/chunk110.txt")" \
+  "interleaved: True | ours: new-usage u1 u2 u3 u4 u5 u6 u7 u8 u9 | whole: True"
+check "moving and judging read the old records a chunk at a time, not whole" "$(sed -n 10p "$work/chunk110.txt")" \
+  "largest-read: within a chunk or the 4KiB head"
+check "an old usage log that shrinks while it is appended is left and its place is not recorded" "$(sed -n 11p "$work/chunk110.txt")" \
+  "shrunk: True | offsets: none"
 cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out "$work/race110.txt" "$work/wait110.txt" "$work/fail110.txt" \
-  "$work/nolink110.txt" > "$work/out110.log"
+  "$work/nolink110.txt" "$work/chunk110.txt" > "$work/out110.log"
 no_hangul "$work/out110.log" "the old name directory move output"
 unset -f g110 perm110 moved110 rest110 mk110 old110 late110
 

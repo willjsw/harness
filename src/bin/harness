@@ -2101,6 +2101,8 @@ LEGACY_DONE = ".moved.json"
 LEGACY_OFFSETS = ".moved-offsets.json"
 # 하드 링크를 만들 수 없는 곳에서 덧붙이지 않는 기록 파일을 남기는 사유. 새 이름을 덮지 않고 차지할 다른 방법이 없다
 NO_HARD_LINK = "cannot hard-link to the new path"
+# 옛 기록을 읽는 한 조각의 크기. 옮기기와 남은 줄 판정은 이만큼씩만 메모리에 올린다 — 기록 크기에 비례해 늘지 않는다
+COPY_CHUNK = 1 << 20
 
 
 def legacy_dir(cfg, target: Path):
@@ -2122,7 +2124,7 @@ def read_nofollow(path: str) -> bytes:
     try:
         chunks = []
         while True:
-            b = os.read(fd, 1 << 20)
+            b = os.read(fd, COPY_CHUNK)
             if not b:
                 return b"".join(chunks)
             chunks.append(b)
@@ -2142,28 +2144,47 @@ def write_all(fd: int, data: bytes) -> int:
     return done
 
 
-def append_bytes(data: bytes, dst: str, undo: bool):
-    """data 를 dst 끝에 덧붙인다. dst 가 없으면 0600 으로 만든다 — 있는 파일을 덮거나 자르지 않는다. dst 가 줄 중간에서
-    끝나면 줄을 바꾼 뒤 붙인다. 링크는 따라가지 않는다.
+def append_range(src: int, start: int, end: int, dst: str, undo: bool, lines: bool):
+    """열린 파일 src 의 [start, end) 바이트를 dst 끝에 덧붙인다. dst 가 없으면 0600 으로 만든다 — 있는 파일을 덮거나 자르지
+    않는다. dst 가 줄 중간에서 끝나면 줄을 바꾼 뒤 붙인다. 링크는 따라가지 않는다.
 
-    추가 쓰기 모드로 한 번에 쓴다 — 그 사이 다른 기록기가 덧붙인 줄이 있어도 그 뒤에 쓰고 덮지 않는다. 쓰다 실패하면 실패를
-    올린다. undo 면 그 전에 이번에 붙인 앞부분을 잘라 되돌린다 — 다른 기록기가 끼어들 수 없는 잠금 아래에서만 준다."""
-    if not data:
+    추가 쓰기 모드로 COPY_CHUNK 씩 읽어 쓴다 — 그 사이 다른 기록기가 덧붙인 줄이 있어도 그 뒤에 쓰고 덮지 않는다. lines 면
+    조각을 그 안의 마지막 줄바꿈에서 끊어 쓴다 — 잠금 없이 덧붙이는 기록기의 줄은 줄과 줄 사이에만 끼어든다. 한 조각보다 긴
+    줄은 나눠 쓴다. 쓰다 실패하거나 src 가 end 전에 끝나면 실패를 올린다. undo 면 그 전에 이번에 붙인 앞부분을 잘라 되돌린다 —
+    다른 기록기가 끼어들 수 없는 잠금 아래에서만 준다."""
+    if end <= start:
         return
     fd = os.open(dst, os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     try:
         size = os.fstat(fd).st_size
-        if size and os.pread(fd, 1, size - 1) != b"\n":
-            data = b"\n" + data
+        lead = b"\n" if size and os.pread(fd, 1, size - 1) != b"\n" else b""
+        done, at = 0, start
         try:
-            write_all(fd, data)
+            while at < end:
+                b = os.pread(src, min(COPY_CHUNK, end - at), at)
+                if not b:
+                    raise OSError("the source shrank while it was appended")
+                if lines and at + len(b) < end:
+                    b = b[:b.rfind(b"\n") + 1] or b
+                at += len(b)
+                done += write_all(fd, lead + b)
+                lead = b""
         except OSError as e:
-            done = getattr(e, "written", 0)
+            done += getattr(e, "written", 0)
             if undo and done:
-                end = os.lseek(fd, 0, os.SEEK_CUR)
-                if os.fstat(fd).st_size == end:
-                    os.ftruncate(fd, end - done)
+                pos = os.lseek(fd, 0, os.SEEK_CUR)
+                if os.fstat(fd).st_size == pos:
+                    os.ftruncate(fd, pos - done)
             raise
+    finally:
+        os.close(fd)
+
+
+def append_file(src: str, dst: str, undo: bool):
+    """src 의 내용을 dst 끝에 덧붙인다(append_range). 링크는 따라가지 않는다."""
+    fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        append_range(fd, 0, os.fstat(fd).st_size, dst, undo, lines=False)
     finally:
         os.close(fd)
 
@@ -2173,7 +2194,7 @@ def move_record(src: str, dst: str, append: bool, undo: bool) -> bool:
     append 일 때 끝에 덧붙이고 아니면 dst 를 남긴다(이어 온 새 기록이다). src 는 dst 에 반영된 뒤에만 지운다.
 
     하드 링크를 만들 수 없으면 append 인 파일은 덧붙여 옮기고, 아니면 src 를 남긴 채 False 를 돌려준다. undo 는
-    append_bytes 의 것이다."""
+    append_range 의 것이다."""
     if same_file(src, dst):
         # 한 파일의 두 이름 — 지난번에 새 이름을 걸고 옛 이름을 지우기 전에 멈춘 것이다. 새 이름이 남는다
         os.unlink(src)
@@ -2182,11 +2203,11 @@ def move_record(src: str, dst: str, append: bool, undo: bool) -> bool:
         os.link(src, dst)
     except FileExistsError:
         if append:
-            append_bytes(read_nofollow(src), dst, undo)
+            append_file(src, dst, undo)
     except OSError:
         if not append:
             return False
-        append_bytes(read_nofollow(src), dst, undo)
+        append_file(src, dst, undo)
     os.unlink(src)
     return True
 
@@ -2318,33 +2339,32 @@ def head_digest(fd: int, off: int) -> str:
     return hashlib.sha256(os.pread(fd, min(off, 4096), 0)).hexdigest()
 
 
-def log_pending(old: str, offsets: dict):
-    """옛 사용 기록에서 아직 덧붙이지 않은 온전한 줄과, 그것을 덧붙인 뒤 적을 자리 — (바이트, 자리 기록).
+def open_log(old: str) -> int:
+    return os.open(old, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+
+
+def log_pending(fd: int, last):
+    """열린 옛 사용 기록에서 아직 덧붙이지 않은 온전한 줄의 바이트 범위와, 그것을 덧붙인 뒤 적을 자리 — (시작, 끝, 자리 기록).
+    last 는 그 파일의 지난번 자리 기록이다.
 
     지난번 자리는 같은 파일(장치 · inode · 앞부분)이고 파일이 그보다 줄지 않았을 때만 잇는다. 아니면 처음부터 — 파일이 바뀌었다.
-    쓰는 중인 마지막 줄은 다음에 옮긴다."""
-    fd = os.open(old, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        st = os.fstat(fd)
-        start, last = 0, offsets.get(old)
-        if isinstance(last, dict):
-            off = last.get("off")
-            if (type(off) is int and 0 < off <= st.st_size and last.get("dev") == st.st_dev and last.get("ino") == st.st_ino
-                    and last.get("head") == head_digest(fd, off)):
-                start = off
-        chunks, at = [], start
-        while True:
-            b = os.pread(fd, 1 << 20, at)
-            if not b:
-                break
-            chunks.append(b)
-            at += len(b)
-        data = b"".join(chunks)
-        whole = data[:data.rfind(b"\n") + 1]
-        end = start + len(whole)
-        return whole, {"dev": st.st_dev, "ino": st.st_ino, "off": end, "head": head_digest(fd, end)}
-    finally:
-        os.close(fd)
+    끝은 마지막 줄바꿈 뒤다 — 쓰는 중인 마지막 줄은 다음에 옮긴다. 파일 끝에서부터 COPY_CHUNK 씩 거꾸로 읽어 찾는다."""
+    st = os.fstat(fd)
+    start = 0
+    if isinstance(last, dict):
+        off = last.get("off")
+        if (type(off) is int and 0 < off <= st.st_size and last.get("dev") == st.st_dev and last.get("ino") == st.st_ino
+                and last.get("head") == head_digest(fd, off)):
+            start = off
+    end, pos = start, st.st_size
+    while pos > start:
+        n = min(COPY_CHUNK, pos - start)
+        i = os.pread(fd, n, pos - n).rfind(b"\n")
+        if i >= 0:
+            end = pos - n + i + 1
+            break
+        pos -= n
+    return start, end, {"dev": st.st_dev, "ino": st.st_ino, "off": end, "head": head_digest(fd, end)}
 
 
 def move_usage_log(old: str, new: str, old_dir: Path):
@@ -2370,21 +2390,24 @@ def move_usage_log(old: str, new: str, old_dir: Path):
         os.unlink(old)
         return None
     offsets = read_offsets(old_dir)
-    whole, entry = log_pending(old, offsets)
-    if not whole:
-        return None
-    offsets[old] = entry
-    fd, tmp = tempfile.mkstemp(prefix=MOVE_TMP, dir=old_dir)
+    src = open_log(old)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(offsets, fh)
-            fh.flush()
-            os.fsync(fh.fileno())
-        append_bytes(whole, new, undo=False)
-        os.replace(tmp, old_dir / LEGACY_OFFSETS)
+        start, end, offsets[old] = log_pending(src, offsets.get(old))
+        if end == start:
+            return None
+        fd, tmp = tempfile.mkstemp(prefix=MOVE_TMP, dir=old_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(offsets, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            append_range(src, start, end, new, undo=False, lines=True)
+            os.replace(tmp, old_dir / LEGACY_OFFSETS)
+        finally:
+            if os.path.lexists(tmp):
+                os.unlink(tmp)
     finally:
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
+        os.close(src)
     return None
 
 
@@ -2412,9 +2435,14 @@ def log_left(old: str, new: str, old_dir: Path) -> bool:
     if os.path.islink(old) or not os.path.isfile(old) or same_file(old, new):
         return True
     try:
-        return bool(log_pending(old, read_offsets(old_dir))[0])
+        fd = open_log(old)
+        try:
+            start, end, _entry = log_pending(fd, read_offsets(old_dir).get(old))
+        finally:
+            os.close(fd)
     except OSError:
         return True
+    return end > start
 
 
 def worktree_entries(top: str) -> list:
