@@ -29,3 +29,4 @@
 | [`79-reject-duplicate-project-name.md`](79-reject-duplicate-project-name.md) | 설치 등록부의 같은 이름 거부 — 기존 등록 판정(재설치·낡은 등록 넘겨받기·거부), 거부 안내문, doctor `registry` 절과 UI 문구, README 안내 |
 | [`61-start-server-background.md`](61-start-server-background.md) | `start-server` 의 빌드 판정(UI 소스 해시↔스탬프)·백그라운드 기동·응답 대기, `ui.pid` 기록과 서버 식별, `stop-server` · `server-status`, `--dev` 포그라운드, 없는 프로젝트 404, 보호 문서 개정 범위 |
 | [`96-machine-local-state-key.md`](96-machine-local-state-key.md) | 기기 단위 상태의 클론 키 — 계산과 공용 모듈, `{clone}` 자리표시와 옛 별칭 `{project}`, 클론 키 등록부와 `harness projects`, 옛 이름 디렉터리 옮기기, doctor `registry` 절, UI 라우트의 키 |
+| [`213-retire-shell-scripts.md`](213-retire-shell-scripts.md) | 남은 관리 스크립트의 하위 명령 이식 — `carryover` · `rollback` · `span` · `usage` · `run-agent` · `verify` · `clone-key` 의 계약, 표지 · 어휘 · 클론 키의 패키지 정본과 셸 표기, shim 과 진입점을 그대로 부르는 곳, 하위 명령 허용 규칙, 설정을 읽는 곳, 별도 정리 Requirement 와의 경계, 보호 문서 개정 범위 |
