@@ -4594,8 +4594,8 @@ lg110="$work/legacy110"; rm -rf "$lg110"; mkdir -p "$lg110"
 g110() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
 perm110() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 moved110() { grep -E '^(install|render): (moved|left|kept|removed|cleared) ' "$1"; }
-# 옛 이름 디렉터리에 남은 기록 파일 — 다 옮김 표지와 기록기의 표지(잠금 · 정리 표지)는 기록이 아니다
-rest110() { ( cd "$1" && find . -type f ! -name .moved.json ! -name .lock ! -name .pruned | sort ); }
+# 옛 이름 디렉터리에 남은 기록 파일 — 다 옮김 표지 · 덧붙인 자리 기록과 기록기의 표지(잠금 · 정리 표지)는 기록이 아니다
+rest110() { ( cd "$1" && find . -type f ! -name .moved.json ! -name .moved-offsets.json ! -name .lock ! -name .pruned | sort ); }
 mk110() { # mk110 <리포> <이름> — 기록 경로를 등록부 아래 {clone} 으로 둔 설정으로 렌더하고 커밋한 리포
   mkdir -p "$1" && ( cd "$1" && git init -q . ) && cp "$root/templates/harness.toml" "$1/harness.toml" || return 1
   python3 - "$1/harness.toml" "$2" "$HARNESS_HOME" <<'PY'
@@ -4627,7 +4627,7 @@ has "$work/doc110-before.out" "warn state under the old name directory is not mo
   "doctor does not report the state left under the old name"
 "$root/bin/harness" install --target "$A110" > "$work/in110a.out" 2> "$work/in110a.err"; check "install over the old name directory" "$?" "0"
 for l in "install: moved import state to $nA110/state" "install: moved run metrics to $nA110/metrics" "install: moved usage log to $nA110/usage.log" \
-         "install: moved worktree 5 to $nA110/worktrees/5" "install: cleared $HARNESS_HOME/legacy110a — its directories and lock files stay for older versions; render moves what they add"; do
+         "install: moved worktree 5 to $nA110/worktrees/5" "install: cleared $HARNESS_HOME/legacy110a — files older versions may still write to stay there; render moves what they add"; do
   has "$work/in110a.out" "$l" "install does not say: $l"
 done
 check "the cursor is under the clone key" "$(cat "$nA110/state/import-cursor.json" 2>&1)" '{"old": 1}'
@@ -4679,7 +4679,7 @@ g110 "$ob110/7" add -A && g110 "$ob110/7" commit -q -m fix || bad "could not com
 g110 "$B110" worktree unlock "$ob110/8" && g110 "$B110" worktree prune && rm -rf "$nB110/worktrees/10" || bad "could not free the worktrees"
 "$root/bin/harness" render --target "$B110" > "$work/r110c.out" 2>&1; check "render after the worktrees are freed exits 0" "$?" "0"
 for n in 7 8 10; do has "$work/r110c.out" "render: moved worktree $n to $nB110/worktrees/$n" "render did not move worktree $n the second time"; done
-has "$work/r110c.out" "render: cleared $HARNESS_HOME/legacy110b — its directories and lock files stay for older versions; render moves what they add" "render did not clear the old name directory"
+has "$work/r110c.out" "render: cleared $HARNESS_HOME/legacy110b — files older versions may still write to stay there; render moves what they add" "render did not clear the old name directory"
 check "nothing to move is left after the second render" "$(rest110 "$HARNESS_HOME/legacy110b")" ""
 [ -f "$HARNESS_HOME/legacy110b/.moved.json" ] && [ ! -e "$HARNESS_HOME/legacy110b/project.json" ] && ok || bad "the second render did not mark the old name directory moved"
 # 합치기 — 키 아래에 같은 이름이 있으면 스팬 · 사용 기록은 옛 줄을 끝에 붙이고, 커서와 그 밖의 파일은 새 것을 남긴다
@@ -4696,8 +4696,12 @@ check "an old span file the clone key lacks is moved" "$(cat "$nC110/metrics/spa
 check "the clone key's own lock file stays" "$(cat "$nC110/metrics/.lock")" "new-lock"
 check "old usage lines follow the new ones" "$(tr '\n' ' ' < "$nC110/usage.log")" "new-usage old-usage "
 check "the clone key's cursor stays" "$(cat "$nC110/state/import-cursor.json")" '{"new": 1}'
-check "nothing to move is left after merging" "$(rest110 "$HARNESS_HOME/legacy110c")" ""
+check "only the old usage log stays after merging, as it was — older recorders may still append to it" \
+  "$(rest110 "$HARNESS_HOME/legacy110c") $(cat "$HARNESS_HOME/legacy110c/usage.log" 2>&1)" "./usage.log old-usage"
 check "the old lock file stays where older writers may wait on it" "$(cat "$HARNESS_HOME/legacy110c/metrics/.lock")" "old-lock"
+"$root/bin/harness" render --target "$C110" > "$work/r110m2.out" 2>&1; check "render again after merging exits 0" "$?" "0"
+check "render again moves nothing when the old usage log has no new line" "$(moved110 "$work/r110m2.out")" ""
+check "render again does not append the merged usage lines twice" "$(tr '\n' ' ' < "$nC110/usage.log")" "new-usage old-usage "
 # 다른 경로 — 옛 등록이 다른 리포를 가리키면 아무것도 옮기지 않고 알리지 않는다
 D110="$lg110/d"; mk110 "$D110" legacy110d || bad "could not set up the other-path repository"
 old110 "$C110" legacy110d || bad "could not lay down the other-path old name directory"
@@ -4747,18 +4751,100 @@ for l in "render: left import state at $oK110/state — a symbolic link at the n
 done
 check "a file a new-side link points at is not written" "$(cat "$out110/spans.jsonl") $(cat "$out110/usage.log") $(ls "$out110/state" | wc -l | tr -d ' ')" "outside-spans outside-usage 0"
 check "the old records stay when the new side is a link" "$(cat "$oK110/state/import-cursor.json") $(cat "$oK110/metrics/spans-20260101.jsonl") $(cat "$oK110/usage.log")" '{"old": 1} {"old":1} old-usage'
-# 한 파일의 두 이름(드러낸 뒤 옛 이름을 지우기 전에 멈춘 것)은 옛 이름만 지우고, 멈춘 실행이 남긴 임시 파일은 치운다
+# 한 파일의 두 이름(새 이름을 건 뒤 옛 이름을 지우기 전에 멈춘 것)은 옛 이름만 지우고, 멈춘 실행이 옛 이름 디렉터리에 남긴
+# 임시 파일은 치운다
 L110="$lg110/l"; mk110 "$L110" legacy110l || bad "could not set up the interrupted repository"
 old110 "$L110" legacy110l || bad "could not lay down the interrupted repository's old name directory"
 kL110=$(python3 "$L110/script/_clone_key.py" expand '{clone}'); nL110="$HARNESS_HOME/$kL110"; oL110="$HARNESS_HOME/legacy110l"
-mkdir -p "$nL110/state" && ln "$oL110/usage.log" "$nL110/usage.log" && printf 'half\n' > "$nL110/state/.harness-move-stale"
+mkdir -p "$nL110/state" && ln "$oL110/usage.log" "$nL110/usage.log" && printf 'half\n' > "$oL110/.harness-move-stale"
 "$root/bin/harness" render --target "$L110" > "$work/r110l.out" 2>&1; check "render after an interrupted move exits 0" "$?" "0"
 has "$work/r110l.out" "render: moved usage log to $nL110/usage.log" "render did not finish the interrupted usage log"
 check "a usage log already linked in place is not doubled" "$(cat "$nL110/usage.log")" "old-usage"
 [ ! -e "$oL110/usage.log" ] && ok || bad "the old name of the linked usage log is left"
-[ ! -e "$nL110/state/.harness-move-stale" ] && ok || bad "a temporary file an interrupted move left is still there"
-check "the cursor moved beside the stale temporary file" "$(cat "$nL110/state/import-cursor.json" 2>&1)" '{"old": 1}'
-# 쓰기 실패 — 하드 링크를 못 만드는 곳에서 복사하다 실패해도 새 자리에 반쯤 쓴 파일이 남지 않고, 다음 실행이 온전히 옮긴다
+[ ! -e "$oL110/.harness-move-stale" ] && ok || bad "a temporary file an interrupted move left is still there"
+check "the cursor still moves after an interrupted move" "$(cat "$nL110/state/import-cursor.json" 2>&1)" '{"old": 1}'
+# 하드 링크가 없는 곳 — 옮기기가 새 이름에 파일을 드러내기 바로 전에 새 기록기가 그 이름에 쓴다. 새 이름을 덮지 않는다:
+# 사용 기록 · 스팬은 덧붙여 옮기고, 커서는 옮기지 않고 옛 자리에 남긴 채 사유를 알린다
+python3 - "$root/bin/harness" "$lg110/nolink" > "$work/nolink110.txt" 2>&1 <<'PY'
+import contextlib, errno, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]; home, root = d + "/home", d + "/root"
+old = home + "/nolink110"
+os.makedirs(old + "/state"); os.makedirs(old + "/metrics"); os.makedirs(root)
+os.environ["HARNESS_HOME"] = home
+json.dump({"path": os.path.realpath(root)}, open(old + "/project.json", "w"))
+open(old + "/state/import-cursor.json", "w").write('{"old": 1}\n')
+open(old + "/metrics/spans-20260101.jsonl", "w").write('{"old":1}\n')
+open(old + "/usage.log", "w").write("old-usage\n")
+key = cli.clone_key(Path(root)); new = home + "/" + key
+cfg = {"project": {"name": "nolink110"}, "metrics": {"dir": home + "/{clone}/metrics"},
+       "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+real_link, real_open, real_rename, real_replace = os.link, os.open, os.rename, os.replace
+wrote = set()
+
+def no_link(*a, **k):   # 하드 링크를 만들 수 없는 파일 시스템
+    raise OSError(errno.EXDEV, "cross-device link")
+
+def recorder(p):   # 새 기록기가 새 이름에 먼저 쓴다 — 사용 기록은 한 줄 덧붙이고, 가져오기는 커서를 바꿔 단다
+    try:
+        rp = os.path.realpath(p)
+    except (TypeError, ValueError):
+        return
+    if rp in wrote or not rp.startswith(os.path.realpath(new) + "/"):
+        return
+    if rp.endswith("/usage.log"):
+        wrote.add(rp)
+        with open(rp, "a") as f:
+            f.write("new-recorder\n")
+    elif rp.endswith("/import-cursor.json"):
+        wrote.add(rp)
+        with open(rp, "w") as f:
+            f.write('{"new": 1}\n')
+
+def racing_open(p, flags, *a, **k):   # 새 이름을 만들며 여는 바로 전
+    if flags & os.O_CREAT:
+        recorder(p)
+    return real_open(p, flags, *a, **k)
+
+def racing_rename(src, dst, *a, **k):   # 새 이름으로 바꿔 다는 바로 전
+    recorder(dst)
+    return real_rename(src, dst, *a, **k)
+
+def racing_replace(src, dst, *a, **k):
+    recorder(dst)
+    return real_replace(src, dst, *a, **k)
+
+def run():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.migrate_legacy(cfg, Path(root), "render")
+    return out.getvalue()
+
+os.link, os.open, os.rename, os.replace = no_link, racing_open, racing_rename, racing_replace
+try:
+    first, second = run(), run()
+finally:
+    os.link, os.open, os.rename, os.replace = real_link, real_open, real_rename, real_replace
+read = lambda p: open(p).read().replace("\n", " ") if os.path.exists(p) else "none"
+print("left-cursor" if "left import state at %s/state — cannot hard-link to the new path" % old in first else "first: " + first.strip().replace("\n", " / "))
+print("cursor:", read(new + "/state/import-cursor.json"), "| old:", read(old + "/state/import-cursor.json"))
+print("usage:", read(new + "/usage.log"), "| old:", read(old + "/usage.log"))
+print("spans:", read(new + "/metrics/spans-20260101.jsonl"), "| old:", read(old + "/metrics/spans-20260101.jsonl"))
+print("kept" if "kept %s — 1 item(s) left there" % old in first and os.path.exists(old + "/project.json") else "not kept: " + first.strip().replace("\n", " / "))
+print("second:", " / ".join(x for x in second.strip().split("\n") if " moved " in x))
+PY
+check "a cursor that cannot be hard-linked is left with the reason" "$(sed -n 1p "$work/nolink110.txt")" "left-cursor"
+check "a cursor that cannot be hard-linked is not copied, and the old one stays" "$(sed -n 2p "$work/nolink110.txt")" 'cursor: none | old: {"old": 1} '
+check "old usage lines go after the line a new recorder wrote meanwhile, and the old usage log stays" "$(sed -n 3p "$work/nolink110.txt")" "usage: new-recorder old-usage  | old: old-usage "
+check "spans are appended without a hard link" "$(sed -n 4p "$work/nolink110.txt")" 'spans: {"old":1}  | old: none'
+check "the old name directory is kept while the cursor is left" "$(sed -n 5p "$work/nolink110.txt")" "kept"
+check "the next run does not move the same lines again" "$(sed -n 6p "$work/nolink110.txt")" "second: "
+# 쓰기 실패 — 하드 링크를 못 만드는 곳에서 덧붙이다 디스크가 차도, 잠금 아래의 스팬은 붙이다 만 앞부분을 되돌리고 옛 파일을
+# 남긴다. 사용 기록은 옛 파일을 남기고 덧붙인 자리를 적지 않는다. 다음 실행이 온전한 줄을 옮긴다
 python3 - "$root/bin/harness" "$lg110/fail" > "$work/fail110.txt" 2>&1 <<'PY'
 import contextlib, errno, importlib.machinery, importlib.util, io, json, os, sys
 from pathlib import Path
@@ -4767,32 +4853,38 @@ loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
 cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
 loader.exec_module(cli)
 d = sys.argv[2]; home, root = d + "/home", d + "/root"
-os.makedirs(home + "/fail110/state"); os.makedirs(root)
+old = home + "/fail110"
+os.makedirs(old + "/metrics"); os.makedirs(root)
 os.environ["HARNESS_HOME"] = home
-json.dump({"path": os.path.realpath(root)}, open(home + "/fail110/project.json", "w"))
-open(home + "/fail110/state/import-cursor.json", "w").write('{"old": 1}\n')
-key = cli.clone_key(Path(root)); new = os.path.realpath(home) + "/" + key + "/state"
-cfg = {"project": {"name": "fail110"}, "metrics": {"dir": "off"}, "usage": {"log_path": "off"}, "worktree": {"dir": "off"}}
+json.dump({"path": os.path.realpath(root)}, open(old + "/project.json", "w"))
+open(old + "/metrics/spans-20260101.jsonl", "w").write('{"old":1}\n')
+open(old + "/usage.log", "w").write("old-usage\n")
+key = cli.clone_key(Path(root)); new = os.path.realpath(home) + "/" + key
+cfg = {"project": {"name": "fail110"}, "metrics": {"dir": home + "/{clone}/metrics"},
+       "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
 real_link, real_open, real_write = os.link, os.open, os.write
-fds, failed = set(), []
+fds, failed, short = {}, set(), set()
 
 def no_link(*a, **k):   # 하드 링크를 만들 수 없는 파일 시스템
     raise OSError(errno.EXDEV, "cross-device link")
 
 def watch_open(p, flags, *a, **k):
     fd = real_open(p, flags, *a, **k)
-    fds.discard(fd)
+    fds.pop(fd, None)
     try:
-        if os.path.dirname(os.path.realpath(p)) == new and flags & (os.O_WRONLY | os.O_RDWR):
-            fds.add(fd)
+        rp = os.path.realpath(p)
+        if rp.startswith(new + "/") and flags & (os.O_WRONLY | os.O_RDWR):
+            fds[fd] = rp
     except (TypeError, ValueError):
         pass
     return fd
 
-def full_disk(fd, data):   # 새 자리에 처음 쓸 때 디스크가 찬다
-    if fd in fds and not failed:
-        failed.append(1)
-        real_write(fd, data[:3])
+def full_disk(fd, data):   # 새 자리의 파일마다 처음 쓸 때 앞 3바이트만 쓰이고, 이어 쓰려 하면 디스크가 찬다
+    if fd in fds and fds[fd] not in failed:
+        if fd not in short:
+            short.add(fd)
+            return real_write(fd, data[:3])
+        failed.add(fds[fd])
         raise OSError(errno.ENOSPC, "no space left on device")
     return real_write(fd, data)
 
@@ -4802,24 +4894,92 @@ def run():
         cli.migrate_legacy(cfg, Path(root), "render")
     return out.getvalue()
 
+read = lambda p: open(p).read() if os.path.exists(p) else ""
 os.link, os.open, os.write = no_link, watch_open, full_disk
 try:
     first = run()
-    left = sorted(os.listdir(new)) if os.path.isdir(new) else []
+    spans_after = read(new + "/metrics/spans-20260101.jsonl")
+    old_spans_after = os.path.exists(old + "/metrics/spans-20260101.jsonl")
+    usage_old_after, offsets_after = read(old + "/usage.log"), os.path.exists(old + "/.moved-offsets.json")
     second = run()
 finally:
     os.link, os.open, os.write = real_link, real_open, real_write
-print("left-oserror" if "left import state at %s/fail110/state — OSError" % home in first else "first: " + first.strip())
-print("new-after-failure:", left)
-print("moved" if "moved import state" in second else "second: " + second.strip())
-print("cursor:", open(new + "/import-cursor.json").read().strip() if os.path.exists(new + "/import-cursor.json") else "none")
-print("old:", "gone" if not os.path.exists(home + "/fail110/state/import-cursor.json") else "kept")
+print("left-oserror" if all("left %s at %s — OSError" % x in first for x in (("run metrics", old + "/metrics"), ("usage log", old + "/usage.log")))
+      else "first: " + first.strip().replace("\n", " / "))
+print("spans-after-failure: [%s] old-spans: %s" % (spans_after, "kept" if old_spans_after else "gone"))
+print("usage-old-after-failure:", usage_old_after.strip(), "| offsets:", "written" if offsets_after else "none")
+print("moved" if "moved run metrics" in second and "moved usage log" in second else "second: " + second.strip().replace("\n", " / "))
+print("spans:", read(new + "/metrics/spans-20260101.jsonl").strip(), "| old:", "kept" if os.path.exists(old + "/metrics/spans-20260101.jsonl") else "gone")
+print("usage-has-the-whole-line:", "old-usage" in read(new + "/usage.log").split("\n"), "| old:", read(old + "/usage.log").strip())
 PY
-check "a failed copy is reported and leaves the item" "$(sed -n 1p "$work/fail110.txt")" "left-oserror"
-check "a failed copy leaves no file at the new path" "$(sed -n 2p "$work/fail110.txt")" "new-after-failure: []"
-check "the next run moves the item" "$(sed -n 3p "$work/fail110.txt")" "moved"
-check "the next run's cursor is the whole old cursor" "$(sed -n 4p "$work/fail110.txt")" 'cursor: {"old": 1}'
-check "the old cursor goes only after the new one is whole" "$(sed -n 5p "$work/fail110.txt")" "old: gone"
+check "a failed append is reported and leaves the items" "$(sed -n 1p "$work/fail110.txt")" "left-oserror"
+check "a failed append under the recorder's lock leaves nothing half-written and keeps the old spans" "$(sed -n 2p "$work/fail110.txt")" "spans-after-failure: [] old-spans: kept"
+check "a failed usage append keeps the old usage log and records no place" "$(sed -n 3p "$work/fail110.txt")" "usage-old-after-failure: old-usage | offsets: none"
+check "the next run moves the items" "$(sed -n 4p "$work/fail110.txt")" "moved"
+check "the next run's spans are the whole old spans, once" "$(sed -n 5p "$work/fail110.txt")" 'spans: {"old":1} | old: gone'
+check "the next run's usage log has the whole old line and the old usage log stays" "$(sed -n 6p "$work/fail110.txt")" "usage-has-the-whole-line: True | old: old-usage"
+# 늦은 쓰기 — 옛 사용 기록을 추가 모드로 열어 둔 기록기가 옮긴 뒤에 쓴 줄도 잃지 않는다. 새 파일이 있으면 옛 파일을 지우지 않고
+# 덧붙인 자리를 적어 다음 render 가 늘어난 줄만 덧붙이고, 새 파일이 없으면 옛 파일에 새 이름을 걸어 열린 파일의 줄이 새 파일에 남는다
+late110() { # late110 <리포> <이름> — 옛 사용 기록을 열어 둔 채 render 하고, 그 뒤 열린 파일에 한 줄을 쓴 다음 doctor 를 본다
+  python3 - "$root/bin/harness" "$1" "$HARNESS_HOME/$2/usage.log" <<'PY'
+import os, subprocess, sys
+cli, repo, old = sys.argv[1:4]
+fd = os.open(old, os.O_WRONLY | os.O_APPEND)   # 옛 기록기가 옛 사용 기록을 열고 멈춘 중이다
+first = subprocess.run([cli, "render", "--target", repo], capture_output=True, text=True)
+os.write(fd, b"late-usage\n")
+os.close(fd)
+doctor = subprocess.run([cli, "doctor", "--target", repo], capture_output=True, text=True)
+print(first.returncode, "warn" if "state under the old name directory is not moved" in doctor.stdout else "quiet")
+PY
+}
+LM110="$lg110/late-merge"; mk110 "$LM110" legacy110lm || bad "could not set up the late writer repository with a new usage log"
+old110 "$LM110" legacy110lm || bad "could not lay down the late writer's old name directory"
+nLM110="$HARNESS_HOME/$(python3 "$LM110/script/_clone_key.py" expand '{clone}')"
+mkdir -p "$nLM110" && printf 'new-usage\n' > "$nLM110/usage.log"
+check "doctor reports a line written late to the kept old usage log" "$(late110 "$LM110" legacy110lm 2>&1)" "0 warn"
+"$root/bin/harness" render --target "$LM110" > "$work/r110lm.out" 2>&1; check "render after a late write exits 0" "$?" "0"
+has "$work/r110lm.out" "render: moved usage log to $nLM110/usage.log" "render did not move the line written late to the old usage log"
+check "a line written late to the old usage log reaches the new one, once" "$(tr '\n' ' ' < "$nLM110/usage.log")" "new-usage old-usage late-usage "
+"$root/bin/harness" render --target "$LM110" > "$work/r110lm2.out" 2>&1
+check "a render after the late line is moved moves nothing" "$(moved110 "$work/r110lm2.out")" ""
+LL110="$lg110/late-link"; mk110 "$LL110" legacy110ll || bad "could not set up the late writer repository without a new usage log"
+old110 "$LL110" legacy110ll || bad "could not lay down the hard-link late writer's old name directory"
+nLL110="$HARNESS_HOME/$(python3 "$LL110/script/_clone_key.py" expand '{clone}')"
+check "doctor has nothing to report after a late write through the hard-linked old name" "$(late110 "$LL110" legacy110ll 2>&1)" "0 quiet"
+check "a line written late through the hard-linked old name is in the new usage log" "$(tr '\n' ' ' < "$nLL110/usage.log")" "old-usage late-usage "
+"$root/bin/harness" render --target "$LL110" > "$work/r110ll.out" 2>&1
+check "render does not move the hard-linked usage log again" "$(moved110 "$work/r110ll.out")" ""
+# 옛 기록 디렉터리 안의 링크 디렉터리 — 파일이 없어도 옮길 것이 남은 것으로 보고 남기는 사유를 알린다. 다 옮김 표지로 바꾸지 않는다
+S110="$lg110/s"; mk110 "$S110" legacy110s || bad "could not set up the linked subdirectory repository"
+oS110="$HARNESS_HOME/legacy110s"; sout110="$lg110/s-outside"
+mkdir -p "$sout110/sessions" "$oS110/state" "$oS110/metrics" && printf 'outside\n' > "$sout110/sessions/x" && : > "$oS110/metrics/.lock"
+printf '{"path": "%s"}\n' "$(cd "$S110" && pwd -P)" > "$oS110/project.json"
+ln -s "$sout110/sessions" "$oS110/state/sessions"; ln -s "$sout110/sessions" "$oS110/metrics/archive"
+"$root/bin/harness" doctor --target "$S110" > "$work/doc110-slink.out" 2>&1
+has "$work/doc110-slink.out" "warn state under the old name directory is not moved" "doctor does not report an old directory holding only a linked subdirectory"
+"$root/bin/harness" render --target "$S110" > "$work/r110s.out" 2>&1; check "render over linked subdirectories exits 0" "$?" "0"
+for l in "render: left import state at $oS110/state — holds a symbolic link" "render: left run metrics at $oS110/metrics — holds a symbolic link" \
+         "render: kept $oS110 — 2 item(s) left there"; do
+  has "$work/r110s.out" "$l" "render does not say: $l"
+done
+[ -f "$oS110/project.json" ] && [ ! -e "$oS110/.moved.json" ] && [ -L "$oS110/state/sessions" ] && [ -L "$oS110/metrics/archive" ] && ok \
+  || bad "an old directory holding a linked subdirectory was marked moved or its links went away"
+check "what a linked subdirectory points at stays" "$(ls "$sout110/sessions") $(cat "$sout110/sessions/x")" "x outside"
+# 읽지 못하는 하위 디렉터리 — 비었다고 보지 않고 남긴다. 그 안을 볼 수 있는 사용자(root)면 건너뛴다
+U110="$lg110/u"; mk110 "$U110" legacy110u || bad "could not set up the unreadable subdirectory repository"
+oU110="$HARNESS_HOME/legacy110u"; mkdir -p "$oU110/state/sealed" && printf 'sealed\n' > "$oU110/state/sealed/x"
+printf '{"path": "%s"}\n' "$(cd "$U110" && pwd -P)" > "$oU110/project.json"
+chmod 000 "$oU110/state/sealed"
+if ls "$oU110/state/sealed" >/dev/null 2>&1; then
+  ok
+else
+  "$root/bin/harness" render --target "$U110" > "$work/r110u.out" 2>&1; check "render over an unreadable subdirectory exits 0" "$?" "0"
+  has "$work/r110u.out" "render: left import state at $oU110/state — PermissionError" "render does not say it left an unreadable subdirectory"
+  has "$work/r110u.out" "render: kept $oU110 — 1 item(s) left there" "render does not keep the old directory with an unreadable subdirectory"
+  [ -f "$oU110/project.json" ] && [ ! -e "$oU110/.moved.json" ] && ok || bad "an old directory with an unreadable subdirectory was marked moved"
+fi
+chmod 700 "$oU110/state/sealed"
+check "the unreadable subdirectory's file stays" "$(cat "$oU110/state/sealed/x")" "sealed"
 # 링크 — 옛 기록이 새 자리를 가리키는 링크면 합치지 않고 사유와 함께 남긴다. 따라가 합치면 같은 파일을 자기 자신에
 # 덧붙이고 지워 새 자리의 기록이 사라진다
 E110="$lg110/e"; mk110 "$E110" legacy110e || bad "could not set up the link repository"
@@ -4981,9 +5141,10 @@ PY
 check "metrics merge under the recorder's lock in both places" "$(sed -n 1p "$work/race110.txt")" "old=held new=held"
 check "the merged spans keep both lines" "$(sed -n 2p "$work/race110.txt")" '{"new":1} {"old":1} '
 check "merging the usage log keeps a line another recorder appended meanwhile" "$(sed -n 3p "$work/race110.txt")" " concurrent new-usage old-usage"
-cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out "$work/race110.txt" "$work/wait110.txt" "$work/fail110.txt" > "$work/out110.log"
+cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out "$work/race110.txt" "$work/wait110.txt" "$work/fail110.txt" \
+  "$work/nolink110.txt" > "$work/out110.log"
 no_hangul "$work/out110.log" "the old name directory move output"
-unset -f g110 perm110 moved110 rest110 mk110 old110
+unset -f g110 perm110 moved110 rest110 mk110 old110 late110
 
 echo
 if [ "$fail" -eq 0 ]; then
