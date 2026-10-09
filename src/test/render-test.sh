@@ -5318,8 +5318,114 @@ check "moving and judging read the old records a chunk at a time, not whole" "$(
   "largest-read: within a chunk or the 4KiB head"
 check "an old usage log that shrinks while it is appended is left and its place is not recorded" "$(sed -n 11p "$work/chunk110.txt")" \
   "shrunk: True | offsets: none"
+# 옮기는 도중의 세션 가져오기 — 옮기기가 등록부 잠금을 잡고 커서를 옮기기 전, 그리고 스팬을 여러 조각으로 덧붙이는 사이에
+# 가져오기를 띄운다. 가져오기는 옮기기가 끝날 때까지 기다린 뒤 읽어, 옛 커서가 이미 센 세션을 다시 세지 않고 옛 파일 뒤쪽의
+# 실행 스팬에 세션을 붙인다. 옛 등록이 가리키지 않는 같은 클론의 worktree 에서 띄운 가져오기도 같다 — 같은 기록을 읽는다
+I110="$lg110/i"; mk110 "$I110" legacy110i || bad "could not set up the import-during-move repository"
+g110 "$I110" worktree add -q --detach "$lg110/i-wt" || bad "could not add a worktree to the import-during-move repository"
+python3 - "$root/bin/harness" "$I110" "$lg110/i-sessions" "$lg110/i-wt" > "$work/imp110.txt" 2>&1 <<'PY'
+import contextlib, datetime, importlib.machinery, importlib.util, io, json, os, re, shutil, subprocess, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+harness, repo, sessions, wt = sys.argv[1:5]
+home = os.environ["HARNESS_HOME"]
+old, new = home + "/legacy110i", home + "/" + cli.clone_key(Path(repo))
+now = datetime.datetime.now(datetime.timezone.utc)
+ts = lambda m: (now - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+span = lambda **e: json.dumps(dict(e, v=1)) + "\n"
+name = "spans-%s-1.jsonl" % now.strftime("%Y%m%d")
+cfg = {"project": {"name": "legacy110i"}, "metrics": {"dir": home + "/{clone}/metrics"},
+       "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+said = lambda m, mid, i, o: json.dumps({"type": "assistant", "sessionId": mid, "timestamp": ts(m),
+                                        "message": {"id": mid, "model": "claude-x", "usage": {"input_tokens": i, "output_tokens": o}}}) + "\n"
+
+def lay(at):   # 옛 이름 디렉터리: 세션 하나를 이미 센 커서 · 앞쪽은 다른 기록이고 뒤쪽에 실행이 있는 스팬. 새 자리에 같은 이름의 스팬.
+    # 세션 기록은 가져오기를 띄울 하네스 루트 at 의 것이다
+    chat = os.path.join(sessions, re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(at)))
+    for d in (old, new + "/state", new + "/metrics", sessions):
+        shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(old + "/state"); os.makedirs(old + "/metrics"); os.makedirs(new + "/metrics"); os.makedirs(chat)
+    json.dump({"path": os.path.realpath(repo)}, open(old + "/project.json", "w"))
+    open(chat + "/counted.jsonl", "w").write(said(6, "counted", 20, 10))
+    open(chat + "/fresh.jsonl", "w").write(said(5, "fresh", 5, 7))
+    f = Path(sessions, os.path.basename(chat), "counted.jsonl")
+    json.dump({"claude:" + str(f): {"ino": f.stat().st_ino, "off": f.stat().st_size, "ids": ["counted"]}},
+              open(old + "/state/import-cursor.json", "w"))
+    filler = "".join(span(ev="start", span="s-pad%d" % i, trace="t-pad", kind="script", name="pad", attrs={}, t=ts(30)) for i in range(8))
+    open(old + "/metrics/" + name, "w").write(filler + span(ev="start", span="s-run", trace="t-run110", kind="command", name="run/work",
+                                                            attrs={"workflow": "work", "vendor": "claude"}, t=ts(10))
+                                              + span(ev="end", span="s-run", status="ok", exit=0, dur_ms=540000, t=ts(1)))
+    open(new + "/metrics/" + name, "w").write(span(ev="start", span="s-new", trace="t-new", kind="script", name="new", attrs={}, t=ts(20)))
+    return os.path.realpath(new + "/metrics/" + name)
+
+def start_import(at, seen):   # 하네스 루트 at 에서 가져오기를 띄우고 잠깐 기다린다 — 끝나지 않고 기다리고 있는지 본다
+    env = dict(os.environ, HARNESS_CLAUDE_DIR=sessions, HARNESS_CODEX_DIR=sessions + "/none")
+    p = subprocess.Popen([harness, "metrics", "import", "--target", at, "--since", "1d"], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        p.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    seen.append(p.poll() is None)
+    return p
+
+def run(pause, at):
+    target = lay(at)
+    real_open, real_write, fds, seen, procs = os.open, os.write, {}, [], []
+    def os_open(p, flags, *a, **k):
+        fd = real_open(p, flags, *a, **k)
+        fds.pop(fd, None)
+        try:
+            if flags & (os.O_WRONLY | os.O_RDWR) and os.path.realpath(p) == target:
+                fds[fd] = True
+        except (TypeError, ValueError):
+            pass
+        return fd
+    def os_write(fd, data):   # 새 스팬 파일에 첫 조각을 쓴 직후 가져오기를 띄운다
+        n = real_write(fd, data)
+        if fd in fds and pause == "mid-append" and not procs:
+            procs.append(start_import(at, seen))
+        return n
+    cli.COPY_CHUNK = 256
+    os.open, os.write = os_open, os_write
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), cli.registry_lock():
+            if pause == "before-move":
+                procs.append(start_import(at, seen))
+            cli.migrate_legacy(cfg, Path(repo), "render")
+    finally:
+        os.open, os.write = real_open, real_write
+    if not procs:
+        return "%s: the move did not pause" % pause
+    try:
+        out, err = procs[0].communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        procs[0].kill()
+        return "%s: the import did not finish after the move" % pause
+    try:
+        d = json.loads(out)
+    except ValueError:
+        return "%s: import failed: %s" % (pause, err.strip()[-200:])
+    imp = d["diagnostics"]["imported"]
+    tokens = {t["trace"]: t["tokens"] for t in d["traces"]}
+    return "%s%s: waited %s | records %s | unattributed %s | run tokens %s" % (
+        "worktree " if at == wt else "", pause, seen[0], imp["records"], imp["unattributed"], tokens.get("t-run110"))
+
+print(run("before-move", repo))
+print(run("mid-append", repo))
+print(run("before-move", wt))
+PY
+check "an import started before the move waits for it, keeps the moved cursor and finds the moved run" "$(sed -n 1p "$work/imp110.txt")" \
+  "before-move: waited True | records 1 | unattributed 0 | run tokens 12"
+check "an import started between appended chunks waits for the move and finds the run past the first chunk" "$(sed -n 2p "$work/imp110.txt")" \
+  "mid-append: waited True | records 1 | unattributed 0 | run tokens 12"
+check "an import started in a worktree of the same clone also waits for the move" "$(sed -n 3p "$work/imp110.txt")" \
+  "worktree before-move: waited True | records 1 | unattributed 0 | run tokens 12"
 cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out "$work/race110.txt" "$work/wait110.txt" "$work/fail110.txt" \
-  "$work/nolink110.txt" "$work/chunk110.txt" > "$work/out110.log"
+  "$work/nolink110.txt" "$work/chunk110.txt" "$work/imp110.txt" > "$work/out110.log"
 no_hangul "$work/out110.log" "the old name directory move output"
 unset -f g110 perm110 moved110 rest110 mk110 old110 late110
 

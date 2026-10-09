@@ -2105,13 +2105,20 @@ NO_HARD_LINK = "cannot hard-link to the new path"
 COPY_CHUNK = 1 << 20
 
 
-def legacy_dir(cfg, target: Path):
-    """옮길 옛 이름 디렉터리 — 옛 버전이 `<등록부>/<project.name>/` 에 남긴 등록(또는 다 옮김 표지)이 이 하네스 루트를
-    가리킬 때만. 아니면 None."""
+def name_dir(cfg):
+    """옛 버전이 이름으로 만들었을 등록부 디렉터리 — `<등록부>/<project.name>/`. 이름이 키 형식이거나 경로 성분이 될 수 없으면 None."""
     name = cfg["project"]["name"]
     if not isinstance(name, str) or not name or CLONE_KEY.fullmatch(name) or name in (".", "..") or "/" in name:
         return None
-    d = registry() / name
+    return registry() / name
+
+
+def legacy_dir(cfg, target: Path):
+    """옮길 옛 이름 디렉터리 — 옛 버전이 `<등록부>/<project.name>/` 에 남긴 등록(또는 다 옮김 표지)이 이 하네스 루트를
+    가리킬 때만. 아니면 None."""
+    d = name_dir(cfg)
+    if d is None:
+        return None
     for f in ("project.json", LEGACY_DONE):
         _name, path = read_registration(d, f) or (None, None)
         if path is not None and os.path.realpath(path) == os.path.realpath(target):
@@ -4557,15 +4564,20 @@ def cmd_metrics(cfg, target, args):
         r = subprocess.run([sys.executable, str(target / "script" / "metric.py"), "prune"], cwd=target)
         return r.returncode
     hm = metrics_module()
-    imported = (hm.metrics_import(target, m, registry() / clone_key(target) / "state", set(cfg["roles"]),
-                                  worktree_dir(cfg, target), git(target, "rev-parse", "--show-prefix").stdout.strip())
-                if args.args[:1] == ["import"] else None)
-    mt = re.fullmatch(r"(\d+)([hd])", args.since or "7d")
-    if not mt:
-        die("error: --since takes a span like 24h, 7d or 30d (got %r)" % args.since)
-    now = datetime.datetime.now(datetime.timezone.utc)
-    since = now - datetime.timedelta(hours=int(mt.group(1)) * (24 if mt.group(2) == "d" else 1))
-    spans, diag = hm.read_spans(d) if d else ({}, {"bad_lines": 0, "files": 0, "bytes": 0})
+    # 옛 이름 디렉터리 옮기기는 등록부 잠금 안에서 커서와 스팬을 차례로 옮긴다. 그 디렉터리가 있으면 같은 잠금을 잡고 가져오고
+    # 읽는다 — 옮기는 도중의 커서 · 스팬을 읽고 커서를 전진시키지 않는다. 같은 클론의 worktree 도 같은 기록을 읽으므로 등록이
+    # 가리키는 경로가 아니라 이름으로 가른다
+    nd = name_dir(cfg)
+    with registry_lock() if nd is not None and os.path.isdir(nd) else contextlib.nullcontext():
+        imported = (hm.metrics_import(target, m, registry() / clone_key(target) / "state", set(cfg["roles"]),
+                                      worktree_dir(cfg, target), git(target, "rev-parse", "--show-prefix").stdout.strip())
+                    if args.args[:1] == ["import"] else None)
+        mt = re.fullmatch(r"(\d+)([hd])", args.since or "7d")
+        if not mt:
+            die("error: --since takes a span like 24h, 7d or 30d (got %r)" % args.since)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        since = now - datetime.timedelta(hours=int(mt.group(1)) * (24 if mt.group(2) == "d" else 1))
+        spans, diag = hm.read_spans(d) if d else ({}, {"bad_lines": 0, "files": 0, "bytes": 0})
     out = hm.metrics_report(spans, since, now, m["stale_after_hours"], args.trace)
     out["diagnostics"] = dict(diag, imported=imported, enabled=d is not None, dir=m["dir"], retention_days=m["retention_days"],
                               max_total_mb=m["max_total_mb"], capture_logs=m["capture_logs"])
