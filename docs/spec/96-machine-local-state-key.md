@@ -200,8 +200,8 @@ help: another clone may share worktree.dir — put {clone} in worktree.dir or mo
 - 이슈 worktree(`harness run --worktree`)는 install 을 돌지 않으므로 등록을 쓰지 않는다. 본 클론의 등록을 같은 키로 읽는다
 - 등록부 파일이나 디렉터리를 쓰지 못하면(`OSError`) 지금처럼 예외가 설치를 멈춘다. 이 경우를 가르는 안내문은 없다
 
-`harness uninstall` 은 `path` 가 이 하네스 루트인 `project.json` 을 키 디렉터리와 옛 이름 디렉터리 양쪽에서 지운다.
-그 디렉터리 아래 기록은 남는다.
+`harness uninstall` 은 `path` 가 이 하네스 루트인 `project.json` 을 키 디렉터리와 옛 이름 디렉터리 양쪽에서 지우고, 옛 이름
+디렉터리의 다 옮김 표지 `.moved.json`(4-3)도 지운다 — 그 뒤로는 옮기지 않는다. 그 디렉터리 아래 기록은 남는다.
 
 ### 3-4. 목록 조회 — `harness projects`
 
@@ -252,34 +252,77 @@ install: `<이름>` is also registered at <경로>
 옮길 대상이 있는 조건은 모두 맞아야 한다.
 
 - `<이름>` = `project.name` 이 키 형식이 아니다
-- `registry()/<이름>/project.json` 이 있고, 그 `path` 를 실제 경로로 푼 값이 하네스 루트의 실제 경로와 같다
+- `registry()/<이름>/project.json` 이 있고, 그 `path` 를 실제 경로로 푼 값이 하네스 루트의 실제 경로와 같다.
+  다 옮긴 디렉터리는 `project.json` 대신 다 옮김 표지 `.moved.json`(같은 형식)으로 판정한다 (4-3)
 
 조건이 맞지 않으면 아무것도 하지 않고 출력도 없다. 이슈 worktree 에서 도는 렌더는 옛 `path` 가 본 클론이라 옮기지 않는다.
+옛 이름 디렉터리 자체가 심볼릭 링크면 아무것도 옮기지 않고 `kept <옛 이름 디렉터리> — a symbolic link` 만 낸다.
 
 ### 4-2. 무엇을
 
 옛 경로는 설정 값의 `{clone}` · `{project}` 를 `<이름>` 으로 푼 것, 새 경로는 클론 키로 푼 것이다(둘 다 `~` 와 환경 변수 확장).
-옛 경로와 새 경로가 같거나 설정 값이 `off` 인 항목은 건너뛴다.
+옛 경로와 새 경로가 같거나 설정 값이 `off` 인 항목은 건너뛴다. 옮길 것이 남지 않은 항목도 건너뛴다(아래 "남은 것").
 
 | 항목 | 옛 → 새 | 옮기는 방법 |
 |---|---|---|
 | 가져오기 커서 | `registry()/<이름>/state/` → `registry()/<클론 키>/state/` | 디렉터리 옮기기 |
-| 실행 지표 | `metrics.dir` | 디렉터리 옮기기 |
-| 사용 기록 | `usage.log_path` | 파일 옮기기 |
+| 실행 지표 | `metrics.dir` | 디렉터리 옮기기 — 기록기의 잠금 아래 |
+| 사용 기록 | `usage.log_path` | 사용 기록 옮기기 |
 | 이슈 worktree | `worktree.dir` 바로 아래, 이 리포에 등록된 worktree 마다 | `git -C <git 최상위> worktree move <옛 경로> <새 경로>` |
 
-디렉터리 옮기기:
+옛 버전 하네스는 옮긴 뒤에도 옛 경로에 쓸 수 있다. 그래서 옮기기는 새 이름을 덮지 않고, 옛 쪽 기록은 새 쪽에 반영된 뒤에만
+지우며, 옛 기록기가 쓰는 자리(디렉터리 · 표지 · 덧붙인 사용 기록)는 남긴다. 남긴 자리에 그 뒤로 생긴 기록은 다음
+install · render 가 옮긴다.
 
-- 새 디렉터리가 없으면 부모를 만들고(0700) 통째로 옮긴다 (`shutil.move`)
-- 새 디렉터리가 있으면 옛 디렉터리의 파일마다 옮긴다
-  - 같은 이름이 없으면 옮긴다
-  - `spans-*.jsonl` 이 같은 이름으로 있으면 옛 파일 내용을 새 파일 끝에 덧붙이고 옛 파일을 지운다
-  - `state/import-cursor.json` 이 있으면 새 것을 남기고 옛 것을 지운다
-  - 그 밖의 같은 이름 파일(`.lock` · `.pruned` 등)은 옛 것을 지운다
-  - 비게 된 옛 디렉터리를 지운다
+**링크.** 아래 중 하나면 그 항목을 옮기지 않고 `left` 로 사유를 알린다. 링크는 사람이 정리한다.
+
+| 판정 | 알림의 `<사유>` |
+|---|---|
+| 옛 경로가 심볼릭 링크다 | `a symbolic link` |
+| 옛 경로와 새 경로가 실제 경로로 같거나 한쪽이 다른 쪽 안에 있다 | `overlaps the new path` |
+| 자리표시가 든 성분부터 옛 경로까지에 링크가 있거나, 옛 디렉터리 안에 링크(파일이든 디렉터리든)가 있다 | `holds a symbolic link` |
+| 새 경로 쪽에 같은 방식으로 링크가 있다 | `a symbolic link at the new path` |
+
+worktree 디렉터리(`worktree.dir` 의 옛 경로)도 같은 판정을 거친다 — 그 안의 링크는 보지 않는다(worktree 의 파일이다). 걸리면
+`left worktrees at <옛 경로> — <사유>` 로 통째로 남긴다.
+
+**디렉터리 옮기기.** 새 디렉터리가 없으면 만들고(0700) 옛 디렉터리의 파일을 하나씩 옮긴다. 옛 디렉터리는 옮기지 않고 남긴다.
+
+- 실행 지표는 기록기(`script/metric.py`)의 잠금 파일 `.lock` 을 옛 · 새 디렉터리 양쪽에서 잡은 채 옮긴다. 기록기는 그 잠금
+  아래에서 파일을 경로로 열어 쓰므로, 옛 파일을 지운 뒤에 쓰는 기록기는 옛 자리에 새 파일을 만든다
+- 기록기의 표지(`.lock` · `.pruned`)는 옮기지도 지우지도 않는다
+- 새 이름은 하드 링크로 차지한다. 새 이름이 없으면 옛 파일에 새 이름을 걸고 옛 이름을 지운다
+- 새 이름이 이미 있거나 그 사이 생겼으면
+  - `spans-*.jsonl` 은 옛 내용을 새 파일 끝에 덧붙이고(추가 쓰기, 새 파일이 줄 중간에서 끝나면 줄을 바꾼 뒤) 옛 파일을 지운다
+  - 그 밖(`state/import-cursor.json` 등)은 새 것을 남기고 옛 것을 지운다
+- 하드 링크를 만들 수 없으면(파일 시스템이 지원하지 않거나 장치가 다르다) `spans-*.jsonl` 은 새 파일에 덧붙여(없으면 만든다) 옮기고, 그 밖의 파일은 옛 자리에
+  남긴 채 항목을 `left <항목> at <옛 경로> — cannot hard-link to the new path` 로 알린다
+- 덧붙이다 실패하면 잠금 아래인 실행 지표는 이번에 붙인 앞부분을 잘라 되돌린다. 옛 파일은 남는다
+- 한 파일의 두 이름(지난번에 새 이름을 걸고 옛 이름을 지우기 전에 멈춘 것)이면 옛 이름만 지운다
+- 읽지 못하는 하위 디렉터리를 만나면 거기서 멈추고 항목을 `left … — <예외 클래스 이름>` 으로 알린다
 - 옮긴 지표 디렉터리와 커서 디렉터리는 0700, 그 안의 파일은 0600 이다
 
-사용 기록 파일은 새 파일이 없으면 옮기고, 있으면 옛 내용을 새 파일 끝에 덧붙인 뒤 옛 파일을 지운다.
+**사용 기록 옮기기.** 사용 기록 기록기(`script/usage-log.sh`)는 잠금 없이 덧붙인다.
+
+- 새 파일이 없으면 옛 파일에 새 이름을 하드 링크로 걸고 옛 이름을 지운다. 한 파일이라 옛 이름으로 연 기록기가 늦게 쓴 줄도
+  새 파일에 남는다
+- 새 파일이 있거나(그 사이 생긴 것도) 하드 링크를 만들 수 없으면, 옛 파일에서 지난번에 덧붙인 자리 뒤의 온전한 줄(마지막
+  줄바꿈까지)을 새 파일 끝에 덧붙이고(없으면 0600 으로 만든다) 그 자리를 옛 이름 디렉터리의 `.moved-offsets.json` 에 적는다.
+  **옛 파일은 지우지 않는다** — 옛 파일을 열어 둔 기록기가 그 뒤에 쓴 줄은 다음 install · render 가 덧붙인다
+- `.moved-offsets.json` 은 옛 경로마다 장치 번호 · inode · 덧붙인 바이트 위치 · 그 위치까지의 앞부분(많아야 4KiB) sha256 을 담는다.
+  옛 파일이 그 장치 · inode · 앞부분과 같고 그 위치보다 줄지 않았을 때만 그 뒤부터 잇고, 아니면 처음부터 덧붙인다. 파일이
+  없거나 읽히지 않으면 처음부터다
+- 자리는 덧붙인 뒤에 바꾼다(임시 파일에 써 두고 이름을 바꾼다). 덧붙이다 실패하면 붙이다 만 앞부분을 그대로 두고 자리를
+  바꾸지 않는다 — 잠금이 없어 되돌리면 다른 기록기의 줄을 자를 수 있다
+- 옛 경로가 일반 파일이 아니면 `left usage log at <옛 경로> — not a file`
+
+**남은 것.** 항목마다 옮길 것이 남았는지를 이렇게 가른다. 옮긴 뒤에도 남았으면 4-3 의 `kept` 수에 든다.
+
+| 항목 | 남았다 |
+|---|---|
+| 가져오기 커서 · 실행 지표 | 옛 디렉터리에 표지 말고 파일이 있거나, 링크(파일이든 디렉터리든)가 있거나, 읽지 못하는 하위 디렉터리가 있다. 옛 경로가 링크이거나 디렉터리가 아니어도 남았다 |
+| 사용 기록 | 옛 파일에 아직 덧붙이지 않은 온전한 줄이 있다. 옛 경로가 링크이거나 일반 파일이 아니거나, 새 파일과 한 파일이거나, 읽지 못해도 남았다 |
+| 이슈 worktree | 옛 `worktree.dir` 바로 아래에 이 리포의 worktree 가 등록돼 있다. 옛 worktree 디렉터리를 링크 판정으로 통째로 남기면 1 |
 
 worktree 는 아래 중 하나면 옮기지 않고 남긴다.
 
@@ -297,9 +340,13 @@ worktree 에 등록되지 않은 옛 `worktree.dir` 아래 디렉터리는 건�
 
 항목을 다 처리한 뒤:
 
-1. `registry()/<클론 키>/project.json` 이 없으면 3-2 형식으로 쓴다
-2. 옛 이름 디렉터리에 `project.json` 과 빈 디렉터리 말고 남은 것이 없으면 그 디렉터리를 통째로 지운다
-3. 남은 것이 있으면 `project.json` 을 포함해 전부 그대로 둔다 — 다음 install · render 가 다시 옮긴다
+1. `registry()/<클론 키>/project.json` 이 없으면(그 이름에 아무것도 없으면) 3-2 형식으로 쓴다. 키 디렉터리가 링크면 쓰지 않는다
+2. 4-2 의 "남은 것" 이 있으면 옛 이름 디렉터리를 `project.json` 까지 그대로 둔다 — 다음 install · render 가 다시 옮긴다
+3. 남은 것이 없고 옛 `project.json` 이 일반 파일이면 그것을 `.moved.json` 으로 이름을 바꾼다. 옛 이름 디렉터리와 그 안의
+   디렉터리 · 표지 · 덧붙인 사용 기록 · `.moved-offsets.json` 은 남긴다. `.moved.json` 은 등록이 아니라 `harness projects` 의
+   `legacy` 에 나오지 않고, 다음 install · render 는 이것으로 4-1 을 판정해 옛 버전이 그 뒤로 남긴 기록을 계속 옮긴다
+
+옮기기를 시작할 때 옛 이름 디렉터리 바로 아래의 `.harness-move-` 로 시작하는 임시 파일(멈춘 실행이 남긴 것)을 지운다.
 
 ### 4-4. 출력
 
@@ -308,8 +355,10 @@ worktree 에 등록되지 않은 옛 `worktree.dir` 아래 디렉터리는 건�
 ```
 <명령>: moved <항목> to <새 경로>
 <명령>: left <항목> at <옛 경로> — <사유>
-<명령>: removed <옛 이름 디렉터리>
+<명령>: left worktrees at <옛 경로> — <사유>
 <명령>: kept <옛 이름 디렉터리> — <N> item(s) left there
+<명령>: kept <옛 이름 디렉터리> — a symbolic link
+<명령>: cleared <옛 이름 디렉터리> — files older versions may still write to stay there; render moves what they add
 ```
 
 | `<항목>` | 값 |
@@ -319,8 +368,8 @@ worktree 에 등록되지 않은 옛 `worktree.dir` 아래 디렉터리는 건�
 | 사용 기록 | `usage log` |
 | 이슈 worktree | `worktree <이름>` |
 
-파일 옮기기가 `OSError` 로 실패하면 그 항목을 `left … — <예외 클래스 이름>` 으로 알리고 다음 항목으로 간다.
-`<N>` 은 옛 이름 디렉터리에 남은 최상위 항목 수다(`project.json` 제외).
+`<사유>` 는 4-2 의 표와 목록에 있는 것이다. 옮기기가 `OSError` 로 실패하면 그 항목을 `left … — <예외 클래스 이름>` 으로 알리고
+다음 항목으로 간다. `<N>` 은 4-2 의 "남은 것" 의 수다. `cleared` 는 옛 `project.json` 을 `.moved.json` 으로 바꾼 실행만 낸다.
 
 ## 5. `harness doctor` — `registry` 절
 
@@ -333,7 +382,7 @@ doctor 의 수집 함수가 `section` 이 `registry` 인 항목을 낸다. 항�
 | `path` 가 하네스 루트와 같거나, `path` 의 클론 키가 이 하네스 루트의 클론 키와 같다 (같은 클론의 worktree) | `ok` | ``registered as `<name>` `` | 빈 문자열 |
 | `path` 가 있으나 위에 해당하지 않는다 | `warn` | `this clone is registered to another path` | `<그 경로>` |
 | `project.json` 이 없다 · JSON 으로 읽히지 않는다 · `path` 가 비어 있지 않은 문자열로 없다 | `warn` | `this repository is not registered` | `` run `harness install` to list it in the UI `` |
-| 4-1 의 옮길 조건이 맞다 (옛 이름 디렉터리가 이 루트를 가리킨다) — 위 항목에 더해 | `warn` | `state under the old name directory is not moved` | `` run `harness render` to move `<옛 이름 디렉터리>` `` |
+| 4-1 의 옮길 조건이 맞고 4-2 의 "남은 것" 이 있다 — 위 항목에 더해 | `warn` | `state under the old name directory is not moved` | `` run `harness render` to move `<옛 이름 디렉터리>` `` |
 
 - `<name>` 은 `project.json` 의 `name`, 없으면 `project.name` 이다
 - `path` 의 클론 키는 1-1 규칙대로 그 경로에서 계산한다. 경로가 없거나 git 이 답하지 못하면 경로 대체 규칙의 키가 되어
@@ -421,9 +470,17 @@ doctor 의 수집 함수가 `section` 이 `registry` 인 항목을 낸다. 항�
 | | 소스 리포 | 소스 트리 복제본 두 개를 같은 이름으로 설치하면 둘 다 통과하고 각자의 키로 등록된다 |
 | | uninstall | 한 클론을 uninstall 하면 그 키의 `project.json` 만 없고 다른 클론의 등록과 두 기록은 남는다 |
 | | `projects` | 출력이 3-4 형식이고, 두 클론이 `ok` 로 경로 순, 옛 이름 디렉터리의 `project.json` 은 `legacy` 에, `tools.json` · `.install.lock` · 최상위 `ui.log` 파일은 어디에도 없다. 설정 없는 디렉터리에서도 돈다 |
-| UT-77 옛 이름 디렉터리 옮기기 | 전부 옮김 | 옛 `~/<이름>/` 에 `project.json`(이 루트) · `state/import-cursor.json` · 지표 파일 · `usage.log` 와 깨끗한 이슈 worktree 하나를 두고 install 하면 전부 키 아래로 가고, worktree 는 `git worktree list` 에 새 경로로 있으며, 옛 디렉터리가 없다. 출력에 `moved` 와 `removed` |
-| | 남김 | 미커밋 변경이 있는 worktree 와 잠긴 worktree 는 옛 자리에 그대로 있고 출력에 `left` 와 각 사유, `kept`. 옛 `project.json` 이 남는다. 변경을 커밋·잠금을 푼 뒤 render 하면 옮겨지고 옛 디렉터리가 사라진다 |
-| | 합치기 | 키 아래에 같은 이름의 스팬 파일·`usage.log` 가 이미 있으면 옛 줄이 새 파일 끝에 붙고 원래 줄도 남는다. 커서는 새 것이 남는다 |
+| UT-77 옛 이름 디렉터리 옮기기 | 전부 옮김 | 옛 `~/<이름>/` 에 `project.json`(이 루트) · `state/import-cursor.json` · 지표 파일 · `usage.log` 와 깨끗한 이슈 worktree 하나를 두고 install 하면 전부 키 아래로 가고, worktree 는 `git worktree list` 에 새 경로로 있으며, 옛 디렉터리에 옮길 기록이 없고 옛 `project.json` 이 `.moved.json` 으로 바뀐다. 옛 지표 디렉터리와 `.lock` 은 남는다. 출력에 `moved` 와 `cleared`. uninstall 하면 `.moved.json` 이 없다 |
+| | 남김 | 미커밋 변경이 있는 worktree 와 잠긴 worktree 는 옛 자리에 그대로 있고 출력에 `left` 와 각 사유, `kept`. 옛 `project.json` 이 남는다. 변경을 커밋·잠금을 푼 뒤 render 하면 옮겨지고 옛 `project.json` 이 `.moved.json` 으로 바뀐다 |
+| | 합치기 | 키 아래에 같은 이름의 스팬 파일·`usage.log` 가 이미 있으면 옛 줄이 새 파일 끝에 붙고 원래 줄도 남는다. 커서는 새 것이 남는다. 옛 `usage.log` 는 그대로 남고, 다시 render 해도 줄이 겹치지 않는다 |
+| | 링크 | 옛 쪽(항목 · 이름 디렉터리 자체 · 안쪽 · 상위 경로로 겹침)이나 새 쪽에 링크가 있으면 4-2 의 사유로 남기고 링크가 가리키는 파일을 바꾸지 않는다. 링크 디렉터리만 든 옛 디렉터리도 남은 것으로 세어 `kept` 이고 doctor 가 `warn` 이다 |
+| | 다른 기록기 | 지표는 옛 · 새 `.lock` 을 잡은 채 합치고, 합치는 동안 덧붙인 사용 기록 줄을 덮지 않는다. 옛 `.lock` 을 열고 기다리던 기록기는 같은 잠금 파일을 얻어 옛 자리에 쓰고, 그것을 다음 render 가 옮긴다 |
+| | 늦은 쓰기 | 옛 `usage.log` 를 열어 둔 기록기가 render 뒤에 쓴 줄이, 새 파일이 있었으면 doctor `warn` 뒤 다음 render 에 한 번 덧붙고, 없었으면 이미 새 파일에 있다. 그 뒤 render 는 아무것도 옮기지 않는다 |
+| | 하드 링크 없음 | 새 이름을 드러내기 바로 전에 새 기록기가 그 이름에 써도 덮지 않는다 — 사용 기록은 그 줄 뒤에 덧붙고 옛 파일이 남으며, 스팬은 덧붙여 옮겨지고, 커서는 `cannot hard-link to the new path` 로 옛 자리에 남는다. 다음 실행이 같은 줄을 다시 옮기지 않는다 |
+| | 쓰기 실패 | 하드 링크 없이 덧붙이다 디스크가 차면 `left … — OSError`. 지표는 새 파일에 붙이다 만 것이 남지 않고 옛 파일이 남으며, 사용 기록은 옛 파일이 남고 `.moved-offsets.json` 이 없다. 다음 실행이 온전한 줄을 옮긴다 |
+| | 끊긴 옮기기 | 새 이름을 걸고 옛 이름을 지우기 전에 멈춘 사용 기록은 옛 이름만 지우고 줄을 겹치지 않는다. 옛 이름 디렉터리의 `.harness-move-` 임시 파일이 지워진다 |
+| | 읽지 못함 | 옛 커서 디렉터리 안의 읽지 못하는 하위 디렉터리는 `left … — PermissionError` 와 `kept` 로 남는다 |
+| | 거부된 렌더 | 사용자 파일로 거부된 render 는 아무것도 옮기지 않는다 |
 | | 다른 경로 | 옛 `project.json` 의 `path` 가 다른 경로면 아무것도 옮기지 않고 출력이 없다 |
 | | worktree 의 렌더 | 이슈 worktree 에서 render 하면 옮기지 않는다 |
 | | doctor | 옮기기 전 상태의 리포에서 `registry` 절에 `state under the old name directory is not moved` `warn` |
@@ -482,5 +539,9 @@ doctor 의 수집 함수가 `section` 이 `registry` 인 항목을 낸다. 항�
   끝낸 뒤 install · render 한다
 - 옮긴 worktree 의 옛 경로에서 돈 세션 가운데 아직 가져오지 않은 기록은 세션 가져오기가 새 경로로 찾으므로 붙지 않는다
 - 옛 버전 하네스가 고정된 worktree 의 스크립트는 옛 이름 디렉터리에 계속 쓴다. 다음 install · render 가 그것을 합친다
+- 새 파일에 덧붙인 옛 사용 기록은 옛 자리에도 그대로 남는다 — 같은 줄이 두 곳에 있다. 옛 버전이 더는 쓰지 않으면 사람이 지운다
+- 사용 기록을 덧붙이다 실패하거나 덧붙인 뒤 자리를 적기 전에 멈추면 다음 실행이 같은 줄을 다시 붙인다. 실패했으면 붙이다 만
+  조각도 새 파일에 남는다. 줄을 잃지는 않는다
+- 하드 링크를 만들 수 없는 곳에서는 가져오기 커서처럼 덧붙이지 않는 기록 파일을 옮기지 않는다. 옛 자리에 남은 파일은 사람이 옮긴다
 - 옛 이름 디렉터리 가운데 `path` 가 이 루트가 아닌 것(지운 리포 · 다른 기기에서 옮겨 온 디렉터리)은 옮기지 않는다.
   `harness projects` 의 `legacy` 에 남는다
