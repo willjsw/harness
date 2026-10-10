@@ -18,6 +18,7 @@
 | 이 리포의 검증 설정 | `harness.toml` 의 `[verify]` |
 | 컴파일 · 의존 방향 검사 | `script/project/check-cli.py` |
 | 회귀 테스트 | `src/test/render-test.sh` · `src/test/cli_loader.py` · `src/ui/lib/doctor.test.js` |
+| CLI 패키지의 Python 단위 테스트 | `src/test/unit/` (7-5) |
 | 사람용 설명 | `README.md` |
 | Homebrew 포뮬러 | 탭 리포 `willjsw/homebrew-harness` 의 `Formula/harness.rb` — 이 리포 밖이다 (11절) |
 
@@ -41,7 +42,9 @@
 - 전역 CLI 의 고정 사본 대조에서 비교하는 짝 (4-4)
 - 바이트코드가 등록부 아래 `.cache/pycache/` 에 쌓인다. 리포에는 `__pycache__` 가 생기지 않는다 (5절)
 - 진입 스크립트가 패키지를 찾지 못하면 `error:` 를 내고 멈춘다 (2-2)
-- 이 리포의 `[verify]` 단계 (6절)
+- 명령 표에 통과 표시가 생긴다. 통과 명령은 이름 뒤의 인자를 공용 파서에 넘기지 않고 그대로 받는다 (3-3). 이 명세의
+  명령은 모두 통과 명령이 아니어서 인자 해석이 그대로다
+- 이 리포의 `[verify]` 단계 (6절)와 CLI 패키지의 Python 단위 테스트 자리 `src/test/unit/` (7-5)
 
 ## 2. 배치
 
@@ -110,7 +113,7 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 - 함수 · 상수 · 클래스는 본문을 바꾸지 않고 옮긴다. 이름도 그대로다. 예외는 아래 표다
 - 패키지 안의 import 는 `harness.` 로 시작하는 절대 경로로 쓴다
 - 패키지의 `__init__.py` 는 docstring 만 갖는다. 예외는 명령 표를 갖는 `commands/__init__.py` 다
-- `harness/__init__.py` 의 docstring 은 지금 진입 스크립트의 docstring 이다. `help` 의 첫 줄과 인자 파서의 설명이 이것을 쓴다
+- `harness/__init__.py` 의 docstring 은 지금 진입 스크립트의 docstring 이다. `help` 의 첫 줄과 공용 파서의 설명이 이것을 쓴다
 - 가변 전역 상태(클론 키 모듈과 키 캐시)는 정의한 모듈 하나가 갖고, 그 모듈의 함수로만 읽고 바꾼다
 - `urllib.request` 는 쓰는 함수 안에서 불러온다. 모듈 최상위에서 `urllib` · `http` 를 불러오지 않는다
 
@@ -123,6 +126,8 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 | `cmd_check` 의 본문 | `harness.drift.check_target(cfg, target, args)`. `commands/check.py` 의 `cmd_check(cfg, target, args)` 가 그것을 부른다 |
 | `metrics_module()` | 없어진다. 지표 함수는 `harness.metrics.spans` · `harness.metrics.sessions` 에서 불러온다 |
 | `main()` 안의 명령 → 함수 표 | 없어진다. 명령 이름으로 명령 모듈을 찾는다 (3-3) |
+| `main()` 안의 인자 해석 | `cli.py` 의 `parse_command_line(argv)`. 통과 명령이 아니면 지금 파서 그대로 해석한다 (3-3) |
+| `COMMANDS` 항목의 첫 원소(함수 자리, 늘 `None`) | 통과 표시. 통과 명령은 `True`, 그 밖은 `None` 이다 (3-3) |
 | 지표 모듈 · 클론 키 모듈 · 대상 리포 지표 기록기를 불러오는 곳의 `sys.dont_write_bytecode = True` | 없어진다 (5-2) |
 
 다른 명령의 진입 함수를 부르던 명령 — `install` · `set` · `write-doc` · `steps` · `checks` 는 `render_target()` 을,
@@ -202,7 +207,7 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 
 | 모듈 | 책임 · 옮겨 오는 것 |
 |---|---|
-| `cli.py` | `main` · `DELEGATES` · `delegate` |
+| `cli.py` | `main` · `parse_command_line` · `DELEGATES` · `delegate` |
 | `commands/__init__.py` | 명령 표 `COMMANDS` |
 | `commands/<명령>.py` | 그 명령의 진입 함수 `cmd_<명령>` 과 그 명령만 쓰는 정의 |
 
@@ -225,7 +230,7 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 
 `main()` 의 순서는 지금과 같다.
 
-1. 인자를 해석한다 — 지금과 같은 파서다
+1. `parse_command_line(sys.argv[1:])` 로 인자를 해석한다 — 통과 명령이 아니면 지금과 같은 파서다 (아래 "인자 통과")
 2. `help` 면 `commands/help.py` 로
 3. `start-server` · `stop-server` · `server-status` · `tools` · `projects` 면 대상을 해석하지 않고 그 명령 모듈로
 4. 대상을 해석하고 `delegate()` 를 부른다. 넘기면 여기서 끝난다
@@ -239,6 +244,43 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 - 벤더 선언(`vendors.toml`)은 `harness.cli` 를 불러올 때, 명령을 가르기 전에 읽고 검사한다 — 선언이 잘못되면 `help` ·
   `version` 을 포함한 모든 명령이 지금과 같은 오류로 멈춘다
 - `help` 는 `COMMANDS` 와 `harness/__init__.py` 의 docstring 으로 지금과 같은 내용을 낸다
+- 명령 표 `COMMANDS` 는 `commands/__init__.py` 에 있다. `cli.py` 는 그것을 불러와 쓰고, `DELEGATES` 는 `cli.py` 에 있다
+
+#### 인자 통과
+
+공용 파서는 모든 명령이 함께 쓰는 인자 파서다 — 위치 인자 `command` · `args` 와 공용 옵션(`--target` · `--staged` ·
+`--json` 등). 공용 옵션을 명령줄 어디서나 받으므로(`parse_intermixed_args`) 이름 뒤에 공용 옵션과 같은 이름의 인자가
+오면 공용 옵션으로 읽는다. 통과 명령은 이름 뒤를 이 해석에 넘기지 않는다.
+
+- `COMMANDS` 의 항목은 `(통과, 설정이 필요한가, 인수, 설명)` 이다. 통과가 `True` 인 명령이 통과 명령이고, 그 밖은 `None` 이다
+- 이 명세의 명령은 모두 `None` 이다. 통과 명령은 그 명령을 더하는 명세가 정한다
+- 명령줄의 모양은 `harness [--target DIR] <명령> <인자…>` 이다
+
+`parse_command_line(argv)` 는 명령 표를 부를 때 읽고, 공용 파서가 명령 이름으로 읽는 첫 위치 인자(공용 옵션의 값은 위치
+인자가 아니다)로 가른다.
+
+| 첫 위치 인자 | 해석 |
+|---|---|
+| 없거나 통과 명령이 아니다 | 지금 파서 그대로 argv 전체를 해석한다. 모르는 명령의 오류도 그대로다 |
+| 통과 명령이다 | 이름 앞은 공용 파서가, 이름 뒤는 그 명령이 갖는다 (아래) |
+
+통과 명령일 때:
+
+- 이름 앞에는 `--target DIR`(`--target=DIR`)과 `-h` · `--help` 만 온다. `-h` · `--help` 가 있으면 지금처럼 `help` 로 간다
+- 이름 바로 뒤의 토큰이 `--target` 이면 그다음 토큰을, `--target=DIR` 이면 `=` 뒤를 하네스 루트로 받는다. 한 번만이다 —
+  그 뒤에 다시 오는 `--target` 은 명령의 인자다
+- 그 밖의 이름 뒤 토큰은 순서 · 내용 그대로 명령의 인자(`args.args`)다. `-` 로 시작하는 것(`-h` · `--help` · `--` ·
+  공용 옵션과 같은 이름)도 그렇다
+- 하네스 루트의 뜻과 기본값(현재 디렉터리)은 전역 `--target` 과 같다. 공용 옵션의 다른 속성은 기본값이다
+- 아래는 공용 파서의 오류 형식 — 사용법 줄 뒤에 `harness: error: <문구>` — 으로 2 로 끝난다
+
+  | 경우 | 문구 |
+  |---|---|
+  | 이름 앞에 `--target` · `-h` · `--help` 말고 다른 공용 옵션이 있다 | `only --target may come before <명령>: <옵션>` |
+  | `--target` 이 이름 앞과 이름 바로 뒤에 모두 있다 | `--target is given both before and after <명령>` |
+  | 이름 바로 뒤의 `--target` 에 값이 없다 | `argument --target: expected one argument` |
+
+- `delegate()` 는 지금처럼 `sys.argv[1:]` 를 그대로 넘긴다. 넘겨받은 CLI 가 같은 규칙으로 다시 나눈다
 
 ### 3-4. 의존 방향
 
@@ -361,12 +403,15 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 checks = [
   { name = "CLI 가 컴파일된다", run = "python3 script/project/check-cli.py compile", paths = ["src/bin/**", "src/harness/**", "script/project/check-cli.py"] },
   { name = "CLI 패키지 의존 방향", run = "python3 script/project/check-cli.py imports", paths = ["src/harness/**", "script/project/check-cli.py"] },
+  { name = "Python 단위 테스트", run = "cd src && python3 -B -m unittest discover -s test/unit", paths = ["src/harness/**", "src/test/unit/**"] },
   { name = "UI 단위 테스트", run = "cd src/ui && node --test lib/*.test.js", paths = ["src/ui/**", "src/bin/**", "src/harness/**"] },
 ]
 test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 ```
 
-나머지 키는 그대로다. "UI 단위 테스트" 가 CLI 원문의 상수를 대조하므로(7-2) CLI 경로에도 걸린다.
+나머지 키는 그대로다. "UI 단위 테스트" 가 CLI 원문의 상수를 대조하므로(7-2) CLI 경로에도 걸린다. "Python 단위 테스트" 는
+"CLI 패키지 의존 방향" 바로 뒤이고 `on` 은 기본값(commit)이다. 그 자리와 실행 규칙은 7-5 다. render 가
+`script/harness-verify.sh` 와 규칙 정본의 검증 순서를 따라 바꾼다.
 
 `script/project/check-cli.py` — python3 표준 라이브러리만 쓴다. 리포 루트는 이 파일의 위치에서 구한다.
 
@@ -387,10 +432,11 @@ test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 - 고칠 수 있는 것은 준비부(무엇을 어디에 복사하고 어떻게 불러오나)와 CLI 의 내부 구조를 보는 검사 줄(7-2)뿐이다.
   리뷰 요청 본문에 바꾼 줄마다 전후 대응표를 둔다
 - 7-2 는 배치를 바꾸기 전, 옛 배치(`src/bin/harness` 한 파일)에서 먼저 바꾸고 회귀 테스트 전체가 통과하는 것을 확인한다.
-  7-2 의 복제와 로더는 두 배치를 모두 다룬다. 그 뒤 배치를 바꾸는 커밋은 테스트 파일을 고치지 않고 7-3 의 케이스를
-  더하기만 한다
+  7-2 의 복제와 로더는 두 배치를 모두 다룬다. 그 뒤 배치를 바꾸는 커밋은 테스트 파일을 고치지 않고 7-3 의 케이스와
+  7-5 의 단위 테스트를 더하기만 한다
 - 각 커밋에서 검증 일괄(`script/run-lint-test.sh`)이 통과한다
-- 이 명세는 Python 단위 테스트를 더하지 않는다. 판정 기준은 위의 셸 테스트와 UI 단위 테스트다
+- 옮긴 동작의 판정 기준은 위의 셸 테스트와 UI 단위 테스트다. 7-5 의 Python 단위 테스트는 이 명세가 새로 두는 것(명령
+  표와 명령 모듈의 짝, 인자 통과)을 본다
 
 ### 7-2. 배치 중립으로 바꾸는 곳
 
@@ -449,13 +495,44 @@ test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 7-2 의 표에 든 것 말고는 바꾸지 않는다. 명세 64 12-2 의 "설치본의 지표 모듈" · "소스 리포의 지표 모듈" 케이스는 7-2 의
 배치 중립 확인과 7-3 이 덮는다.
 
+### 7-5. Python 단위 테스트
+
+CLI 패키지의 단위 테스트 기반이다. CLI 패키지의 단위 테스트는 모두 이 자리와 이 단계 하나를 쓴다.
+
+- 자리: `src/test/unit/test_<대상>.py`. 소스 리포에만 있고 대상 리포 · 고정 사본 · Homebrew 설치로 가지 않는다 — install 이
+  복사하는 것은 `ENTRY` · `PACKAGE` · `TEMPLATES` 다 (4-2)
+- 실행: `cd src && python3 -B -m unittest discover -s test/unit`. `-B` 라서 리포에 `__pycache__` 가 생기지 않는다. 표준
+  라이브러리 `unittest` 만 쓴다. 작업 디렉터리가 `src/` 이므로 `import harness` 가 `src/harness/` 를 불러온다
+- 검증 단계: 6절의 "Python 단위 테스트"
+- 단위 테스트는 CLI 를 하위 프로세스로 띄우지 않는다. 패키지 모듈을 불러 함수를 부르고, 외부 명령은 그것을 부르는 함수를
+  바꿔 끼운다
+- `unittest discover` 는 테스트가 0건이면 종료 코드 5 로 끝난다(python3 3.13 · 3.14). 그래서 스모크 테스트
+  `test_commands.py` 를 늘 둔다
+- 두 파일과 검증 단계는 패키지가 생기는 커밋에 함께 더한다 — 옛 배치에는 불러올 패키지가 없다
+
+| 파일 | 보는 것 |
+|---|---|
+| `test_commands.py` (스모크) | 명령 표의 이름마다 `harness.commands.<모듈 이름>` 을 불러올 수 있고 그 모듈에 `cmd_<모듈 이름>` 이 있다. `src/harness/commands/` 의 명령 모듈마다 명령 표에 이름이 있다. 명령 표 항목은 네 원소이고 첫 원소(통과 표시)는 `True` 또는 `None` 이다 |
+| `test_cli.py` | `parse_command_line()` 의 인자 나누기 (3-3). 통과 명령은 시험용 항목 `probe` 를 명령 표에 잠시 더해 본다 — 아래 표 |
+
+| 명령줄 | 결과 |
+|---|---|
+| `set --target D a.b v` · `--target D set a.b v` | 명령 `set`, 하네스 루트 `D`, 인자 `a.b` `v` — 통과 명령이 아닌 명령의 해석이 그대로다 |
+| `--target D probe x --json -h --target E` | 명령 `probe`, 하네스 루트 `D`, 인자 `x` `--json` `-h` `--target` `E` |
+| `probe --target D x` · `probe --target=D x` | 하네스 루트 `D`, 인자 `x` |
+| `probe x --target D` | 하네스 루트 기본값(`.`), 인자 `x` `--target` `D` |
+| `probe -- --help` | 인자 `--` `--help` |
+| `-h probe x` | 도움말 요청이 켜진다 (`help` 로 간다) |
+| `--json probe x` · `--target D probe --target E` · `probe --target` | 종료 코드 2 와 3-3 의 문구 |
+
 ## 8. 문서
 
 ### 8-1. README
 
 | 절 | 적는 사실 |
 |---|---|
-| "구조" 트리 | `src/bin/harness` 는 진입 스크립트(패키지를 찾아 `harness.cli.main()` 을 부른다), `src/harness/` 는 CLI 패키지(명령마다 `commands/<명령>.py`, 여러 명령이 쓰는 공용 모듈) |
+| "구조" 트리 | `src/bin/harness` 는 진입 스크립트(패키지를 찾아 `harness.cli.main()` 을 부른다), `src/harness/` 는 CLI 패키지(명령마다 `commands/<명령>.py`, 여러 명령이 쓰는 공용 모듈), `src/test/unit/` 은 CLI 패키지의 Python 단위 테스트 |
+| "검증" | `cd src && python3 -B -m unittest discover -s test/unit` 이 CLI 패키지의 단위 테스트를 돈다. 소스 리포에서만 돈다 |
 | "시작하기" 의 `install` 설명 | `.harness/` 에 진입 스크립트(`bin/`) · CLI 패키지(`lib/harness/`) · 템플릿(`templates/`) · `VERSION` 이 깔리고 커밋된다 |
 | "업데이트" | 바이트코드 캐시는 등록부 아래 `.cache/pycache/`(`HARNESS_HOME` 이 있으면 그 아래)에 쌓이고 지워도 된다. 리포에는 `__pycache__` 가 생기지 않는다. Homebrew 설치는 `src/` 의 `bin/` · `harness/` · `templates/` · `ui/` 를 `libexec` 에 넣는다 |
 
@@ -493,11 +570,13 @@ test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 |---|---|
 | "구성 요소" 의 `src/bin/harness` 항목 | 두 항목으로 바꾼다. ① `src/bin/harness` — 진입 스크립트. 바이트코드 위치와 패키지 경로를 정하고 `harness.cli.main()` 을 부른다. 소스 리포 · Homebrew(`libexec/bin/harness`) · 고정 사본(`.harness/bin/harness`)이 같은 파일이다 ② `src/harness/` — CLI 패키지. 설정을 읽어 검증하고(`config/`), 생성물을 만들고(`render/`), 검사하고(`check`), 점검하고(`doctor`, `readiness/`), 설정을 고치고(`set` · `steps` · `checks`), 프로젝트 문서 · 메모를 쓰고(`write-doc`), Doctor 조치를 돌고(`fix`), 절차를 띄우고(`run`), 지표를 집계한다(`metrics`, `metrics/`). 명령마다 `commands/<명령>.py` 에 진입 함수가 있고, 여러 명령이 쓰는 코드는 공용 모듈에 있다. `cli.py` 가 명령을 가르고 고정 사본으로 넘긴다. doctor 는 점검 결과를 항목 목록으로 모으고 텍스트 · JSON 으로 그린다. `status` 는 그 목록을 쓴다. python3 표준 라이브러리만 쓴다 |
 | "구성 요소" 의 기기 단위 상태 항목 | 끝에 더한다: 등록부 최상위의 `.cache/pycache/`(CLI 의 바이트코드 캐시 — 지워도 된다) |
+| "구성 요소" 의 `src/test/render-test.sh` 항목 | 끝에 더한다: `src/test/unit/` 은 CLI 패키지의 Python 단위 테스트(`unittest`)다. 소스 리포에서만 돌고 대상 리포로 가지 않는다 |
 | "신뢰 경계" | 새 항목: CLI 의 바이트코드는 등록부 아래 `.cache/pycache/`(0700)에 둔다 — 그 아래 바이트코드는 CLI 가 실행하는 코드다. 리포에는 `__pycache__` 를 남기지 않는다 |
 | "새 코드를 둘 곳" 의 새 생성 파일 | `src/harness/render/plan.py` 의 `plan()` 에 등록한다. 어느 설정 키가 어느 파일에 닿는지 기록하는 유일한 자리다 |
 | "새 코드를 둘 곳" 의 새 설정 키 | `src/templates/harness.toml` 의 주석과 기본값, `src/harness/config/load.py` 의 `validate()` · `src/harness/render/derive.py` 의 `derive()`, README 의 "harness.toml 이 정하는 것" 표. UI 는 `harness schema` 와 `src/ui/lib/fields.js` 가 그것을 그린다 |
-| "새 코드를 둘 곳" 의 새 CLI 명령 | `src/harness/commands/__init__.py` 의 `COMMANDS` 표 한 줄과 `src/harness/commands/<명령>.py`(`-` 는 `_`)의 `cmd_<명령>()`. 다른 명령과 함께 쓰는 코드는 명령 모듈이 아니라 공용 모듈에 둔다. 프로젝트에 고정된 버전이 답해야 하면 `src/harness/cli.py` 의 `DELEGATES` 에도 넣는다 |
+| "새 코드를 둘 곳" 의 새 CLI 명령 | `src/harness/commands/__init__.py` 의 `COMMANDS` 표 한 줄과 `src/harness/commands/<명령>.py`(`-` 는 `_`)의 `cmd_<명령>()`. 다른 명령과 함께 쓰는 코드는 명령 모듈이 아니라 공용 모듈에 둔다. 이름 뒤의 인자를 스스로 해석하는 명령은 `COMMANDS` 항목의 통과 표시를 `True` 로 둔다. 프로젝트에 고정된 버전이 답해야 하면 `src/harness/cli.py` 의 `DELEGATES` 에도 넣는다 |
 | "새 코드를 둘 곳" 의 지표 코드 | 지표 집계 · 세션 가져오기 코드 → `src/harness/metrics/` (리뷰 루프 파이썬 서술은 그대로) |
+| "새 코드를 둘 곳" 의 새 회귀 테스트 | 끝에 더한다: CLI 패키지의 내부 로직은 `src/test/unit/test_<대상>.py` |
 | "계층과 의존 방향" 의 첫 항목 | `src/templates/` 는 아무것도 import 하지 않는다. CLI 패키지가 읽고, 결과가 대상 리포에 놓인다 |
 | "계층과 의존 방향" | 새 항목: CLI 패키지 안에서는 `cli` → 명령 모듈(실행할 하나) → 공용 모듈 방향으로만 부른다. 명령 모듈끼리 부르지 않고, 공용 모듈은 `cli` · `commands` 를 부르지 않는다. `base` · `text` 가 바닥이고 `metrics/` 는 다른 하네스 모듈을 부르지 않는다. `[verify]` 의 "CLI 패키지 의존 방향" 이 검사한다 |
 | "검사하지 않는 것" 의 한 파일 항목 | 지운다 |
@@ -513,6 +592,7 @@ test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 | "용어" 새 행 `진입 스크립트` | `bin/harness`. 바이트코드 위치와 패키지 경로를 정하고 `harness.cli.main()` 을 부르는 실행 파일. 소스 리포 `src/bin/harness`, 고정 사본 `.harness/bin/harness` |
 | "용어" 새 행 `CLI 패키지` | 하네스 로직을 담은 Python 표준 라이브러리 패키지 `harness`(`src/harness/`, 고정 사본 `.harness/lib/harness/`) |
 | "용어" 새 행 `명령 모듈` · `공용 모듈` | 명령 모듈은 명령 하나의 진입 함수 `cmd_<명령>()` 을 갖는 `src/harness/commands/<명령>.py`. 공용 모듈은 여러 명령이 쓰는 CLI 패키지의 나머지 모듈이고 명령 모듈을 부르지 않는다 |
+| "용어" 새 행 `통과 명령` | 명령 표(`COMMANDS`)에 통과 표시가 있는 명령. 이름 뒤의 인자를 공용 옵션(모든 명령이 함께 쓰는 `--target` · `--json` 등)으로 해석하지 않고 순서 · 내용 그대로 받는다. 이름 앞의 `--target DIR`, 또는 이름 바로 뒤의 `--target DIR` 하나를 하네스 루트로 읽는다 (`harness [--target DIR] <명령> <인자…>`) |
 | "폐기된 별칭" 새 행 | `src/bin/harness_metrics.py` · `.harness/bin/harness_metrics.py` (지표 모듈) → `src/harness/metrics/` · `.harness/lib/harness/metrics/` |
 | "폐기된 별칭" 새 행 | `src/bin/harness` (명령 전부를 담은 CLI 파일) → 진입 스크립트 `src/bin/harness` 와 CLI 패키지 `src/harness/` |
 
@@ -523,6 +603,7 @@ test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 | "외부 의존을 어떻게 다루나" 의 등록부 줄 | "설치 등록부는 `HARNESS_HOME` 으로 임시 위치에 두고" 뒤에 "(CLI 의 바이트코드 캐시도 그 아래다)" |
 | "외부 의존을 어떻게 다루나" 의 소스 트리 복제 줄 | 끝에 더한다: `src/` 에서 `ui/` · `test/` · `__pycache__` 를 뺀 전부를 복제한다. CLI 를 이루는 파일을 케이스마다 적지 않는다 |
 | "무엇을 어느 수준으로 검증하나" | 새 항목: CLI 내부 함수를 프로세스 안에서 부르는 케이스는 `src/test/cli_loader.py` 로 불러온다 — 이름을 정의한 모듈을 찾아 주므로 모듈 배치가 바뀌어도 케이스가 그대로다. 모듈 전역을 바꿔 끼울 때는 그 전역을 쓰는 함수를 정의한 모듈에 한다 |
+| "무엇을 어느 수준으로 검증하나" | 새 항목: CLI 패키지(`src/harness/`)의 내부 로직 — 셸 테스트로는 하나씩 볼 수 없는 것 — 은 `src/test/unit/test_<대상>.py` 의 Python 단위 테스트(표준 라이브러리 `unittest`)로 본다. CLI 를 하위 프로세스로 띄우지 않고 패키지 모듈을 불러 함수를 부르며, 외부 명령은 그것을 부르는 함수를 바꿔 끼운다. 소스 리포에서만 돌고(`[verify]` 의 "Python 단위 테스트", `cd src && python3 -B -m unittest discover -s test/unit`) 대상 리포로 가지 않는다. 셸 테스트(`render-test.sh` · `script/test-*.sh`)는 외부 계약(인자 · 표준 출력 · 종료 코드)을 본다 |
 
 `.ai/project/scope.md` 는 바뀌지 않는다 — 인접 모듈 항목("이 리포의 `src/` 아래를 `libexec` 에 넣는다")이 그대로 맞다.
 
