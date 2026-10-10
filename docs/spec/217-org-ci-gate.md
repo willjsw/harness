@@ -16,7 +16,7 @@
 | CLI (게이트 생성 · 템플릿 고르기 · 설정 검증 · `check` 의 preset 정책 · doctor) | `src/harness/` (모듈 배치는 #206 의 지도) · 진입 `src/bin/harness` |
 | 내장 게이트 템플릿 | `src/templates/ci/github/harness-verify.yml` · `src/templates/ci/gitlab/harness-verify.yml` |
 | GitLab 루트 파일 원형 | `src/templates/ci/gitlab/gitlab-ci.yml` |
-| 설정 기본값과 주석 | 내장 기본값(#207 이 정한 자리) · `src/templates/harness.toml` |
+| 설정 기본값과 주석 | `src/templates/defaults.toml` (#207 의 내장 기본값 레이어) |
 | 운영 안내 | `src/templates/managed/docs/workflow/ci-gate.md` (대상 리포의 `docs/workflow/ci-gate.md`) |
 | 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/ui/lib/doctor.test.js` |
 | UI 문구 | `src/ui/lib/doctor.js` · `src/ui/lib/help.js` |
@@ -71,9 +71,11 @@ include:
 1. lock 의 체인을 프로젝트가 가리키는 preset(깊이 1)부터 위로 따라가며, vendoring 에 `ci/<host>/harness-verify.yml` 이 있는 첫 preset 의 그 파일
 2. 내장 템플릿 `src/templates/ci/<host>/harness-verify.yml` (고정 사본에서는 `.harness/templates/ci/<host>/harness-verify.yml`)
 
-- preset 저장소 형식에 `ci/github/harness-verify.yml` · `ci/gitlab/harness-verify.yml` 두 경로를 더한다. vendoring 이 담는 파일과
+- preset 저장소 형식에 `ci/github/harness-verify.yml` · `ci/gitlab/harness-verify.yml` 두 경로를 더한다(2-6). vendoring 이 담는 파일과
   lock 내용 해시의 대상이 그만큼 늘어난다. 해시 정의는 #216 의 것 그대로다
 - 템플릿은 vendoring 된 사본에서 읽는다. render 는 네트워크를 쓰지 않는다
+- `harness pull` 이 render 결과를 계산할 때(#216 7-2 의 7)는 새 체인의 템플릿을 받은 임시 위치에서 읽는다 — 메모와 같다.
+  템플릿이 2-2 · 2-3 의 규칙을 어기면 pull 은 그 단계에서 멈추고 대상 리포를 바꾸지 않는다
 - 템플릿이 UTF-8 텍스트가 아니면 render 를 거부한다: `error: the CI template is not UTF-8 text` 와 템플릿 출처 줄
 
 오류의 템플릿 출처 줄은 `  --> built-in ci/<host>/harness-verify.yml` 또는 `  --> preset <출처> ci/<host>/harness-verify.yml` 이다.
@@ -201,9 +203,48 @@ harness-verify:
   required status check 가 github 의 이름을 가리킨다. preset 템플릿이 그 이름을 바꾸면 ruleset 도 함께 바꿔야 한다 (7절)
 - gitlab 의 `HARNESS_MIN_PRESET_VERSION` 은 그룹 CI 변수가 job 환경 변수로 들어온 값이다 <!-- TBD: 확인 필요 -->
 
+### 2-6. preset 저장소의 `ci/`
+
+preset 리포(#216 3절)는 루트의 `ci/` 아래에 게이트 템플릿을 둘 수 있다.
+
+| 경로 | 필수 | 뜻 |
+|---|---|---|
+| `ci/github/harness-verify.yml` | 선택 | `forge.review_host = "github"` 의 게이트 템플릿 (2-2 · 2-3) |
+| `ci/gitlab/harness-verify.yml` | 선택 | `forge.review_host = "gitlab"` 의 게이트 템플릿 (2-2 · 2-3) |
+
+- `ci` · `ci/github` · `ci/gitlab` 은 디렉터리이고, 두 템플릿은 일반 파일이다. 심볼릭 링크 · 서브모듈이면 preset 을 거부한다 — `project/` 와 같은 종류 판정이다
+- `ci/` 아래에는 위 두 파일과 그 부모 디렉터리만 둔다. 그 밖의 것(다른 디렉터리, `ci/` 바로 아래의 파일, `ci/<host>/` 아래의 다른 항목)이
+  하나라도 있으면 preset 을 거부한다. `ci/` 가 없거나 템플릿이 하나뿐인 preset 은 받는다
+- 판정은 #216 의 트리 멤버 판정 함수 하나가 한다. 이 명세는 그 함수가 받는 경로에 위 둘을 더할 뿐이고, 판정 함수를 따로 두지 않는다
+- 거부 안내는 #216 의 출력 정책을 따른다 — 경로를 옮기지 않는다. 이름이 어긋나면 담긴 디렉터리만 낸다
+
+  ```
+  error: preset <참조> has an entry under ci/ that is not github/ or gitlab/
+  error: preset <참조> has an entry under ci/<host>/ that is not harness-verify.yml
+  ```
+
+  `<host>` 는 `github` · `gitlab` 가운데 그 항목이 담긴 쪽이다. 종류 어긋남은 #216 3-2 의 종류 문구를 그대로 쓴다
+- 템플릿의 내용(UTF-8 · 변수 규칙)은 멤버 판정이 보지 않는다. render 가 본다(2-2 · 2-3)
+- 받은 템플릿은 preset 사본의 같은 상대 경로(`.harness/preset/<깊이>/ci/<host>/harness-verify.yml`)에 놓이고 내용 해시(#216 4-4)에 든다
+
+`docs/spec/216-org-presets.md` 의 개정 문안 — 10절의 한 행이 이 문안으로 그 명세를 고친다.
+
+| 위치 | 개정 문안 |
+|---|---|
+| 3-1 받는 파일 표 | 두 행을 더한다 — `ci/github/harness-verify.yml` · `ci/gitlab/harness-verify.yml`, 선택, "CI 게이트 템플릿. 그 리뷰 호스트의 게이트 본문이 된다(#217)" |
+| 3-1 받지 않는 항목 줄 | 받는 항목에 `ci/` 를 더한다 — "`preset.toml` · `project/` · `ci/` 밖의 항목은 받지 않는다. 읽지도 판정하지도 않는다(README · preset 리포 자신의 CI 설정 · 테스트 등)" |
+| 3-1 새 줄 (`project/` 줄 뒤) | "`ci/` 아래에는 `github/` · `gitlab/` 디렉터리만, 그 아래에는 `harness-verify.yml` 파일만 둔다. 그 밖의 것이 하나라도 있으면 preset 을 거부한다" |
+| 3-1 UTF-8 줄 | 끝에 더한다 — "CI 템플릿의 내용은 받을 때 보지 않는다. render 가 본다(#217)" |
+| 3-2 부모 디렉터리 목록 | `project` · `project/roles` · `project/workflows` 에 `ci` · `ci/github` · `ci/gitlab` 을 더한다 |
+| 3-2 이름 어긋남 문구 | 위의 `ci/` 문구 둘을 더한다 |
+| 3-2 안내문의 help 줄 | 파일 목록에 `CI templates under ci/github/ and ci/gitlab/` 를 더한다 |
+| 4-2 사본 예시 | 깊이 1 아래에 `ci/github/harness-verify.yml` 한 줄을 더한다. "각 디렉터리에는 3-1 의 경로만 있다" 는 그대로 두고, 3-1 에 더한 `ci/` 경로가 그 안에 든다 |
+
 ## 3. 설정
 
 ### 3-1. `[ci]`
+
+`src/templates/defaults.toml` 에 아래 절을 더한다. 키 바로 위 주석이 그 키의 설명이다(#207 2-3).
 
 ```toml
 # CI 게이트(.github/workflows/harness-verify.yml · .gitlab/harness-verify.yml, 생성 파일)
@@ -225,7 +266,7 @@ setup = [
 
 | 규칙 | 어기면 (종료 코드 2) |
 |---|---|
-| `[ci]` 의 키는 `setup` 뿐이다 | `error: unknown key(s) in [ci]: <키> ...` / `help: the keys are setup` |
+| `[ci]` 의 키는 `defaults.toml` 의 `[ci]` 절에 있는 키뿐이다 | `error: unknown key(s) in [ci]: <키> ...` / `help: the keys are <그 절의 키>` |
 | `setup` 은 표의 배열이다 | `error: ci.setup must be a list of tables with run or uses` |
 | 항목의 키는 `run` · `uses` · `with` 뿐이다 | `error: unknown key(s) in ci.setup[<번호>]: <키> ...` / `help: the keys are run, uses, with` |
 | `run` 과 `uses` 가운데 정확히 하나가 있다 | `error: ci.setup[<번호>] needs exactly one of run, uses` |
@@ -235,8 +276,13 @@ setup = [
 | `forge.review_host = "gitlab"` 이면 `uses` 를 쓰지 않는다 | `error: ci.setup[<번호>] uses an action, which GitLab does not run` / `help: use run, or a stack preset whose GitLab template prepares that runtime` |
 
 - `<번호>` 는 1부터 센다. 항목의 값은 출력에 옮기지 않는다
+- 절의 키 검사는 #207 2-3 의 "절에 정의되지 않은 키를 거부하는 검사" 에 든다. 받을 키 목록을 `defaults.toml` 의 그 절에서 읽고,
+  help 줄은 그 키들을 절에 적힌 순서대로 쉼표로 잇는다 — 이 명세의 기본값이면 `setup` 이다. 항목의 키(`run` · `uses` · `with`)는 기본값에
+  항목이 없으므로 위 표의 목록으로 검사한다
 
 ### 3-2. `[policy]`
+
+`src/templates/defaults.toml` 에 아래 절을 더한다.
 
 ```toml
 # preset 정책 — 조직 preset 이 정하고 locked 로 잠근다
@@ -249,23 +295,29 @@ check_min_preset_version = false
 
 | 규칙 | 어기면 (종료 코드 2) |
 |---|---|
-| `[policy]` 의 키는 위 둘뿐이다 | `error: unknown key(s) in [policy]: <키> ...` / `help: the keys are preset_sources, check_min_preset_version` |
+| `[policy]` 의 키는 `defaults.toml` 의 `[policy]` 절에 있는 키뿐이다 | `error: unknown key(s) in [policy]: <키> ...` / `help: the keys are <그 절의 키>` |
 | `preset_sources` 는 문자열 배열이고, 항목은 `https://` 또는 `oci://` 로 시작하며 공백·줄바꿈·자격증명(호스트 앞의 `@`)이 없다 | `error: policy.preset_sources[<번호>] must be an https:// or oci:// source without credentials` |
 | `check_min_preset_version` 은 불리언이다 | `error: policy.check_min_preset_version must be true or false` |
 
 - 기본값은 출처 제한 없음, 최소 버전 검사 없음이다. preset 을 쓰지 않는 프로젝트에서는 두 키가 아무 일도 하지 않는다
+- 절의 키 검사와 help 줄은 3-1 과 같다 — 이 명세의 기본값이면 `preset_sources, check_min_preset_version` 이다
 
 ### 3-3. 계층 병합 (#207)
 
-| 키 | 병합 | 개인 레이어 |
-|---|---|---|
-| `ci.setup` | 일반 배열 — 교체 | 쓸 수 없다 |
-| `policy.preset_sources` | 일반 배열 — 교체 | 쓸 수 없다 |
-| `policy.check_min_preset_version` | 스칼라 — 덮어쓰기 | 쓸 수 없다 |
+| 키 | 병합 | 잠금 | 개인 레이어 |
+|---|---|---|---|
+| `ci.setup` | 일반 배열 — 교체 | 잠글 수 있다 | 쓸 수 없다 |
+| `policy.preset_sources` | 일반 배열 — 교체 | 조직 preset 이 잠근다 | 쓸 수 없다 |
+| `policy.check_min_preset_version` | 스칼라 — 덮어쓰기 | 조직 preset 이 잠근다 | 쓸 수 없다 |
 
-- 조직 preset 이 `policy.*` 를 `locked` 로 잠근다. 잠긴 키를 아래 레이어가 다른 값으로 적으면 #207 의 규칙대로 거부한다
+- 조직 preset 은 `preset.toml` 에 `locked = ["policy.preset_sources", "policy.check_min_preset_version"]` 를 둔다. #207 의 표기대로
+  경로를 하나씩 적는다
+- 배열 키의 잠금은 #207 의 일반 배열 잠금이다 — 교체 규칙을 따르는 배열을 잠글 수 있고, 위 레이어의 값이 잠근 레이어까지의 병합 값과
+  배열 전체로 같은지를 본다. 이 명세는 잠금 판정을 따로 두지 않는다
+- 잠근 preset 보다 위의 레이어(더 얕은 preset · 프로젝트)가 잠긴 키에 다른 값을 적으면 #207 대로 거부한다. 같은 값을 적는 것은 받는다
 - `[ci]` · `[policy]` 절이 없는 설정은 기본값으로 돈다. 이 리포 루트의 `harness.toml` 도 이 절 없이 돈다
-- `harness schema` 가 세 키를 다른 키와 같은 방식으로 내준다. `src/ui/lib/help.js` 에 세 키의 도움말을 한 줄씩 둔다
+- `harness schema` 가 세 키를 다른 키와 같은 방식으로 내준다. 설명은 `defaults.toml` 의 주석에서 나온다(#207).
+  `src/ui/lib/help.js` 에 세 키의 도움말을 한 줄씩 둔다
 
 ## 4. 넘겨받기 · 갱신 · 제거
 
@@ -310,8 +362,8 @@ check_min_preset_version = false
 | 허용 출처 | `policy.preset_sources` 가 비어 있지 않으면 늘 (`--staged` 포함) | 설정의 `policy.preset_sources` |
 | 최소 버전 | `--min-preset-version` 을 받았을 때만 | 그 인자 |
 
-- 두 검사의 대상은 lock 체인의 항목 전부다. 항목마다 출처(태그를 뺀 참조)와 태그를 본다. 필드 이름과 lock 을 읽는 방법은
-  #216 · #218 의 것이다. `--staged` 면 lock 을 인덱스에서 읽는다 — 생성물 대조와 같다
+- 두 검사의 대상은 lock 체인의 항목 전부다. 항목마다 `source`(태그를 뺀 출처)와 `tag` 를 본다. 필드와 lock 을 읽는 방법은
+  #216 4-3 의 것이다. 검사는 출처의 스킴을 가르지 않는다. `--staged` 면 lock 을 인덱스에서 읽는다 — 생성물 대조와 같다
 - `extends` 가 없으면 체인이 비어 있으므로 두 검사는 아무것도 보지 않고 통과한다
 - #216 의 lock 대조가 실패하면 이 둘은 돌지 않는다. 기준으로 삼을 체인이 없기 때문이다
 - lock 과 vendoring 의 일치는 #216 의 대조가 이미 본다. 이 명세는 그 대조를 다시 만들지 않고, 대조 대상에 CI 템플릿 경로를 더할 뿐이다 (2-2)
@@ -422,8 +474,8 @@ help: raise extends to the minimum or later, then run harness pull
    그룹(GitLab 그룹 CI 변수)에 `HARNESS_MIN_PRESET_VERSION` 을 5-3 형식으로 둔다. 변수가 비어 있으면 게이트가 실패한다
    - GitHub 조직 변수를 private 리포의 워크플로가 읽을 수 있는 플랜·정책 조건 <!-- TBD: 확인 필요 -->
 5. **preset 작성자에게** — `ci/<host>/harness-verify.yml` 템플릿, 2-3 의 변수 규칙, 머리말은 render 가 붙인다는 것,
-   체크 이름을 바꾸면 ruleset 도 바꿔야 한다는 것, `ci/` 를 담은 preset 은 요구 하네스 버전(#216 의 필드)을 이 기능이 든
-   릴리스 이상으로 선언한다는 것, `policy.*` 는 조직 preset 이 `locked` 로 잠근다는 것
+   체크 이름을 바꾸면 ruleset 도 바꿔야 한다는 것, `ci/` 아래에는 두 템플릿만 둔다는 것(2-6), `ci/` 를 담은 preset 은 요구 하네스
+   버전(#216 의 필드)을 이 기능이 든 릴리스 이상으로 선언한다는 것, `policy` 의 두 키는 조직 preset 이 `locked` 로 잠근다는 것(3-3)
 6. **이관**
    - GitHub: `harness install --adopt`(또는 `render --adopt`) → `.orig` 에 있던 프로젝트 단계를 `[ci].setup` 으로 옮긴다 → `.orig` 를 지운다 → 커밋한다
    - GitLab: 루트 `.gitlab-ci.yml` 의 옛 `harness-verify` job 을 지우고 `include:` 에 `- local: /.gitlab/harness-verify.yml` 을 더한다
@@ -481,12 +533,12 @@ help: raise extends to the minimum or later, then run harness pull
 
 | 이슈 | 경계 |
 |---|---|
-| #216 | 체인 순서(깊이 1 = 프로젝트가 가리키는 preset), lock 의 출처·태그 필드, vendoring 경로, lock · vendoring 대조는 #216 이 정한다. 이 명세는 preset 저장소 형식에 `ci/<host>/harness-verify.yml` 두 경로를 더하고, 그 파일들이 vendoring 과 내용 해시에 든다. pull 의 멈춤 조건(5종)은 늘리지 않는다 |
-| #218 | OCI preset 아티팩트의 레이어에 같은 `ci/` 경로가 든다(아티팩트 형식은 #218 이 정한다). 허용 출처·최소 버전은 `oci://` 출처와 OCI 태그에도 같은 규칙을 쓴다. 대상 리포 CI 는 레지스트리에 붙지 않는다. #218 의 레지스트리 통합 테스트 워크플로는 게이트와 다른 경로의 소유 파일이다 |
-| #219 | 대상 리포 CI 는 레지스트리 없이 커밋된 vendoring 과 lock 으로 검사한다 |
-| #207 | `[ci]` · `[policy]` 의 병합 규칙은 3-3 이고 #207 의 병합 규칙 표에 더한다. 조직은 `locked` 로 잠근다. 개인 레이어 허용 키가 아니다. 보호 브랜치 합집합이 트리거 브랜치에 그대로 들어간다 |
+| #216 | 체인 순서(깊이 1 = 프로젝트가 가리키는 preset), lock 의 출처·태그 필드, vendoring 경로, 트리 멤버 판정 함수와 그 출력 정책, lock · vendoring 대조는 #216 이 정한다. 이 명세는 preset 저장소 형식에 `ci/<host>/harness-verify.yml` 두 경로를 더하고(2-6), 그 파일들이 vendoring 과 내용 해시에 든다. #216 명세의 3-1 · 3-2 · 4-2 를 2-6 의 문안으로 고친다. pull 의 멈춤 조건(5종)은 늘리지 않는다 |
+| #218 | #218 은 이 명세를 선행으로 두지 않는다. 둘 다 #216 위에 놓이고, 둘이 다 들어간 하네스에서 아래가 성립한다. #218 은 레이어 멤버를 OCI 전용 검사 뒤에 #216 의 멤버 판정 함수로 판정하므로, 2-6 이 그 함수에 더한 `ci/` 두 경로를 OCI 아티팩트도 담는다(아티팩트 형식은 #218 이 정한다). 허용 출처·최소 버전은 lock 의 `source` · `tag` 만 보므로 `oci://` 출처와 OCI 태그에도 같은 규칙으로 돈다 — 이 명세에는 OCI 를 가르는 코드가 없다. 대상 리포 CI 는 레지스트리에 붙지 않는다. #218 의 레지스트리 통합 테스트 워크플로는 게이트와 다른 경로의 소유 파일이다 |
+| #219 | #219 는 이 명세가 들어간 뒤에 착수한다(#219 의 착수 전제). #219 의 레지스트리 운영 안내가 가리키는 대상 리포 CI 검사는 이 명세의 게이트다 — 체크 이름은 2-5, 운영 안내는 `docs/workflow/ci-gate.md`(7절). 대상 리포 CI 는 레지스트리 없이 커밋된 vendoring 과 lock 으로 검사한다 |
+| #207 | `[ci]` · `[policy]` 의 기본값과 주석은 `defaults.toml` 에 두고(3-1 · 3-2), 절의 키 검사는 그 파일에서 받을 키를 읽는다(#207 2-3). 병합 규칙은 3-3 이고 #207 의 병합 규칙 표에 더한다. 조직은 `locked` 로 잠그고, 배열 키의 잠금은 #207 의 일반 배열 잠금을 쓴다. 개인 레이어 허용 키가 아니다. 보호 브랜치 합집합이 트리거 브랜치에 그대로 들어간다 |
 | #206 | 코드는 `src/harness/` 모듈 지도에 놓인다 |
-| #213 · shim 정리 Requirement | `script/run-lint-test.sh` 는 #213 이 shim 으로 남긴다. 이 명세가 든 릴리스부터는 리포 루트의 하네스 CI 파일을 render 가 쓴다. 그래서 기존 설치본의 소유 CI 파일 때문에 그 shim 을 둘 이유가 사라진다. shim 을 걷는 일과 `{{CI_VERIFY}}` 가 내는 명령을 새 검증 진입점으로 바꾸는 일은 shim·셸 생성물 정리 Requirement 가 함께 한다. 남은 옛 호출(GitLab 루트 파일, 다른 워크플로)은 6절의 doctor 가 알린다 |
+| #213 · #221 | `script/run-lint-test.sh` 는 #213 이 shim 으로 남긴다. 이 명세가 든 릴리스부터는 리포 루트의 하네스 CI 파일을 render 가 쓴다. 그래서 기존 설치본의 소유 CI 파일 때문에 그 shim 을 둘 이유가 사라진다. shim 을 걷는 일과 `{{CI_VERIFY}}` 가 내는 명령을 새 검증 진입점으로 바꾸는 일은 #221 이 함께 한다. 남은 옛 호출(GitLab 루트 파일, 다른 워크플로)은 6절의 doctor 가 알린다 |
 | 하네스 최소 버전 | 대상 리포 하네스의 최소 버전은 #216 의 pull 멈춤 조건(요구 하네스 버전 미달)이 맡는다. 이 명세의 최소 버전은 preset 버전이다 |
 
 ## 10. 함께 고치는 현재형 문서
@@ -497,12 +549,14 @@ help: raise extends to the minimum or later, then run harness pull
 | README "CI 설정은 첫 설치 때 한 번만 깔린다" 단락 | 2-1 · 4절의 사실로 바꾼다. 게이트는 생성 파일이고, 서브프로젝트 골격과 GitLab 루트 파일은 소유 파일이다. 기존 파일은 `--adopt` 로 넘겨받고, uninstall 이 게이트를 지우고, 운영 안내는 `docs/workflow/ci-gate.md` 에 있다 |
 | README "`harness.toml` 이 정하는 것" 표 | `ci.setup` 행과 `policy.preset_sources` · `check_min_preset_version` 행을 더한다. `branches.base` · `protected` 행에 "CI 게이트의 트리거 브랜치", `forge.tracker` · `review_host` 행에 "CI 게이트 경로" 를 더한다 |
 | README 명령 표 | `harness check` 행에 `--min-preset-version`(CI 게이트가 넘긴다) |
+| README "preset" 절(#216)의 preset 리포 형식 | `ci/github/harness-verify.yml` · `ci/gitlab/harness-verify.yml` 을 더하고 `ci/` 아래에는 그 둘만 둔다고 적는다(2-6). 자세한 것은 `docs/workflow/ci-gate.md` 로 잇는다 |
 | README "업데이트" 절 | 8절의 릴리스 동작 |
 | `docs/workflow/flow.md` 층 표의 CI 행 | 막는 대상에 "설정과 어긋난 생성물·관리 파일, preset 정책", 우회에 "필수 체크 지정은 forge 설정이다(`docs/workflow/ci-gate.md`)" |
 | `docs/workflow/flow.md` 검증 루프 | 머지 전 CI 줄에 preset 정책 검사를 더한다 |
 | `docs/workflow/README.md` 문서 표 | `ci-gate.md` 행 |
 | `docs/spec/58-separate-managed-and-project-parts.md` 3-1 | "소유 파일과 CI 골격은 대상이 아니다" 를 "소유 파일 · GitLab 루트 파일 · 서브프로젝트 CI 골격은 대상이 아니다. CI 게이트는 생성 파일이라 대상이다" 로 바꾼다. 같은 문서의 "CI 골격" 표기도 같은 뜻으로 맞춘다 |
 | `docs/spec/60-automate-work-prerequisites.md` | "`.github/workflows/` · `.gitlab-ci.yml`(CI 골격, 소유 파일)" 을 "CI 게이트(생성) · GitLab 루트 `.gitlab-ci.yml`(소유)" 로 바꾼다 |
+| `docs/spec/216-org-presets.md` 3-1 · 3-2 · 4-2 | 2-6 의 개정 문안 |
 
 `docs/workflow/` 는 관리 문서라서 정본 `src/templates/managed/docs/workflow/` 를 고치고, 이 리포의 `docs/workflow/` 는 render 로 따라온다.
 
@@ -523,8 +577,11 @@ help: raise extends to the minimum or later, then run harness pull
 | 호스트 전환 | github → gitlab 에서 옛 게이트가 지워지고 새 게이트와 루트 원형이 생긴다. gitlab → github 에서 루트 `.gitlab-ci.yml` 은 남는다 |
 | uninstall | 게이트가 지워지고 `.orig` · 루트 `.gitlab-ci.yml` 은 남는다. `--purge --yes` 도 그 둘을 남긴다 |
 | `[ci].setup` 렌더 | `run` · `uses` · `with` 가 github step 으로, `run` 이 gitlab `before_script` 항목으로 들어간다. 비어 있으면 표지 줄이 사라진다 |
-| `[ci]` · `[policy]` 검증 | 3-1 · 3-2 표의 위반마다 render 가 종료 코드 2 로 거부한다. gitlab 에서 `uses` 를 거부한다. 절이 없는 설정은 기본값으로 렌더된다 |
+| `[ci]` · `[policy]` 검증 | 3-1 · 3-2 표의 위반마다 render 가 종료 코드 2 로 거부한다. gitlab 에서 `uses` 를 거부한다. 절이 없는 설정은 기본값으로 렌더된다. 모르는 키의 help 줄이 `defaults.toml` 의 그 절의 키를 나열한다 |
+| 정책 키 잠금 | 조직 preset 이 두 `policy` 키를 잠그면, 프로젝트가 다른 `preset_sources` 배열이나 다른 `check_min_preset_version` 을 적을 때 render 가 종료 코드 2 로 거부하고, 같은 값은 받는다 |
 | preset 템플릿 고르기 | 조직·스택 두 단계 체인에서 스택 preset 의 템플릿을 쓰고, 스택에 없으면 조직 것, 둘 다 없으면 내장을 쓴다. 머리말의 템플릿 출처가 그것과 맞다 |
+| preset 의 `ci/` 멤버 | `ci/` 아래에 다른 호스트 디렉터리 · `ci/` 바로 아래 파일 · `ci/<host>/` 의 다른 파일 · 링크인 템플릿이 있으면 pull 이 종료 코드 2 로 거부하고 아무것도 바꾸지 않는다. 안내에 그 항목의 경로가 없다. 템플릿이 하나뿐인 preset 은 받는다 |
+| pull 의 템플릿 규칙 | 새 체인의 템플릿이 2-3 의 규칙을 어기면 pull 이 종료 코드 2 로 멈추고 사본 · lock · 생성 파일이 그대로다 |
 | 템플릿 규칙 | `{{CI_VERIFY}}` 없음, 브랜치 변수 없음, setup 이 있는데 `{{CI_SETUP}}` 없음, 홀로 서지 않은 표지, 모르는 변수, 다른 호스트의 변수, `{{INCLUDE:…}}`, UTF-8 이 아닌 템플릿 — 각각 render 를 거부하고 아무것도 쓰지 않는다. `${{ vars.X }}` 는 그대로 남는다 |
 | vendoring 해시 | vendoring 된 `ci/github/harness-verify.yml` 을 고치면 #216 의 lock 대조가 render · check 를 멈춘다 |
 | 허용 출처 | 같은 값, `/` 접두, 어긋남을 가른다. 깊이 2 항목의 출처만 어긋나도 잡는다. `--staged` 가 인덱스의 lock 을 본다. pre-commit 이 커밋을 막는다. 값이 비어 있으면 검사하지 않는다 |
@@ -543,6 +600,7 @@ help: raise extends to the minimum or later, then run harness pull
 | 출처 일치 | `/` 로 끝나는 값의 접두 일치, 그 밖은 같음, 끝 `/` 를 정규화하지 않음 |
 | 표지 줄 치환 | 앞 공백 붙이기, 빈 목록이면 줄 삭제, 홀로 서지 않은 표지 거부 |
 | setup 항목 렌더 | github 의 `uses` · `with` · `run`, gitlab 의 `run`, JSON 문자열 표기 |
+| 트리 멤버 판정의 `ci/` | 두 템플릿과 그 부모 디렉터리를 받는다. `ci/` 아래 다른 항목과 종류 어긋남을 거부하고, 거부 문구에 그 항목의 경로가 없다 |
 
 ### 11-3. UI
 
@@ -552,7 +610,8 @@ help: raise extends to the minimum or later, then run harness pull
 
 ## 12. 보호 문서 개정 범위
 
-분해의 task 하나가 아래 범위 안에서만 고친다. 문서의 다른 절은 건드리지 않는다.
+분해의 task 하나가 아래 범위 안에서만 고친다. 문서의 다른 절은 건드리지 않는다. 같은 절을 먼저 고친 명세(#207 · #216 등)의 문장은
+그대로 두고 그 위에 더한다.
 
 ### 12-1. `.ai/project/architecture.md`
 
