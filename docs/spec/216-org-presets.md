@@ -11,8 +11,8 @@
 | 이슈 | 이 명세가 쓰는 것 |
 |---|---|
 | #206 | 패키지 `src/harness/` 의 모듈 지도(명령 하나에 모듈 하나), 고정 사본의 `.harness/lib/` |
-| #207 | 레이어 로더와 키별 병합 규칙, `locked` 의 표기와 거부, 개인 레이어 허용 키, `set` 이 파일에 없는 키를 더하는 규칙, `harness schema` 의 값 출처, 씨앗 설정 원형 |
-| #208 | `workflow` 블록, 빈 하위 절차, 드라이버 실행 상태 파일과 `--resume` |
+| #207 | 레이어 로더와 키별 병합 규칙, `locked` 의 표기와 거부, 개인 레이어 허용 키, `set` 이 파일에 없는 키를 더하는 규칙, `harness schema` 의 값 출처(`layers` · `sources`)와 레이어 이름표 함수, 명령마다 읽는 설정(공유 · 실효), 씨앗 설정 원형 |
+| #208 | `workflow` 블록, 빈 하위 절차, 드라이버 실행 상태 파일과 그 선택 필드 `preset`, `--resume` |
 
 정본 위치:
 
@@ -23,14 +23,15 @@
 | `install --preset`, 사본 교체에서 preset 사본 남기기 | install 명령 모듈 |
 | `set extends` | set 명령 모듈 |
 | doctor `preset` 절 | doctor 명령 모듈 |
-| 레이어 로더의 preset 자리 | `src/harness/config/` |
+| 레이어 로더의 preset 자리, preset 레이어 id 와 schema `layers` 의 preset 항목 | `src/harness/config/` |
 | 메모 렌더 순서 | 역할 어댑터와 절차 문서를 만드는 render 모듈 |
-| 실행 상태의 `preset` 필드와 재개 검사 | `src/harness/workflow/` |
+| 실행 상태의 `preset` 값과 재개 검사 | `src/harness/workflow/` |
 | `extends` 설명 주석 | 씨앗 설정 원형 |
 | UI doctor 문구 | `src/ui/lib/doctor.js` |
+| preset 레이어의 이름표 | `src/ui/lib/labels.js` |
 | 규칙 문서 10장 | `src/templates/generated/.ai/AI_AGENT.md` |
 | 사람용 설명 | `README.md` · `src/templates/managed/docs/workflow/changing.md` |
-| 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/ui/lib/doctor.test.js` |
+| 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/ui/lib/doctor.test.js` · `src/ui/lib/labels.test.js` |
 
 ## 1. 동작이 바뀌는 것과 바뀌지 않는 것
 
@@ -133,7 +134,7 @@ preset 은 git 리포 하나다. 리포 하나에 preset 하나이고, 그 루�
 
 ### 3-1. 받는 파일
 
-태그가 가리키는 커밋의 트리에서 아래만 받는다.
+태그가 가리키는 커밋의 트리에서 아래 표의 경로만 받는다. 이 표를 **받는 파일 표**라 한다.
 
 | 경로 | 필수 | 뜻 |
 |---|---|---|
@@ -142,30 +143,55 @@ preset 은 git 리포 하나다. 리포 하나에 preset 하나이고, 그 루�
 | `project/workflows/<이름>.md` | 선택 | 절차 메모 — 그 절차 문서에 붙는다(6-2) |
 
 - `<이름>` 은 `[a-z][a-z0-9-]{1,30}` 이다
-- `preset.toml` 과 `project/` 밖의 항목은 받지 않는다. 읽지도 판정하지도 않는다(README · CI 설정 · 테스트 등)
-- `project/` 아래에는 `roles/` · `workflows/` 디렉터리만, 그 아래에는 `<이름>.md` 파일만 둔다. 그 밖의 것이 하나라도 있으면 preset 을 거부한다
-- `preset.toml` 과 메모는 UTF-8 이어야 한다. 아니면 거부한다
+- 표의 경로가 지나는 디렉터리 가운데 리포 루트를 뺀 것 — `project` · `project/roles` · `project/workflows` — 을 **받는 디렉터리**라 한다
+- 받는 디렉터리 아래(몇 단계든)의 항목은 표의 경로이거나 받는 디렉터리여야 한다. 그 밖의 것이 하나라도 있으면 preset 을 거부한다
+- 받는 디렉터리 밖에서 표에 없는 항목은 받지 않는다. 읽지도 판정하지도 않는다(README · CI 설정 · 테스트 등)
+- preset 이 실어 나를 파일을 더할 때는 이 표에 행을 더한다. 받는 디렉터리와 멤버 판정(3-2)은 표에서 나온다.
+  `ci/github/harness-verify.yml` · `ci/gitlab/harness-verify.yml` 두 행은 #217 이 더한다 — 그러면 `ci` · `ci/github` · `ci/gitlab` 이
+  받는 디렉터리가 되어 `ci/` 아래에는 그 두 파일만 받는다
+- `preset.toml` 과 메모는 UTF-8 이어야 한다. 아니면 `error: preset <참조> has a file that is not UTF-8 text` 로 거부한다 — 경로를 옮기지 않는다
 
 ### 3-2. 트리 멤버 판정
 
-- 받는 경로와 그 부모 디렉터리(`project` · `project/roles` · `project/workflows`)는 **일반 파일 또는 디렉터리**만이다.
-  git 트리에서 파일은 모드 `100644` · `100755`, 디렉터리는 `040000` 이다. 심볼릭 링크(`120000`) · 서브모듈(`160000`)이 하나라도 있으면 preset 을 거부한다
+판정은 함수 하나가 한다. 입력은 백엔드가 만든 (경로, 종류) 목록이고, 종류는 파일 · 디렉터리 · 심볼릭 링크 · 서브모듈 · 그 밖 가운데 하나다.
+
+| 부르는 쪽 | 목록 | 종류 |
+|---|---|---|
+| git 받기(7-3) | `git ls-tree -r -t -z --full-tree <resolved>` 의 항목, 그 순서대로 | 모드 `100644` · `100755` → 파일, `040000` → 디렉터리, `120000` → 심볼릭 링크, `160000` → 서브모듈 |
+| 사본 대조(4-2 · 5-1) | `.harness/preset/<깊이>/` 를 링크를 따라가지 않고 걸은 항목, 경로의 UTF-8 바이트 순. `check --staged` 는 `git ls-files -s -z -- .harness/preset/<깊이>` 의 항목. 경로는 그 깊이 디렉터리 기준으로 바꿔 넘긴다 | 디스크는 링크를 따라가지 않은 파일 종류. 인덱스는 git 받기와 같은 모드 대응 |
+| OCI 받기(#218) | tar 멤버. tar 전용 검사를 통과한 뒤 이 함수를 부른다 | #218 이 정한다 |
+
+목록의 항목을 차례로 보고 처음 어긋난 항목에서 멈춘다. 항목마다 경로를 먼저 보고 종류를 본다.
+
+| 항목의 경로 | 판정 | 어긋날 때의 사유 |
+|---|---|---|
+| 받는 디렉터리 아래인데 표의 경로도 받는 디렉터리도 아니다 | 거부 | `not a preset path` |
+| 표의 경로 | 파일이어야 한다 | `a symbolic link` · `a submodule` · `not a regular file` |
+| 받는 디렉터리 | 디렉터리여야 한다 | `a symbolic link` · `a submodule` · `not a directory` |
+| 받는 디렉터리 밖이고 표에 없다 | 판정하지 않는다. 받지 않은 항목으로 돌려준다 | — |
+
+- 목록에 디렉터리 항목이 없어도 된다 — 파일 경로가 부모 디렉터리를 함의한다
+- 끝까지 통과하면 목록에 `preset.toml` 이 파일로 있어야 한다. 없으면 거부한다
+- 통과하면 받을 파일 목록과 받지 않은 항목을 돌려준다. git 받기는 받지 않은 항목을 버리고, 사본 대조는 사유 `outside the preset tree` 로 거부한다. OCI 받기에서 받지 않은 항목을 어떻게 다룰지는 #218 이 정한다
+- 거부하면 사유와 그 항목의 순번(목록에서 1 부터)을 돌려준다. **경로는 돌려주지 않는다** — 받은 이름은 신뢰하지 않는 입력이라 어느 백엔드의 안내문에도 옮기지 않는다
 - 이름은 3-1 의 규칙을 따른다. ADR 0017 경로 규칙의 형식(성분 `[\w.-]+`, `.` · `..` 성분 없음)을 만족하는 더 좁은 집합이다
 - 실행 비트는 버린다. 사본에는 보통 파일로 쓴다
-- 받지 않는 항목의 종류는 보지 않는다 — 리포 루트의 README 가 링크여도 통과한다
-- 판정은 함수 하나가 (경로, 종류) 목록을 받아 한다. OCI 백엔드(#218)는 tar 멤버를 같은 함수로 판정한다
+- 받지 않는 항목의 종류는 보지 않는다 — git 받기에서 리포 루트의 README 가 링크여도 통과한다
 - 하나라도 어긋나면 preset 전체를 거부한다. 종료 코드 2
 
+git 받기의 안내문:
+
 ```
-error: preset https://git.example.com/acme/preset@v1.4.0 has project/roles/developer.md as a symbolic link
+error: preset https://git.example.com/acme/preset@v1.4.0 has an entry the harness does not accept (a symbolic link, entry 7)
 nothing was changed
 
 help: a preset holds regular files only — preset.toml, and notes under project/roles/ and project/workflows/
+      the entry number counts the lines of `git ls-tree -r -t --full-tree v1.4.0` in the preset repository
 ```
 
-- 종류가 어긋나면 `as a symbolic link` · `as a submodule` 로 그 경로를 낸다
-- 이름이 규칙 밖이면 **경로를 옮기지 않고** 담긴 디렉터리만 낸다: `error: preset <참조> has an entry under project/roles/ that is not <name>.md`
+- 괄호 안은 함수가 돌려준 사유와 순번이다. 둘째 help 줄의 태그는 그 preset 의 태그다
 - `preset.toml` 이 없으면 `error: preset <참조> has no preset.toml at its root`
+- 사본 대조의 사유는 5-3 의 줄로 낸다
 
 ### 3-3. `preset.toml`
 
@@ -227,7 +253,8 @@ max_rounds = 4
 ```
 
 - `.harness/preset/` 에는 디렉터리 `1` … `N`(N 은 체인 길이)만 있다
-- 각 디렉터리에는 3-1 의 경로만 있다. 파일은 일반 파일이고 경로 성분에 링크가 없다
+- 각 디렉터리는 3-2 의 판정 함수를 통과하고 받지 않은 항목이 없다. 그래서 받는 파일 표(3-1)의 파일과 받는 디렉터리만 있고,
+  파일은 일반 파일이며 경로 성분에 링크가 없다
 - 체인이 비면 `.harness/preset/` 도 lock 도 없다
 
 ### 4-3. lock — `.harness/preset.lock`
@@ -250,20 +277,32 @@ resolved = "<커밋 id>"
 content = "sha256:<…>"
 ```
 
-| 키 | 뜻 | git 백엔드의 값 |
-|---|---|---|
-| `format` | lock 형식 번호 | `1` |
-| `[[preset]]` | 체인의 preset 하나. 깊이 순(1 부터) | — |
-| `source` | 출처 | 2-1 의 출처 문자열 그대로 |
-| `tag` | 태그 | 2-1 의 태그 문자열 그대로 |
-| `resolved` | 받은 것의 불변 식별자 | 태그가 가리키는 커밋 id. 주석 태그면 벗긴 커밋. 소문자 16진 40자 또는 64자 |
-| `content` | 사본의 내용 해시 | `sha256:` 뒤에 4-4 의 해시 |
+| 키 | 뜻 |
+|---|---|
+| `format` | lock 형식 번호. `1` |
+| `[[preset]]` | 체인의 preset 하나. 깊이 순(1 부터) |
+| `source` | 출처 — 그 preset 을 가리킨 참조에서 태그를 뗀 것 |
+| `tag` | 태그 |
+| `resolved` | 받은 것의 불변 식별자 |
+| `content` | 사본의 내용 해시. `sha256:` 뒤에 4-4 의 해시(소문자 16진 64자) |
 
-- 백엔드는 `source` 의 스킴이 정한다. `https://` 는 git 이다. OCI 백엔드(#218)는 같은 네 키를 쓰고, `source` 가 `oci://…`,
-  `resolved` 가 manifest digest 다. `content` 는 두 백엔드가 같은 알고리즘으로 계산한다
+백엔드는 `source` 의 스킴이 정하고, `source` · `tag` · `resolved` 의 형식도 스킴마다 다르다.
+
+| `source` 의 스킴 | 백엔드 | `source` | `tag` | `resolved` |
+|---|---|---|---|---|
+| `https://` | git (이 명세) | 2-1 의 출처 `https://<호스트>/<경로>` | 2-1 의 태그 규칙 | 태그가 가리키는 커밋 id. 주석 태그면 벗긴 커밋. 소문자 16진 40자 또는 64자 |
+| `oci://` | OCI (#218) | `oci://<레지스트리>/<저장소>` — #218 2-2 의 태그를 뺀 출처 | #218 2-1 의 태그 규칙 | manifest digest. `sha256:` 뒤에 소문자 16진 64자 |
+
+- `oci://` 행은 OCI 백엔드와 함께 #218 이 판정에 더한다. 표에 행이 없는 스킴의 `source` 는 읽을 수 없는 lock 이다
+- `content` 는 두 백엔드가 같은 형식이고 같은 알고리즘(4-4)으로 계산한다
+- 참조를 출처와 태그로 나누는 규칙도 스킴이 정한다 — `https://` 는 2-1 의 `@`, `oci://` 는 #218 2-2. 순환 판정(2-3)과
+  체인 연결 · 프로젝트 참조 대조(5-1)는 나눈 출처와 태그로 비교한다
+- 거꾸로 잇는 것도 스킴을 따른다. 이 명세의 안내문 · doctor 가 `<출처>@<태그>` 로 적은 자리와 schema 의 `ref`(6-1)는 그 스킴의 참조 형식으로 이은 값이다
 - 쓰는 형식은 고정이다 — 위의 주석 한 줄, 빈 줄, `format = 1`, 그리고 항목마다 빈 줄 · `[[preset]]` · 네 키를 이 순서로.
   값은 TOML 기본 문자열이고 줄은 LF 로 끝난다. 같은 체인이면 같은 바이트가 나온다
-- 읽을 때의 판정: TOML 이고, `format` 이 1 이고, 항목이 1~3 개이고, 항목마다 키가 정확히 넷이고, 값이 위 형식을 지킨다. 어긋나면 읽을 수 없는 lock 이다(5-1)
+- 읽을 때의 판정: TOML 이고, `format` 이 1 이고, 항목이 1~3 개이고, 항목마다 키가 정확히 넷이고, `content` 가 위 형식이고,
+  `source` 의 스킴이 표에 있고 `source` · `tag` · `resolved` 가 그 행의 형식을 지킨다. 어긋나면 읽을 수 없는 lock 이다(5-1)
+- `resolved` 의 **짧은 꼴**은 `sha256:` 접두가 있으면 뗀 뒤의 앞 7자다. pull 의 출력과 경고(7-6), doctor(12절)가 이것을 쓴다
 
 ### 4-4. 내용 해시
 
@@ -327,8 +366,13 @@ lock 의 `content` 값을 깊이 순으로 한 줄씩(`<content>\n`) 이은 바�
 | `doctor` · `status` · `schema` | doctor 의 `preset` 절에 `bad` 항목을 내고, 사본대로 만든 레이어로 계속한다 | `preset` 절에 `bad` 항목을 내고, preset 레이어 없이 계속한다 |
 | `pull` | 체인 연결 · 프로젝트 참조 · 요구 버전은 새로 받아 고친다. 내용 · 남은 사본은 멈춤 조건 4 | 멈춤 조건 4 |
 | `install` (`--preset` 없이) | 종료 코드 2, 아무것도 바꾸지 않는다(8-2) | 같다 |
-| 그 밖에 설정을 읽는 명령 — `render` · `set` · `steps` · `checks` · `write-doc` · `run` · `fix` · `vars` · `metrics` · `forge-setup` | 종료 코드 2, 아무것도 바꾸지 않는다 | 같다 |
+| `usage log`(#213) | 기록하지 않고 0 으로 끝난다 — 설정을 읽지 못했을 때와 같다 | 같다 |
+| 그 밖에 설정을 읽는 명령 전부 | 그 명령이 설정을 읽지 못했을 때처럼 끝난다 — 아무것도 바꾸지 않고, 종료 코드는 그 명령의 설정 오류 코드다 | 같다 |
 
+- "그 밖에 설정을 읽는 명령" 은 공유 설정이나 실효 설정(실행 계획 `run_plan()` 포함)을 읽는 명령이다. 지금의 명령으로는 `render` · `set` ·
+  `steps` · `checks` · `write-doc` · `run` · `run-plan` · `fix` · `vars` · `metrics` · `forge-setup` 이고 모두 종료 코드 2 다.
+  이식으로 생기는 명령은 각 명세가 적은 읽는 설정을 따른다 — 공유 설정이나 실행 계획을 읽는 명령은 여기에 들고, 그 명세의 설정 오류 코드로 끝난다
+- 설정을 읽지 않는 명령(`bash-guard` · `secret-scan` · `clone-key` 등)은 대조하지 않는다
 - `doctor` · `status` · `schema` 가 계속할 때 그 레이어로 만든 설정이 #207 의 검증을 통과하지 못하면 지금처럼 설정 오류로 종료 코드 2 다
 - `set extends` 는 대조하지 않는다(9절). `install --preset` 은 8-1 이다
 - pull 이 사본을 덮지 않는 것은 손으로 고친 내용을 알리지 않고 지우지 않기 위해서다. 사본과 lock 을 둘 다 지우면 체인이 빈 상태로 대조를 통과한다
@@ -354,14 +398,16 @@ help: the preset copy is what `harness pull` wrote — the harness does not take
 | 프로젝트 참조 · 체인 연결 | `harness.toml extends a preset the lock does not have` | `extends` 와 그 참조, `.harness/preset.lock` 과 깊이 1 의 참조(없으면 `nothing`) | `fetch what harness.toml names` 와 `harness pull` |
 | 요구 버전 | `the preset needs a newer harness` | `<출처>@<태그>` 와 `needs <requires> — this harness is <버전>` | `upgrade the harness this project pins` 와 `harness install` |
 
+- `not a preset copy (<사유>)` 의 사유는 3-2 의 사유와 `outside the preset tree`, 또는 3-3 의 판정 사유다. 사본 안의 항목 경로는 옮기지 않는다
 - 줄의 값으로 사본 파일의 내용을 옮기지 않는다. 참조 문자열은 2-1 을 통과한 것만 낸다 — 통과하지 못한 `extends` 는 2-1 의 안내문이 대신한다
-- 그 밖의 명령(종료 코드 2)은 같은 첫 줄 · 줄 · help 를 내고, 줄 목록 뒤 · help 앞에 `nothing was changed` 를 더한다
+- 그 밖에 설정을 읽는 명령(5-2)은 설정 오류를 내는 자리에 같은 첫 줄 · 줄 · help 를 내고, 줄 목록 뒤 · help 앞에 `nothing was changed` 를 더한다.
+  설정 오류를 내지 않는 계약의 명령(`usage log`)은 그 계약대로다
 - `install` 은 프로젝트 참조 어긋남의 help 를 `harness install --preset <extends 값>` 으로 낸다(8-2)
 
 ### 5-4. `check --staged`
 
-`check --staged` 는 lock 과 사본을 인덱스에서 읽어 대조한다 — lock 은 `git show :.harness/preset.lock`, 사본의 파일 목록은
-`git ls-files -z -- .harness/preset`, 파일 바이트는 `git show :<경로>`. 프로젝트 참조는 작업 트리의 `harness.toml` 로 본다 — `check --staged` 가 설정을 작업 트리에서 읽는 것과 같다.
+`check --staged` 는 lock 과 사본을 인덱스에서 읽어 대조한다 — lock 은 `git show :.harness/preset.lock`, 사본의 항목과 모드는
+`git ls-files -s -z -- .harness/preset`(멤버 판정은 3-2), 파일 바이트는 `git show :<경로>`. 프로젝트 참조는 작업 트리의 `harness.toml` 로 본다 — `check --staged` 가 설정을 작업 트리에서 읽는 것과 같다.
 사본을 손으로 고친 커밋과 `extends` 만 바꾼 커밋은 pre-commit 에서 막힌다.
 
 ## 6. 레이어 병합
@@ -371,9 +417,24 @@ help: the preset copy is what `harness pull` wrote — the harness does not take
 - #207 의 레이어 로더가 비워 둔 preset 자리에 사본의 레이어가 깊은 쪽부터 들어간다(2-3 의 순서)
 - 레이어 하나는 그 깊이의 `preset.toml` 에서 `[preset]` · `extends` · `locked` 를 뗀 것이다. 병합은 #207 의 키별 규칙 그대로다
 - 깊이 d 의 `locked` 는 그보다 위의 레이어(얕은 preset · 프로젝트, 그리고 #207 이 정한 범위의 개인 레이어)에 걸린다. 위 레이어가 잠긴 키에 다른 값을 적으면 #207 대로 거부된다.
-  거부 안내는 잠근 레이어를 `<출처>@<태그>` 로 가리킨다
-- `harness schema` 의 값 출처(#207)에서 preset 레이어는 깊이와 `<출처>@<태그>` 로 서로 구분된다
+  거부 안내는 잠근 레이어를 그 레이어의 참조(아래 `ref`)로 가리킨다
 - render · check 는 #207 대로 개인 레이어 없이 병합한다
+
+레이어 id 와 schema 의 레이어 목록:
+
+- preset 레이어의 id 는 `preset:<깊이>` 다 — `preset:1` 이 프로젝트가 가리키는 preset 이다
+- `harness schema` 의 `layers`(#207 10절)는 아래 → 위 순서이므로 `default` · `preset:<N>` … `preset:1` · `project` · `local` 이다
+- `layers` 의 preset 항목은 `{"id": "preset:<d>", "path": ".harness/preset/<d>/preset.toml", "ref": "<참조>"}` 다
+  - `path` 는 하네스 루트 기준 상대 경로다
+  - `ref` 는 lock 항목의 출처와 태그를 그 스킴의 참조 형식으로 이은 것이다 — git 은 `<출처>@<태그>`. preset 항목에만 있다
+- `sources` · `checks[].source` 처럼 레이어 id 를 담는 값도 preset 레이어를 `preset:<d>` 로 적는다
+- preset 레이어를 만들지 못하면(5-2 의 읽을 수 없음) `layers` 에 preset 항목이 없다
+
+UI 이름표 — `src/ui/lib/labels.js`:
+
+- #207 이 둔 레이어 이름표 함수에 preset 규칙을 더한다. `preset:<d>` 는 `preset — <ref>` 로 보인다. `ref` 는 schema `layers` 에서 같은 id 의 항목에서 읽는다
+- 이름표에 `ref` 가 필요하므로 함수는 레이어 id 와 schema 의 `layers` 를 받는 순수 함수다. 같은 id 의 항목이 없으면 `preset <d>` 로 보인다
+- 설정 화면의 출처 표시 · 잠근 레이어 표시(#207)와 절차의 출처 레이어 표시(#214)가 이 이름표를 쓴다
 
 ### 6-2. 메모 렌더 순서
 
@@ -548,7 +609,7 @@ render: …
 
 | 경우 | 출력 |
 |---|---|
-| preset 마다 | `pull: <출처>@<태그> -> <resolved 앞 7자> (depth <d>)` |
+| preset 마다 | `pull: <출처>@<태그> -> <resolved 의 짧은 꼴> (depth <d>)` |
 | lock 이 바뀌었다 | `pull: .harness/preset.lock updated · <N> vendored file(s) (<W> written, <R> removed)` |
 | lock 이 그대로다 | `pull: the preset is up to date` |
 | `extends` 가 없고 사본이 있었다 | `pull: harness.toml extends no preset — removed the preset copy and the lock` |
@@ -653,7 +714,8 @@ next: fetch it — render and check stop until harness.toml and the lock agree
 
 ## 11. 실행 상태의 preset digest
 
-- #208 의 드라이버 실행 상태에 `preset` 필드를 더한다. 값은 실행을 시작할 때의 체인 digest(4-5)이고, 체인이 비면 `null` 이다
+- #208 이 드라이버 실행 상태 형식에 예약한 선택 필드 `preset`(문자열 또는 `null`)에 값을 쓴다. 값은 실행을 시작할 때의 체인 digest(4-5)이고, 체인이 비면 `null` 이다.
+  이 명세는 실행 상태에 필드를 더하지 않는다
 - `--resume` 은 지금 체인 digest 가 상태의 값과 다르면 아무 단계도 돌리지 않고 종료 코드 2 로 거부한다. 상태에 `preset` 필드가 없으면 `null` 로 본다
 
 ```
@@ -672,7 +734,7 @@ doctor 결과 목록에 `preset` 절을 더한다. 자리는 `managed files` 절
 | 조건 | state | what | detail |
 |---|---|---|---|
 | `extends` 도 사본도 lock 도 없다 | `ok` | `no preset — harness.toml extends nothing` | — |
-| 대조를 통과한 체인의 preset 마다 | `ok` | `preset <출처>@<태그>` | `depth <d> · <resolved 앞 7자>` |
+| 대조를 통과한 체인의 preset 마다 | `ok` | `preset <출처>@<태그>` | `depth <d> · <resolved 의 짧은 꼴>` |
 | 내용 · 사본 구조 · `preset.toml` · 남은 사본 어긋남(자리마다) | `bad` | `the preset copy does not match the lock` | `.harness/preset/<d>: <5-3 의 사유>` (남은 사본은 `.harness/preset: left over without a lock`) |
 | lock 을 읽을 수 없다 | `bad` | `.harness/preset.lock is not a lock this harness reads` | `<사유>` |
 | `extends` 가 있고 lock 이 없다 | `bad` | `the preset harness.toml extends is not pulled` | ``run `harness pull` `` |
@@ -766,13 +828,13 @@ doctor 결과 목록에 `preset` 절을 더한다. 자리는 `managed files` 절
 | 참조 형식 | 2-1 의 허용 형식은 통과. 거부 사유 넷이 각각 나온다. 자격증명 사유일 때 심은 비밀 문자열이 표준 출력 · 표준 오류 어디에도 없다 |
 | pull 기본 — 깊이 2 체인, 메모가 있는 preset | 사본 · lock 이 4-2 · 4-3 대로이고 lock 바이트가 고정 기대값과 같다. 생성물에 preset 값이 들고, 메모가 깊은 preset · 얕은 preset · 프로젝트 순으로 붙는다. 매니페스트에 `.harness/preset` 경로가 없다. 같은 pull 을 다시 돌리면 `up to date` 이고 어느 파일의 바이트도 바뀌지 않는다 |
 | 체인 | 깊이 3 통과, 깊이 4 거부, 같은 출처의 다른 태그로 순환 거부. 거부 때 대상 리포 · 인덱스 바이트가 그대로다 |
-| 멤버 | `project/roles/` 의 링크 · 서브모듈 · 규칙 밖 이름 · `project/` 아래 다른 디렉터리 · `preset.toml` 없음 · `[project]` · `schema = 2` · `[preset]` 의 모르는 키 각각 거부. 리포 루트의 README 링크는 통과 |
+| 멤버 | `project/roles/` 의 링크 · 서브모듈 · 규칙 밖 이름 · `project/` 아래 다른 디렉터리 · 디렉터리 자리의 파일(`project` 가 파일) · `preset.toml` 없음 · UTF-8 이 아닌 메모 · `[project]` · `schema = 2` · `[preset]` 의 모르는 키 각각 거부. 거부 안내의 사유와 순번이 3-2 대로이고, 이름에 심은 표지 문자열이 하네스 출력에 없다. 리포 루트의 README 링크와 받는 디렉터리 밖의 다른 디렉터리는 통과 |
 | 멈춤 조건 1~5 | 각각 종료 코드 2 · `nothing was changed` · 대상 리포 · 인덱스 · 매니페스트 바이트가 그대로다. 조건 3 은 `--adopt` 로 넘어간다. 조건 5 는 `harness.toml` · 사본 · lock 의 변경을 미정리로 보지 않는다 |
 | git 작업 트리 밖 | pull 거부, 아무것도 바뀌지 않는다 |
 | 받기 실패 | 없는 태그 · 없는 리포. 원격 경로에 심은 표지 문자열이 하네스 출력에 없다 |
 | 태그 이동 | bare 리포에서 태그를 옮긴 뒤 pull — 경고가 나고 lock 의 `resolved` 가 새 커밋이다 |
 | `extends` 만 바꾼 상태 | render · `set`(다른 키) 종료 코드 2, `check` · `check --staged` 종료 코드 1, doctor 의 `preset` 절 `bad`, `status` 의 doctor 항목에 같은 것 |
-| 사본 손편집 | `check` 1, render 2, pull 은 조건 4. 사본과 lock 을 지운 뒤 pull 은 통과 |
+| 사본 손편집 | `check` 1, render 2, pull 은 조건 4. 사본에 받는 디렉터리 밖의 파일을 더하면 `not a preset copy (outside the preset tree)`, 메모를 링크로 바꾸면 `not a preset copy (a symbolic link)` — `check --staged` 도 같다. 사본과 lock 을 지운 뒤 pull 은 통과 |
 | `extends` 제거 | pull 이 사본과 lock 을 걷고 생성물이 preset 없는 값이다 |
 | `set extends` | 단독이면 render 없이 안내하고 `harness.toml` 만 바뀐다. 다른 키와 함께면 거부. 형식 어긋남이면 `harness.toml` 바이트가 그대로다 |
 | install 갱신 | `extends` 가 있는 프로젝트에서 install 뒤 사본 · lock 바이트가 그대로다 |
@@ -787,14 +849,20 @@ doctor 결과 목록에 `preset` 절을 더한다. 자리는 `managed files` 절
 | 소스 리포 | 고정 사본 없이 pull 이 돈다 |
 | 덮는 키 보고 | 기본값 전체를 담은 `harness.toml` 로 pull — note 에 preset 이 바꾼 키가 나오고 값은 나오지 않는다 |
 | doctor `preset` 절 | 12절의 조건마다 그 항목 |
+| schema 의 preset 레이어 | 깊이 2 체인에서 `layers` 가 `default` · `preset:2` · `preset:1` · `project` · `local` 순이고 preset 항목의 `path` · `ref` 가 6-1 대로다. preset 이 정한 값의 `sources` 가 `preset:<d>` 다 |
+| 설정을 읽는 그 밖의 명령 | 사본 손편집 상태에서 `vars` · `metrics` 가 종료 코드 2 와 `nothing was changed` 를 낸다 |
 
 ### 16-2. 단위 테스트 — `src/test/unit/`
 
-참조 판정, 멤버 판정, 내용 해시(고정 입력의 기대값을 4-4 의 셸 계산과 맞춘다), lock 쓰기 바이트와 읽기 판정, 버전 비교, 체인 digest.
+참조 판정, 멤버 판정(git 목록 · 디렉터리 항목이 없는 목록 · 사본 목록, 사유와 순번, 받지 않은 항목), 내용 해시(고정 입력의 기대값을 4-4 의 셸 계산과 맞춘다), lock 쓰기 바이트와 읽기 판정(스킴 표에 없는 `source`, 스킴과 맞지 않는 `resolved` 거부), `resolved` 의 짧은 꼴, 버전 비교, 체인 digest, preset 레이어 id 와 `layers` 항목.
 
 ### 16-3. `doctor.test.js`
 
 12절의 `bad` 항목마다 `explain()` 의 문구와 조치.
+
+### 16-4. `labels.test.js`
+
+`preset:<d>` 가 `layers` 의 같은 id 항목이 있으면 `preset — <ref>`, 없으면 `preset <d>` 로 보인다. `default` · `project` · `local` 의 이름표는 #207 대로다.
 
 회귀 테스트 전체(`script/run-lint-test.sh`)가 통과한다.
 
@@ -816,8 +884,8 @@ doctor 결과 목록에 `preset` 절을 더한다. 자리는 `managed files` 절
 | "구성 요소" | `src/harness/preset/` — 참조 판정 · 체인 · git 받기 · 트리 멤버 판정 · 사본과 lock · 내용 해시 · 대조. 설정 로더가 preset 레이어를 이것으로 읽는다. 대상 리포의 `.harness/` 는 하네스 입력의 사본 자리다 — 고정 사본(install), preset 사본과 lock(pull · `install --preset`) |
 | "데이터 흐름" 새 항목 | preset: `harness pull` → git(`ls-remote` · 얕은 fetch, 리포 밖 임시 위치) → 멤버 판정 · 병합 · 검증 · render 계산 · 경로 사전 판정 → `.harness/preset/` · `.harness/preset.lock` → render. 설정을 읽을 때마다 사본을 lock 과 대조한다 |
 | "데이터 흐름" 의 렌더 | 렌더의 입력에 `.harness/preset/` 가 든다. 역할·절차 메모는 preset 의 것(깊은 쪽부터) 뒤에 프로젝트 것이 붙는다 |
-| "신뢰 경계" 의 들어오는 입력 | preset 원격의 트리 — 신뢰하지 않는다. 받는 경로만 읽고, 일반 파일 · 디렉터리만, 경로 규칙의 이름만 받으며, 작업 트리를 만들지 않고 객체에서 읽는다. git 의 출력은 판정에만 쓰고 옮기지 않는다. 인증은 사용자의 git 설정이 갖는다. `.harness/preset/` 와 lock — 커밋된 파일이라 설정을 읽을 때마다 lock 과 대조한다. 받은 preset 의 설정은 병합되면 프로젝트 설정과 같은 신뢰를 받는다(검증 명령 포함) — 사람은 pull 이 만든 diff 를 리뷰 요청에서 본다 |
-| "새 코드를 둘 곳" | 새 preset 백엔드 → `src/harness/preset/` 의 백엔드 하나(받기와 `resolved`). 멤버 판정 · 내용 해시 · lock 은 공용이다. preset 이 실어 나를 파일을 더하면 받는 파일 표와 멤버 판정에 더한다 |
+| "신뢰 경계" 의 들어오는 입력 | preset 원격의 트리 — 신뢰하지 않는다. 받는 경로만 읽고, 일반 파일 · 디렉터리만, 경로 규칙의 이름만 받으며, 작업 트리를 만들지 않고 객체에서 읽는다. 멤버 판정은 백엔드와 상관없이 함수 하나가 하고, 거부 안내에 받은 이름을 옮기지 않는다(사유와 순번만). git 의 출력은 판정에만 쓰고 옮기지 않는다. 인증은 사용자의 git 설정이 갖는다. `.harness/preset/` 와 lock — 커밋된 파일이라 설정을 읽을 때마다 lock 과 대조한다. 받은 preset 의 설정은 병합되면 프로젝트 설정과 같은 신뢰를 받는다(검증 명령 포함) — 사람은 pull 이 만든 diff 를 리뷰 요청에서 본다 |
+| "새 코드를 둘 곳" | 새 preset 백엔드 → `src/harness/preset/` 의 백엔드 하나(받기, `resolved`, lock 의 스킴 행). 멤버 판정 · 내용 해시 · lock 쓰기는 공용이다. preset 이 실어 나를 파일을 더하면 받는 파일 표에 행을 더한다 — 받는 디렉터리와 멤버 판정은 그 표에서 나온다 |
 | "계층과 의존 방향" | preset 받기는 forge 어댑터를 거치지 않고 git 을 직접 부른다 |
 | "검사하지 않는 것" | 사본과 lock 을 함께 고친 변경은 대조가 잡지 못한다 — 리뷰가 본다. 태그가 원격에서 옮겨졌는지는 pull 때만 본다 |
 
@@ -830,7 +898,7 @@ doctor 결과 목록에 `preset` 절을 더한다. 자리는 `managed files` 절
 | 새 행 `체인` | `extends` 로 이어진 preset 들. 깊이 1 이 프로젝트가 가리키는 것이고 상한은 3 |
 | 새 행 `preset 사본` | `.harness/preset/<깊이>/` — pull 이 받은 preset 의 파일. render 의 입력이다 |
 | 새 행 `lock` | `.harness/preset.lock` — 체인의 출처 · 태그 · `resolved` · 내용 해시. 사본의 정본 기록 |
-| 새 행 `확장 지점` | preset 이 빈 하위 절차로 둔 자리. 프로젝트가 그 절차를 정의해 채운다 |
+| `하위 절차` · `확장 지점` 행(#208 이 둔다) | 행 끝에 한 문장: preset 은 절차의 한 단계를 확장 지점으로 두고, 프로젝트가 그 절차를 정의해 채운다 |
 | "매니페스트" | 끝에 한 문장: preset 사본은 들지 않는다 — 그 해시는 lock 에 있다 |
 
 ### 17-4. `.ai/project/testing.md`
