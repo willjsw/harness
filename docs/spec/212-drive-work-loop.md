@@ -17,9 +17,9 @@
 | 처리 노트 표지 `FMT_HANDLED_HEADING` | 그때의 표지 정본과 셸 표기 `src/templates/managed/script/harness-format.sh` 둘 다 (#213 뒤의 정본은 `src/harness/format.py`) |
 | 구현자 계약 | `src/templates/managed/.ai/templates/developer.md` |
 | doctor 항목 · `harness fix legacy-work` | CLI (`src/harness/`) |
-| UI doctor 문구 · 조치 고르기 | `src/ui/lib/doctor.js` |
+| UI doctor 문구 · 조치 고르기 | `src/ui/lib/doctor.js`. 조치를 실행하는 표는 `src/ui/lib/actions.js` 의 `DOCTOR_FIXES` |
 | 사람용 설명 | `README.md` · `src/templates/managed/docs/workflow/` |
-| 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/ui/lib/doctor.test.js` |
+| 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/test/fake-forge.sh` · `src/ui/lib/doctor.test.js` |
 
 이 리포의 `script/` · `.ai/templates/` · `docs/workflow/` 아래 같은 이름의 파일은 거기서 설치된 사본이다.
 
@@ -89,6 +89,13 @@
   `mr` 이 빈 문자열이어도 값이므로 구현 판정은 돌고, `escalate` · `verify_failed` · `no_mr` 의 사유를 stderr 에 낸다 (5절)
 - `{steps.<id>.out.handled}` 는 배열이라 압축 JSON 한 원소로 판정 명령에 들어간다
 - 마무리는 리뷰 루프가 `done` 으로 끝날 때마다 돈다. 처리할 발견이 없으면 구현자가 곧바로 돌아온다
+- 구현자 단계(`develop` · `finalize`, 2-2 의 `fix`)는 단계의 `text` 로 모드와 입력값을 넘긴다. driver 의 agent 블록 프롬프트는 역할 지시 ·
+  이슈 줄 · 단계 `text` · 스키마로 이뤄지고 조각을 넣지 않는다(#208 3-2 · 4-2). `text` 는 그 단계 조각의 첫머리(2-4)와 같은 문장이다
+
+  | 단계 | `text` 가 담는 것 |
+  |---|---|
+  | `develop` | 구현 모드, 대상 이슈 `{issue}`, 분해가 있으면 task↔이슈 매핑을 `script/sync-task-issues.sh {issue} --dry-run` 출력에서 읽는다는 것 |
+  | `finalize` | 마무리 모드, 이슈 `{issue}`, 리뷰 요청 `{mr}`, 판정은 PASS 라는 것 |
 
 ### 2-2. `review-loop`
 
@@ -103,6 +110,8 @@
 - 리뷰 종료 코드 2 와 0 ~ 3 밖의 코드는 `*` 로 stop 에 간다. 종료 코드 2 는 PASS 가 아니다
 - 회차를 세고 상한에서 멈추는 것은 리뷰 명령이다. 배선은 리뷰 명령을 거치지 않는 리뷰 경로를 두지 않는다 —
   `fix-check` 가 `committed` 를 낸 뒤에만 다시 리뷰로 간다
+- `fix` 의 `text` 는 재시도 모드, 이슈 `{issue}`, 리뷰 요청 `{mr}`, 리뷰 본문을 리뷰 요청의 가장 최근 자동 리뷰 요약과 그 회차 스레드에서
+  읽는다는 것(`review_mr_threads {mr}`)을 담는다 — 2-1 의 구현자 단계 `text` 와 같은 규칙이다
 - `review-loop` 는 단독으로 돌지 않는다. 자기 안에서 `set` 하지 않는 `{mr}` 을 쓰므로 `harness run review-loop <이슈>` 는
   #208 7-1 의 규칙으로 아무것도 실행하지 않고 종료 코드 2 로 거부된다
 
@@ -121,8 +130,9 @@
 
 ### 2-4. 단계 본문 조각
 
-새 단계의 조각은 아래에 둔다. agent 단계의 조각은 구현자에게 넘기는 입력이기도 하다 — 모드와 입력값을 첫머리에 적고
-`{issue}` · `{mr}` 자리표시를 쓴다. 자리표시는 render 의 `{{VAR}}` 치환과 겹치지 않는다.
+새 단계의 조각은 아래에 둔다. 구현자 단계는 `text` 로 모드와 입력값을 넘긴다(2-1 · 2-2) — 조각은 절차 문서에만 들고 구현자 프롬프트에는
+들지 않는다. agent 단계의 조각은 그 `text` 와 같은 모드와 입력값을 첫머리에 적어 문서에 보인다. 조각의 `{issue}` · `{mr}` 는 풀리지 않고
+글자 그대로 문서에 남으며, render 의 `{{VAR}}` 치환과 겹치지 않는다.
 
 | 조각 | 담는 것 |
 |---|---|
@@ -188,7 +198,7 @@
 
 ### 4-1. 입력
 
-- 이슈 번호와 **모드**(구현 · 재시도 · 마무리). 모드는 부르는 쪽이 알린다
+- 이슈 번호와 **모드**(구현 · 재시도 · 마무리). 모드는 부르는 쪽이 알린다 — driver 에서는 구현자 단계의 `text`(2-1 · 2-2)다
 - 재시도 · 마무리는 리뷰 요청 번호를 받는다. 없으면 손대지 않고 `escalate` 로 돌아온다. 사유에 무엇이 없는지 적는다
 - 리뷰 본문은 넘겨받지 않으면 리뷰 요청에서 읽는다. `review_mr_threads <리뷰 요청>` 출력에서 본문이 자동 리뷰 요약
   제목(`FMT_SUMMARY_HEADING`)으로 시작하는 가장 늦은 노트가 이번 회차 요약이고, 그 앞 요약 뒤에 달린 인라인 스레드가
@@ -404,6 +414,8 @@ driver 자신이 멈춘 끝(방문 · 단계 상한, 상태 불일치 등)의 �
 
 - 이 허용은 #208 의 역할 러너가 그 실행의 인자(`driver_write`)로 준다. `[permissions].allow_push` 는 대화형 세션의 설정으로 남고 이 허용을 정하지 않는다.
   대화형 세션의 허용 목록에서 빠진 이월 이슈 생성도 이 실행에서는 연다 — 호출이 그 지시다
+- 대화형 세션의 허용 목록에는 `script/work-check.sh` 규칙이 든다 — 관리 스크립트 허용 규칙이 `script/` 바로 아래 관리 스크립트를 그대로
+  내고, 판정 명령은 git · forge 를 읽기만 한다
 - 표에 없는 조작은 열지 않는다 — 이슈 · 리뷰 요청 닫기, 머지, 이슈 댓글, 라벨 변경, `--dry-run` 없는 task 동기화가 그렇다
 - 보호 브랜치 push 와 force push 는 deny 규칙 · 명령 가드 · pre-push 훅이, `--no-verify` 는 deny 규칙 · 명령 가드가 그대로 막는다
   (`--no-verify` 는 git 훅을 건너뛰므로 pre-push 훅은 막지 못한다). 헤드리스 실행에 `--bare` 를 쓰지 않으므로 훅과 가드가 살아 있다
@@ -487,7 +499,7 @@ doctor `config` 절에 항목 하나를 더한다.
 - 절을 지우는 범위와 빈 줄 정리는 `harness steps <절차> --delete` 와 같다. 매니페스트 사전 판정 · 사용자 파일 판정 · 실패 시 되돌림도 같다
 - `FIXES` 에 `legacy-work` 를 더하고 사용법 문구에 한 줄을 더한다: `legacy-work  remove a [workflows.work] that equals a previous default`
 - UI: `src/ui/lib/doctor.js` 의 조치 고르기 표에 `config` · `workflows.work is a previous default` · — · `legacy-work` 행,
-  `doctorFix` 가 `legacy-work` 를 `harness fix legacy-work` 로 부른다. 문구는 제목 "work 절차가 이전 기본값으로 고정되어 있습니다",
+  `src/ui/lib/actions.js` 의 `doctorFix` 조치 표(`DOCTOR_FIXES`)에 `legacy-work` → `harness fix legacy-work`. 문구는 제목 "work 절차가 이전 기본값으로 고정되어 있습니다",
   본문 "harness.toml 의 [workflows.work] 가 하네스의 이전 기본값과 같아 지금의 기본 work 절차를 받지 못합니다. 지우면 하네스의 지금 기본 절차를 씁니다."
 
 ### 10-4. 이 리포
@@ -524,6 +536,10 @@ doctor `config` 절에 항목 하나를 더한다.
 테스트는 원격과 에이전트 CLI 를 부르지 않는다. 원격은 로컬 bare 리포, forge 는 페이크(#209 의 주입 지점), 구현자 · 리뷰어는
 PATH 앞의 스텁 실행 파일이다. 구현자 스텁은 케이스마다 정해진 git 조작과 페이크 forge 상태 변경(리뷰 요청 생성 · 답글 · 노트)을
 하고 `developer-result` 를 낸다. 리뷰어 스텁은 케이스마다 정해진 판정 데이터를 낸다.
+
+페이크 `src/test/fake-forge.sh` 는 리뷰 요청 상태(상태 · 소스 브랜치 · head), 이슈의 열린 리뷰 요청, 노트 시각(등록 순서대로 커진다),
+task 동기화가 만든 이슈, 조회 실패, 없는 이슈를 `FAKE_STATE` 의 상태 파일로 다루게 넓힌다. 상태 파일이 없으면 지금 출력 그대로이고
+기존 사용처는 고치지 않고 통과한다. 실패 흉내는 `FAKE_BREAK`(계약 위반 주입)가 아니라 `FAKE_STATE` 의 파일로 켠다.
 
 ### 12-1. `render-test.sh` — driver `work`
 
