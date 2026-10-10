@@ -12,9 +12,9 @@
 |---|---|
 | 기본 절차 `work` · `review-loop` 의 정의 | 내장 기본값 파일 (#207 이 둔 `src/templates/defaults.toml`) |
 | 단계 본문 조각 | `src/templates/workflows/work/` · `src/templates/workflows/review-loop/` |
-| 구현자 결과 스키마 `developer-result` | 하네스 동봉 스키마 (#208 이 정한 자리 `src/harness/schemas/`) |
-| 판정 명령 `harness work-check` | `src/harness/` 의 명령 모듈 하나 (#206 의 `commands/` 배치). shim 은 `src/templates/managed/script/work-check.sh` |
-| 처리 노트 표지 `FMT_HANDLED_HEADING` | `src/templates/managed/script/harness-format.sh` |
+| 구현자 결과 스키마 `developer-result` | `src/harness/schemas/developer-result.json` (#208 이 정한 동봉 스키마 자리) |
+| 판정 명령 `harness work-check` | `src/harness/commands/work_check.py` (#206 의 명령 모듈 규칙). shim 은 `src/templates/managed/script/work-check.sh` |
+| 처리 노트 표지 `FMT_HANDLED_HEADING` | 그때의 표지 정본과 셸 표기 `src/templates/managed/script/harness-format.sh` 둘 다 (#213 뒤의 정본은 `src/harness/format.py`) |
 | 구현자 계약 | `src/templates/managed/.ai/templates/developer.md` |
 | doctor 항목 · `harness fix legacy-work` | CLI (`src/harness/`) |
 | UI doctor 문구 · 조치 고르기 | `src/ui/lib/doctor.js` |
@@ -28,15 +28,17 @@
 | 무엇 | 정하는 이슈 |
 |---|---|
 | 단계 스키마(`execute` · `type = "workflow"` · `next` · `on` · `schema` · `set`), 끝 상태 `done` · `stop` · `handoff`, `"*"` 배선, 설정 표기 | #208 |
-| 템플릿 이름 `{issue}` · `{<set 변수>}` · `{steps.<id>.out.<최상위 키>}` — `run` 을 인자로 나눈 뒤 원소 안에서 치환하고 셸을 거치지 않는다. 하위 절차는 상위 변수를 읽기만 한다 | #208 |
-| script 블록의 outcome(종료 코드, `on = "stdout"` 이면 stdout 의 첫 토큰), agent 블록의 구조화 출력 검증과 검증 실패 outcome `failed`, 스키마 자리와 문법(stdlib 부분집합) | #208 |
-| inproc 역할을 오케스트레이터 벤더의 헤드리스로 띄우는 것, 실행 시점의 러너·권한 해석 | #208 (#207 의 실행 시점 해석 위에서) |
+| 템플릿 이름 `{issue}` · `{<set 변수>}` · `{steps.<id>.out.<최상위 키>}` — `run` 을 인자로 나눈 뒤 원소 안에서 치환하고 셸을 거치지 않는다. 배열 · 객체 값은 압축 JSON 한 원소로 푼다. 빈 문자열도 값이고, 키가 없거나 null 일 때만 값이 없다. 하위 절차는 상위 변수를 읽기만 한다 | #208 |
+| script 블록의 outcome(종료 코드, `on = "stdout"` 이면 stdout 의 첫 토큰), agent 블록의 구조화 출력 검증과 검증 실패 outcome `failed`, 스키마 자리와 문법(stdlib 부분집합, `minLength` 포함) | #208 |
+| 자기 안에서 `set` 하지 않는 변수를 쓰는 driver 절차의 직접 시작 거부(종료 코드 2) | #208 |
+| inproc 역할을 오케스트레이터 벤더의 헤드리스로 띄우는 것, 실행 시점의 러너 · 권한 해석, 쓰기 역할의 driver 권한 인자(벤더 선언 `driver_write` — 그 범위는 7절의 표다) | #208 (#207 의 실행 시점 해석 위에서) |
 | 실행 상태와 재개, 재개 때 중단된 단계를 처음부터 다시 도는 규칙, 방문·단계 상한 | #208 |
 | driver 단계 스팬, driver 절차 문서(그래프와 단계별 다음 표), driver 절차의 슬래시 커맨드 제외(관리 커맨드 포함) | #208 |
-| 리뷰 · 착수 판정 · task 동기화 하위 명령과 `script/*.sh` shim, 하위 명령의 인자 거부 규칙 | #211 |
+| 리뷰 · 착수 판정 · task 동기화 하위 명령과 `script/*.sh` shim | #211 |
+| 표지를 읽는 모듈 `src/harness/format.py` — 하네스 루트의 `script/harness-format.sh` 를 실행하지 않고 파싱한다 | #209 · #210 중 먼저 머지되는 쪽 (정본을 그 모듈로 옮기는 것은 #213) |
 | forge 접근(파이썬 어댑터)과 테스트용 페이크 주입 지점 | #209 |
-| 내장 기본값 레이어와 프로젝트 시드 | #207 |
-| 패키지 배치(`src/harness/`) | #206 |
+| 내장 기본값 레이어와 프로젝트 시드, 공유 설정과 실효 설정 | #207 |
+| 패키지 배치(`src/harness/`), `COMMANDS` · `DELEGATES` 의 자리, 통과 명령(`harness [--target DIR] <명령> <인자…>` — 이름 뒤의 인자는 전부 그 명령이 받는다), Python 단위 테스트 자리 | #206 |
 
 ## 1. 바뀌는 것과 바뀌지 않는 것
 
@@ -83,7 +85,9 @@
 
 - 착수 재판정은 분해 경로에만 있다. task 동기화가 원격 조회와 이슈 생성을 하는 사이 원격이 바뀔 수 있다.
   단독 경로는 판정 직후 구현자에게 간다
-- 구현 단계가 리뷰 요청 번호 없이 끝나면 구현 판정은 `committed` 를 내지 않는다. 그 실행의 끝은 `stop` 이다
+- 구현 단계가 리뷰 요청 번호 없이 끝나면 구현 판정은 `committed` 를 내지 않는다. 그 실행의 끝은 `stop` 이다.
+  `mr` 이 빈 문자열이어도 값이므로 구현 판정은 돌고, `escalate` · `verify_failed` · `no_mr` 의 사유를 stderr 에 낸다 (5절)
+- `{steps.<id>.out.handled}` 는 배열이라 압축 JSON 한 원소로 판정 명령에 들어간다
 - 마무리는 리뷰 루프가 `done` 으로 끝날 때마다 돈다. 처리할 발견이 없으면 구현자가 곧바로 돌아온다
 
 ### 2-2. `review-loop`
@@ -99,13 +103,21 @@
 - 리뷰 종료 코드 2 와 0 ~ 3 밖의 코드는 `*` 로 stop 에 간다. 종료 코드 2 는 PASS 가 아니다
 - 회차를 세고 상한에서 멈추는 것은 리뷰 명령이다. 배선은 리뷰 명령을 거치지 않는 리뷰 경로를 두지 않는다 —
   `fix-check` 가 `committed` 를 낸 뒤에만 다시 리뷰로 간다
-- `review-loop` 는 단독으로 돌지 않는다. `{mr}` 을 주는 상위가 없으면 `harness run review-loop <이슈>` 를 #208 의 참조 검증이 거부한다
+- `review-loop` 는 단독으로 돌지 않는다. 자기 안에서 `set` 하지 않는 `{mr}` 을 쓰므로 `harness run review-loop <이슈>` 는
+  #208 7-1 의 규칙으로 아무것도 실행하지 않고 종료 코드 2 로 거부된다
 
 ### 2-3. 명령 표기
 
 - 기본 절차의 `run` 은 `script/<이름>.sh` 표기를 쓴다. 착수 판정 · task 동기화 · 리뷰는 #211 의 shim 을 거쳐 하위 명령으로 간다
-- `script/work-check.sh` 는 #211 의 shim 과 같은 방식으로 CLI 위치를 찾아 `harness work-check` 에 인자를 그대로 넘기는 shim 이다
-- shim 과 이 표기를 걷는 일은 main 릴리스 한 번 뒤의 shim 정리 Requirement 가 한다. 그 대상에 `script/work-check.sh` 가 든다
+- `script/work-check.sh` 는 `harness work-check` 의 shim 이다. 형태와 문구는 모든 shim 의 공통 템플릿(#213 4-1)과 같다
+  1. 자기 파일이 있는 디렉터리의 부모를 하네스 루트로 잡는다
+  2. `<루트>/.harness/bin/harness`, `<루트>/src/bin/harness` 순으로 실행 가능한 첫 것을 CLI 로 고른다
+  3. `<CLI> --target <루트> work-check <받은 인자 그대로>` 로 exec 한다
+  - 현재 디렉터리 · 표준 입출력 · 환경을 바꾸지 않는다. 종료 코드는 CLI 의 것이다. 설정 · 생성물 · 표지를 읽지 않는다
+  - 첫 줄은 `#!/usr/bin/env sh` 이고 `bash <파일>` 로도 돈다. 머리글은 부르는 명령의 이름과 "로직은 패키지에 있다" 는 것을 적는다
+  - CLI 를 찾지 못하면 표준 오류에 `error: harness CLI not found under <루트> (.harness/bin/harness or src/bin/harness)` 와
+    `help: harness install --target <루트>` 를 내고 종료 코드 2
+- shim 과 이 표기를 걷는 일은 main 릴리스 한 번 뒤의 #221 이 한다. 그 대상에 `script/work-check.sh` 가 든다
 
 ### 2-4. 단계 본문 조각
 
@@ -167,8 +179,8 @@
 | `verify_failed` | 검증이 실패했거나 push 가 막혀 커밋 · push 를 끝내지 못했다 |
 | `escalate` | 계속하지 않고 사람에게 넘긴다. 사유는 `reason` |
 
-- 스키마 파일은 하네스 동봉 스키마 `developer-result` 하나다. 문법은 #208 의 stdlib 부분집합이고, 이 스키마는
-  `type` · `properties` · `required` · `enum` · `items` · `minLength` 를 쓴다
+- 스키마 파일은 하네스 동봉 스키마 `developer-result` 하나다. 문법은 #208 5-2 의 stdlib 부분집합이고, 이 스키마는
+  `type` · `properties` · `required` · `enum` · `items` · `minLength` 를 쓴다. `minLength = 1` 은 `reason` 과 `finding` 에 둔다
 
 ## 4. 구현자 계약 — `developer.md`
 
@@ -216,8 +228,8 @@
 ### 4-6. 고치지 않고 넘기는 지적
 
 - 새 리뷰 요청 노트의 첫 줄은 처리 노트 표지 `FMT_HANDLED_HEADING` 의 값(`## 구현자 처리`)이다. 판정 명령이 이 표지로 노트를 찾는다
-- `script/harness-format.sh` 에 `FMT_HANDLED_HEADING='## 구현자 처리'` 를 더하고, 머리글의 "함께 고칠 문서" 목록에
-  `.ai/templates/developer.md` 를 더한다
+- 표지 `FMT_HANDLED_HEADING` = `## 구현자 처리` 를 그때의 표지 정본과 셸 표기 `src/templates/managed/script/harness-format.sh`
+  둘 다에 더한다(#213 뒤의 정본은 `src/harness/format.py`). 셸 표기 머리글의 "함께 고칠 문서" 목록에 `.ai/templates/developer.md` 를 더한다
 
 ### 4-7. 출력
 
@@ -235,10 +247,35 @@ script/work-check.sh finalize <이슈> <리뷰요청> <status> <reason> <handled
 ```
 
 - 판정했으면 stdout 에 outcome 토큰 한 줄을 내고 종료 코드 0. 판정하지 못했으면 stdout 을 비우고 종료 코드 2
-- 동작 이름이 없거나 모르는 것, 인자 개수가 틀린 것, 이 명령의 것이 아닌 플래그는 종료 코드 2 (#211 의 하위 명령과 같은 거부 규칙)
-- `COMMANDS` 와 `DELEGATES` 에 넣는다 — 고정된 버전이 답한다. 도움말: `work-check: judge a step of the work workflow (its steps call it)`
-- 사람이 읽는 줄은 stderr 에 영어로 낸다. 구현자 출력에서 온 문자열(`reason` · `finding`)은 제어 문자를 지우고 한 줄로 바꿔 옮긴다
-- forge 는 #209 의 어댑터 함수로만 부른다. 표지는 #211 의 하위 명령과 같은 방식으로 `script/harness-format.sh` 에서 읽는다
+- 인자
+  - 동작 이름 뒤의 인자는 위치로만 읽는다. `-` 로 시작해도 값이다 — `reason` · `handled` 는 구현자 출력에서 오고, 그 꼴을 하네스가 정하지 않는다
+  - 동작 이름이 없거나 모르는 것(옵션 꼴 포함), 동작마다 정한 개수와 다른 인자는 표준 오류에 사용법을 내고 종료 코드 2
+
+    ```
+    usage: harness work-check clean
+           harness work-check develop <issue> <review-request> <status> <reason>
+           harness work-check fix <issue> <review-request> <status> <reason> <handled>
+           harness work-check finalize <issue> <review-request> <status> <reason> <handled>
+    ```
+
+  - 하네스 루트는 `--target DIR`(기본 현재 디렉터리)이다 — 명령 이름 앞, 또는 #206 의 통과 명령 규칙대로 이름 바로 뒤에 한 번. 동작 이름 뒤에서는 `--target` 도 값이다.
+    명령은 하네스 루트를 작업 디렉터리로 삼아 git 과 forge 어댑터를 부른다
+- `src/harness/commands/__init__.py` 의 `COMMANDS` 에 통과 명령으로 넣고(#206), `src/harness/cli.py` 의 `DELEGATES` 에도 넣는다 — 고정된 버전이 답한다.
+  도움말: `work-check: judge a step of the work workflow (its steps call it)`
+- 설정은 공유 설정(#207)을 읽는다 — forge 선택. 설정 파일이 없거나 검증에 실패하면 다른 명령과 같은 안내로 종료 코드 2
+- 사람이 읽는 줄은 stderr 에 영어로 낸다. 구현자 출력에서 온 문자열(`reason` · `finding` · 리뷰 요청 인자)은 제어 문자를 지우고 한 줄로 바꿔 옮긴다
+- `committed` · `clean` · `checked` 가 아닌 outcome 을 내면 stderr 에 사유 한 줄 `<동작>: <outcome> — <사유>` 를 낸다. 아래 절의 표에 문구가 따로 있으면 그 문구를 쓴다
+
+  | outcome | `<사유>` |
+  |---|---|
+  | `verify_failed` — 미커밋 변경 | `uncommitted changes are left` 와 그 뒤 `git status --short` 줄들 |
+  | `verify_failed` — 자기 보고 | 구현자의 `reason` |
+  | `verify_failed` — push 안 됨 | `the review request head is not the local HEAD — not pushed` |
+  | `escalate` | 구현자의 `reason` |
+  | `no_mr` | 처음 맞지 않은 조건 — `no review request number was reported`(빈 문자열) · `review request <값> is not a number` · `review request <값> is not open` · `review request <값> is not from the current branch` · `review request <값> is not linked to issue <이슈>` |
+
+- forge 는 #209 의 어댑터 함수로만 부른다. 표지는 `src/harness/format.py` 로만 읽고 파이썬 쪽에 표지 문자열을 적지 않는다.
+  필요한 표지를 읽지 못하면 표준 오류에 `error:` 와 표지 이름을 내고 종료 코드 2
 
 ### 5-1. 공통 관측
 
@@ -312,7 +349,7 @@ outcome 은 늘 `checked` 이고, 확인하지 못한 것은 `remaining:` 줄로
 
 ### 5-6. 처리 대조
 
-`handled` 인자는 JSON 배열 텍스트다. 원소마다 아래를 본다. 기준 요약보다 늦다는 것은 `created_at` 이 기준 요약의 것보다 크다는 뜻이다.
+`handled` 인자는 JSON 배열 텍스트다 — 드라이버가 구현자 결과의 `handled` 배열을 압축 JSON 한 원소로 푼 것(#208 4-2)이다. 원소마다 아래를 본다. 기준 요약보다 늦다는 것은 `created_at` 이 기준 요약의 것보다 크다는 뜻이다.
 
 | 원소 | 확인 | 아니면 |
 |---|---|---|
@@ -349,18 +386,25 @@ driver 자신이 멈춘 끝(방문 · 단계 상한, 상태 불일치 등)의 �
 
 ## 7. 헤드리스 구현자 권한
 
-- `harness run work <이슈>` 호출이 그 이슈의 커밋 · push · 리뷰 요청 생성 지시다 (`.ai/AI_AGENT.md` 금지 사항의 "명시적 지시")
-- 구현자 단계(`develop` · `fix` · `finalize`)는 헤드리스로 돈다. 그 실행에 한해 구현자는 아래를 승인 없이 한다
+- `harness run work <이슈>` 호출이 그 이슈의 커밋 · push · 리뷰 요청 생성 · 리뷰 요청 댓글 · 이월 이슈 생성 지시다
+  (`.ai/AI_AGENT.md` 금지 사항의 "명시적 지시")
+- 구현자 단계(`develop` · `fix` · `finalize`)는 쓰기 역할(`developer`, `access = "write"`)의 헤드리스 실행이다. 그 실행에 한해 구현자는
+  아래 표의 조작을 승인 없이 한다
+- **이 표가 #208 의 벤더 선언 `driver_write` 가 여는 범위다.** 벤더마다 그 CLI 로 확인한 인자로 이 표를 열고(#208 7-4), 표 밖의 조작은 열지 않는다
 
-| 조작 | 예 |
+| 조작 | 범위 |
 |---|---|
-| 파일 읽기 · 쓰기 | 역할의 `access = "write"` |
-| git | `git switch` · `git switch -c` · `git add` · `git commit` · `git push`(작업 브랜치, 강제 없이) |
+| 파일 | 하네스 루트 아래 읽기 · 쓰기 |
+| git 읽기 | `git status` · `git log` · `git diff` · `git show` · `git rev-parse` · `git branch` · `git fetch` |
+| git 쓰기 | `git switch` · `git switch -c` · `git add` · `git commit` · `git push`(작업 브랜치, 강제 없이) |
 | 검증 | `script/run-lint-test.sh --commit` |
-| forge | `.ai/forge.md` 의 리뷰 요청 생성 · 조회, `review_mr_threads` · `review_mr_thread_reply` · `review_mr_note_summary` |
-| 하네스 스크립트 | `script/create-carryover-issue.sh`, `script/sync-task-issues.sh <이슈> --dry-run` |
+| forge 읽기 | `.ai/forge.md` 의 이슈 조회 · 리뷰 요청 조회 · diff · 현재 사용자명. `script/forge.sh` 의 `tracker_issue_view` · `review_mr_view` · `review_mr_threads` |
+| forge 쓰기 | `.ai/forge.md` 의 리뷰 요청 생성 · 리뷰 스레드 답글. `script/forge.sh` 의 `review_mr_thread_reply` · `review_mr_note_summary` |
+| 하네스 스크립트 | `script/create-carryover-issue.sh`(이월 이슈 생성 — 원격 쓰기), `script/sync-task-issues.sh <이슈> --dry-run` |
 
-- 이 허용은 #208 의 역할 러너가 그 실행의 인자로 준다. `[permissions].allow_push` 는 대화형 세션의 설정으로 남고 이 허용을 정하지 않는다
+- 이 허용은 #208 의 역할 러너가 그 실행의 인자(`driver_write`)로 준다. `[permissions].allow_push` 는 대화형 세션의 설정으로 남고 이 허용을 정하지 않는다.
+  대화형 세션의 허용 목록에서 빠진 이월 이슈 생성도 이 실행에서는 연다 — 호출이 그 지시다
+- 표에 없는 조작은 열지 않는다 — 이슈 · 리뷰 요청 닫기, 머지, 이슈 댓글, 라벨 변경, `--dry-run` 없는 task 동기화가 그렇다
 - 보호 브랜치 push · force push · `--no-verify` 는 deny 규칙 · 명령 가드 · pre-push 훅이 그대로 막는다. 헤드리스 실행에 `--bare` 를
   쓰지 않으므로 훅과 가드가 살아 있다
 
@@ -423,25 +467,28 @@ doctor `config` 절에 항목 하나를 더한다.
 
 | 조건 | state | what | detail |
 |---|---|---|---|
-| 프로젝트 레이어의 `[workflows.work]` 가 이전 기본값과 같다 | `warn` | `workflows.work is the previous default` | `` work runs on the old agent workflow — remove it with `harness fix legacy-work` `` |
+| 프로젝트 레이어의 `[workflows.work]` 가 이전 기본값 목록의 한 항목과 같다 | `warn` | `workflows.work is a previous default` | `` it equals an earlier built-in default, so work does not get the current one — remove it with `harness fix legacy-work` `` |
 
-- "같다" 는 읽은 표가 `{"steps": <이전 기본값의 다섯 단계>}` 와 같다는 뜻이다. 단계의 `kind` 는 `type` 으로 읽고, 키 순서는 보지 않는다.
-  `title` · `execute` · `text` 같은 키가 더 있거나 단계 값이 하나라도 다르면 같지 않다 — 프로젝트가 고른 절로 두고 짚지 않는다
-- 이전 기본값은 doctor 와 `fix legacy-work` 가 함께 쓰는 상수 하나다
+- **이전 기본값 목록**은 doctor 와 `fix legacy-work` 가 함께 쓰는 상수 하나다. 항목마다 그때 내장 기본값이 낸 `[workflows.work]` 표 전체다.
+  이 명세가 넣는 항목은 10-1 의 agent 절 하나다. #215 가 잠금 단계가 없는 driver 기본값(2-1 의 절)을 더한다 (#215 4-5)
+- "같다" 는 절차 표 전체가 같다는 뜻이다
+  - 절차 키(`title` · `execute` · `max_steps` · `max_visits` · `steps`)와 단계마다 모든 키(`next` · `on` · `set` · `schema` 포함)를 비교한다
+  - 단계의 `kind` 는 `type` 으로 읽는다. 표 안의 키 순서는 보지 않고, 단계의 순서는 본다
+  - 키가 하나라도 더 있거나 빠졌거나 값이 다르면 같지 않다 — 프로젝트가 고른 절로 두고 짚지 않는다
 
 `harness fix legacy-work`:
 
 | 상태 | 동작 | 종료 코드 |
 |---|---|---|
 | 프로젝트 `harness.toml` 에 `[workflows.work]` 가 없다 | `fix: workflows.work is not in harness.toml — nothing to do` | 0 |
-| 있고 이전 기본값과 다르다 | 아무것도 바꾸지 않고 `error: workflows.work differs from the previous default — edit it yourself` | 2 |
-| 이전 기본값과 같다 | 그 절을 지우고 설정을 다시 읽어 검증한 뒤 render 한다. `fix: removed workflows.work — work now runs on the driver workflow` | render 의 것 |
+| 있고 이전 기본값 목록의 어느 항목과도 같지 않다 | 아무것도 바꾸지 않고 `error: workflows.work differs from every previous default — edit it yourself` | 2 |
+| 목록의 한 항목과 같다 | 그 절을 지우고 설정을 다시 읽어 검증한 뒤 render 한다. `fix: removed workflows.work — work now runs on the built-in default` | render 의 것 |
 
 - 절을 지우는 범위와 빈 줄 정리는 `harness steps <절차> --delete` 와 같다. 매니페스트 사전 판정 · 사용자 파일 판정 · 실패 시 되돌림도 같다
-- `FIXES` 에 `legacy-work` 를 더하고 사용법 문구에 한 줄을 더한다: `legacy-work  remove a [workflows.work] that equals the previous default`
-- UI: `src/ui/lib/doctor.js` 의 조치 고르기 표에 `config` · `workflows.work is the previous default` · — · `legacy-work` 행,
+- `FIXES` 에 `legacy-work` 를 더하고 사용법 문구에 한 줄을 더한다: `legacy-work  remove a [workflows.work] that equals a previous default`
+- UI: `src/ui/lib/doctor.js` 의 조치 고르기 표에 `config` · `workflows.work is a previous default` · — · `legacy-work` 행,
   `doctorFix` 가 `legacy-work` 를 `harness fix legacy-work` 로 부른다. 문구는 제목 "work 절차가 이전 기본값으로 고정되어 있습니다",
-  본문 "harness.toml 의 [workflows.work] 가 이전 기본값과 같아 work 가 옛 agent 절차로 돕니다. 지우면 하네스가 단계를 직접 도는 기본 절차를 씁니다."
+  본문 "harness.toml 의 [workflows.work] 가 하네스의 이전 기본값과 같아 지금의 기본 work 절차를 받지 못합니다. 지우면 하네스의 지금 기본 절차를 씁니다."
 
 ### 10-4. 이 리포
 
@@ -450,9 +497,10 @@ doctor `config` 절에 항목 하나를 더한다.
 
 ### 10-5. 범위 밖 — 옛 경로를 걷는 일
 
-main 릴리스를 한 번 거친 뒤 shim 정리 Requirement 가 함께 걷는다. 걷을 대상과 그때 함께 가야 하는 것:
+옛 agent 경로는 이 명세가 걷지 않는다. #221(shim 정리)은 shim 과 셸 생성물을 걷고 이 경로는 걷지 않는다.
+걷는 변경은 main 릴리스를 한 번 거친 뒤에 하고, 걷을 대상과 함께 가야 하는 것은 아래다.
 
-- 옛 단계 조각 다섯, `/work` 관리 커맨드, 이전 기본값 상수와 doctor 항목, `fix legacy-work`
+- 옛 단계 조각 다섯, `/work` 관리 커맨드, 이전 기본값 목록과 doctor 항목, `fix legacy-work`
 - 옛 절을 가진 설정의 render 를 고유한 거부 메시지와 이행 안내(절을 지운다)로 멈추는 검사
 
 ## 11. 문서 갱신
@@ -468,7 +516,7 @@ main 릴리스를 한 번 거친 뒤 shim 정리 Requirement 가 함께 걷는�
 | 착수 판정 명령의 머리 설명 (#211 이 옮긴 자리와 shim 머리글) | "착수 전과 구현 위임 직전에 같은 명령을 돌린다" → "착수 전에 돌리고, 분해 경로는 task 동기화 뒤에 한 번 더 돌린다" |
 | `src/templates/workflows/retro/signals.md` | "커맨드 직후 교정 발언 집중" 행을 "대화형 절차 직후 교정 발언 집중" 으로. driver 절차는 헤드리스로 돌아 대화 기록이 남지 않는다 |
 | `src/ui/lib/doctor.js` | origin 항목 본문 "/work 가 원격을 가져오지 못하고 멈춥니다" → "work 절차가 원격을 가져오지 못하고 멈춥니다". 10-3 의 항목 |
-| `README.md` "명령" 표 | `harness fix hooks\|verify\|legacy-work` — `legacy-work` 는 이전 기본값과 같은 `[workflows.work]` 를 지워 driver 기본 절차로 옮긴다. `harness work-check <동작> …` — `work` 의 판정 단계가 부른다 |
+| `README.md` "명령" 표 | `harness fix hooks\|verify\|legacy-work` — `legacy-work` 는 이전 기본값과 같은 `[workflows.work]` 를 지워 지금의 내장 기본 절차로 옮긴다. `harness work-check <동작> …` — `work` 의 판정 단계가 부른다 |
 | `README.md` "업데이트" | 기존 설치본의 `work` 이행 — 이전 기본값 절이 남아 옛 절차로 돈다는 것, doctor 의 항목, `harness fix legacy-work`, 되돌릴 때 넣을 절(10-1 원문) |
 
 ## 12. 회귀 테스트
@@ -491,13 +539,15 @@ PATH 앞의 스텁 실행 파일이다. 구현자 스텁은 케이스마다 정�
 | 관측이 보고에 앞선다 | `committed` 라 보고하고 커밋이 없으면 handoff. `no_change` 라 보고하고 커밋을 push 하면 리뷰가 다시 돈다 |
 | 검증 실패 | `fix` 가 미커밋 변경을 남기면 stop. 로컬 커밋만 하고 push 하지 않아도 stop |
 | escalate | `develop` 의 `escalate` 는 stop, `fix` 의 `escalate` 는 handoff. 사유가 stderr 에 나온다 |
+| 리뷰 요청 없이 끝남 | 구현자가 `mr` 을 빈 문자열로 내면 `develop-check` 가 돌아 `no_mr` 과 사유 줄을 내고 끝 stop |
 | 리뷰 상한 · 실패 | 리뷰 3 이면 handoff, 2 면 stop. 그 뒤 구현자가 불리지 않는다 |
 | 구현자 출력 위반 | 스키마를 어긴 출력이면 `develop` 은 stop, `fix` · `finalize` 는 handoff |
-| 마무리 확인 | `handled` 가 가리킨 답글이 없으면 `remaining:` 줄이 나오고 끝은 done. 마무리 중 커밋이 생기면 `remaining: commits after the passing review` |
-| 단독 실행 거부 | `harness run review-loop <이슈>` 가 거부된다 |
+| 마무리 확인 | `handled` 가 가리킨 답글이 없으면 `remaining:` 줄이 나오고 끝은 done. 마무리 중 커밋이 생기면 `remaining: commits after the passing review`. 판정 명령이 받은 `handled` 인자는 압축 JSON 한 원소다(받은 argv 기록) |
+| 단독 실행 거부 | `harness run review-loop <이슈>` 가 종료 코드 2 로 거부되고 실행 상태가 생기지 않는다 |
 | 기본 설정 렌더 | 새 설치본에 `.ai/workflows/work.md` · `review-loop.md` 가 생기고 `.claude/commands/work.md` 가 없다. CLAUDE.md 커맨드 표에 `work` 행이 없다. `work.md` 에 시작 표지 줄이 없다 |
-| 옛 절 | 이전 기본값 절을 가진 설정이 옛 조각으로 렌더되고 시작 표지 줄이 있으며 `.claude/commands/work.md` 가 깔린다. doctor 가 `workflows.work is the previous default` 를 `warn` 으로 낸다 |
+| 옛 절 | 이전 기본값 절을 가진 설정이 옛 조각으로 렌더되고 시작 표지 줄이 있으며 `.claude/commands/work.md` 가 깔린다. doctor 가 `workflows.work is a previous default` 를 `warn` 으로 낸다 |
 | `fix legacy-work` | 이전 기본값 절을 지우고 render 해 `work.md` 가 driver 문서가 되고 `.claude/commands/work.md` 가 걷힌다. 고친 절이면 종료 코드 2 와 파일 그대로, 절이 없으면 종료 코드 0 과 파일 그대로 |
+| 비교 키 | 이전 기본값 절에 `title` 이나 `execute` 를 더한 절, 한 단계에 키 하나(`next` 등)를 더한 절은 doctor 가 짚지 않고 `fix legacy-work` 가 2 다. 키 순서만 다른 절과 `type` 대신 `kind` 로 적은 절은 같다고 본다 |
 | 표지 일치 | 설치된 `.ai/templates/developer.md` 가 `FMT_HANDLED_HEADING` 의 값을 그대로 적는다 |
 
 ### 12-2. `src/test/unit/` — `work-check`
@@ -516,34 +566,37 @@ PATH 앞의 스텁 실행 파일이다. 구현자 스텁은 케이스마다 정�
 | 처리 대조 | 기준 요약보다 늦은 답글은 확인, 이른 답글 · 없는 스레드 id 는 `remaining:`. 표지로 시작하는 늦은 노트는 확인, 표지 없는 노트는 `remaining:`. 없는 이월 이슈는 `remaining:`. 읽을 수 없는 `handled` 는 한 줄로 알리고 outcome 은 그대로 |
 | `finalize` | 무엇이 걸려도 `checked`. 조회 실패면 종료 코드 2 와 `remaining: could not verify` |
 | 출력 위생 | `reason` · `finding` 의 제어 문자와 줄바꿈이 stderr 에 그대로 나오지 않는다 |
-| 인자 | 동작 없음 · 모르는 동작 · 인자 개수 틀림 · `--json` 이면 종료 코드 2 |
+| 인자 | 동작 없음 · 모르는 동작 · 인자 개수 틀림 · `--json` 을 더한 호출이면 종료 코드 2 와 사용법. `reason` 이 `-` 로 시작해도 판정한다 |
+| 사유 줄 | `develop` 의 `escalate` · `verify_failed`(셋 경우) · `no_mr`(다섯 조건)마다 5절 표의 사유 줄이 stderr 에 나온다 |
 | forge 실패 | 리뷰 요청 조회가 실패하면 `develop` · `fix` 가 종료 코드 2 와 빈 stdout |
 
 ### 12-3. UI
 
 | 파일 | 케이스 |
 |---|---|
-| `doctor.test.js` | `config` 의 `workflows.work is the previous default` 가 10-3 의 제목 · 본문과 조치 `legacy-work` 로 옮겨진다. 다른 절의 같은 문구에는 조치가 붙지 않는다. origin 항목 본문에 `/work` 가 없다 |
+| `doctor.test.js` | `config` 의 `workflows.work is a previous default` 가 10-3 의 제목 · 본문과 조치 `legacy-work` 로 옮겨진다. 다른 절의 같은 문구에는 조치가 붙지 않는다. origin 항목 본문에 `/work` 가 없다 |
 
 회귀 테스트 전체(`script/run-lint-test.sh`)가 통과한다.
 
 ## 13. 보호 문서 개정 범위
 
-분해의 task 하나가 이 범위 안에서 고친다. #208 · #211 도 같은 위치를 고친다 — 아래 문안은 그 개정 위에 더하는 사실이다.
+분해의 task 하나가 이 범위 안에서 고친다. 보호 문서 개정의 적용 순서는 #206 → #207 → #208 · #209 · #210 → #211 → #212 → #213 → #215 다.
+아래 문안은 앞 명세들이 고친 문장 위에 더하는 것이고, 뒤 명세는 이 문안 위에 더한다. 앞 명세가 들인 용어(`shim` 등)는 그대로 쓴다.
 
 | 문서 · 위치 | 문안 |
 |---|---|
-| `.ai/project/scope.md` "할 수 있는 일" 의 `run` 항목 | 기본 절차는 `prework` · `work` · `retro` 셋이고 프로젝트가 더할 수 있다. `work` 는 하네스가 단계를 직접 도는 절차이고 그 리뷰 루프는 하위 절차 `review-loop` 다. `prework` · `retro` 는 설정된 오케스트레이터가 절차 문서를 따라 돈다 |
-| `.ai/project/architecture.md` "구성 요소" 의 대상 리포 `script/` 항목 | 나열에 `work` 절차의 판정(`work-check.sh` → `harness work-check` — 작업 트리 확인 · 구현 판정 · 수정 판정 · 마무리 확인)을 더한다 |
-| `.ai/project/architecture.md` "데이터 흐름" 의 절차 실행 | "리뷰 루프는 `work-preflight.sh`(…) → 구현자 → `review-mr.sh`(…) → … → 종료 코드로 분기." 를 다음으로 바꾼다: 기본 `work` 는 driver 절차다 — `harness run work <이슈>` 가 작업 트리 확인 → 착수 판정 → (분해 있음) task 이슈 동기화 → 착수 재판정 → 구현자(헤드리스, 구현자 결과) → 구현 판정 → 하위 절차 `review-loop` → 마무리 → 마무리 확인을 돈다. `review-loop` 는 `review-mr.sh`(리뷰 러너 점검 · diff 조회 · 리뷰어 실행 · 등록 · 회차 라벨) → 리뷰어의 판정 데이터(JSON 블록) → `post-review.sh`(스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약 · 인라인 댓글 렌더링) → 종료 코드 0 끝 · 1 수정 → 수정 판정 → 다시 리뷰 · 2 멈춤 · 3 사람에게 넘김 |
-| `.ai/project/architecture.md` "신뢰 경계" 의 들어오는 입력 | 구현자 결과(구조화 출력)를 더한다 — 하네스가 스키마로 검증하고, 판정 명령은 그 자기 보고보다 git · forge 관측을 앞세운다. 그 문자열은 셸을 거치지 않고 인자로만 들어가며, 터미널에 옮길 때 제어 문자를 지운다 |
-| `.ai/project/architecture.md` "새 코드를 둘 곳" | `work` 절차의 판정 규칙 → `harness work-check` 명령 모듈 |
-| `.ai/project/glossary.md` "용어" | `구현자 결과` — 구현자가 단계마다 내는 구조화 출력(`developer-result`). `status`(committed · no_change · verify_failed · escalate) · `mr` · `reason` · `handled` |
-| `.ai/project/glossary.md` "용어" | `구현 판정` — `harness work-check` 가 구현자 결과와 git · forge 관측으로 내리는 outcome. 관측이 자기 보고에 앞선다 |
-| `.ai/project/glossary.md` "용어" | `리뷰 루프` — `work` 의 하위 절차 `review-loop`. 리뷰 명령 → 수정 → 수정 판정을 돈다 |
-| `.ai/project/glossary.md` "용어" | `구현자 모드` — 구현 · 재시도 · 마무리. 부르는 쪽이 알린다 |
-| `.ai/project/glossary.md` "폐기된 별칭" | `/work <이슈>` (기본 `work` 절차의 진입점) → `harness run work <이슈>` |
-| `.ai/project/testing.md` "외부 의존을 어떻게 다루나" 의 에이전트 CLI 항목 | 구현자도 스텁 실행 파일이다 — `developer-result` 를 내고 케이스에 따라 커밋 · push · 리뷰 요청 생성을 흉내 낸다 |
+| `.ai/project/scope.md` "할 수 있는 일" 의 `run` 항목 | #208 이 고친 문장 가운데 기본 절차를 말하는 문장("절차는 `/prework` · `/work` · `/retro` 셋이 기본이고 프로젝트가 더할 수 있다")을 아래로 바꾼다. 나머지 문장과 #207 이 끝에 더한 문장은 그대로 둔다: 기본 절차는 `prework` · `work` · `retro` 셋이고 프로젝트가 더할 수 있다. `work` 는 driver 절차이고 그 리뷰 루프는 하위 절차 `review-loop` 다. `prework` · `retro` 는 agent 절차다 |
+| `.ai/project/architecture.md` "구성 요소" 의 CLI 패키지 항목(#206 · #210 · #211 이 고친 것) | 덧붙인다: `work` 절차의 판정도 CLI 하위 명령이다 — `work-check`(작업 트리 확인 · 구현 판정 · 수정 판정 · 마무리 확인). 구현자 결과 스키마 `developer-result` 는 동봉 스키마 자리(`src/harness/schemas/`)에 있다 |
+| 같은 문서 "구성 요소" 의 대상 리포 `script/` 항목(#211 이 고친 것) | 덧붙인다: `work-check.sh` 도 `harness work-check` 를 부르는 shim 이다 |
+| 같은 문서 "데이터 흐름" 의 절차 실행 | #211 이 고친 "리뷰 루프는 `harness preflight`(…) → 구현자 → `harness review`(…) → 리뷰어의 판정 데이터(JSON 블록) → 등록(…) → 종료 코드로 분기" 문장을 아래로 바꾼다. `(…)` 는 앞 명세(#207 · #211)가 고친 괄호를 그대로 옮긴다. #208 이 더한 `harness run` 의 실행 방식 문장은 그대로 둔다: 기본 `work` 는 driver 절차다. `harness run work <이슈>` 의 드라이버가 작업 트리 확인 → `harness preflight`(…) → (분해 있음) `harness sync-tasks` → 착수 재판정(`harness preflight`) → 구현자(헤드리스 한 번, 구현자 결과를 낸다) → 구현 판정 → 하위 절차 `review-loop` → 마무리(구현자) → 마무리 확인을 돈다. 작업 트리 확인과 세 판정은 `harness work-check` 가 git · forge 관측으로 한다. `review-loop` 는 `harness review`(…) → 리뷰어의 판정 데이터(JSON 블록) → 등록(…) → 종료 코드로 분기한다 — 0 끝 · 1 수정(구현자) → 수정 판정 → 다시 리뷰 · 2 멈춤 · 3 사람에게 넘김. 단계는 하위 명령을 `script/<이름>.sh` shim 으로 부른다. 이전 기본값의 agent 절을 가진 설정에서는 오케스트레이터가 같은 명령을 절차 문서대로 부른다 |
+| 같은 문서 "신뢰 경계" 의 들어오는 입력 | #208 이 더한 agent 블록 결과 본문 항목 끝에 덧붙인다: 구현자 결과(`developer-result`)는 스키마를 통과해도 자기 보고다 — 판정 명령(`harness work-check`)은 git · forge 관측을 앞세워 outcome 을 정하고, 그 문자열(`reason` · `finding`)을 터미널에 옮길 때 제어 문자를 지운다 |
+| 같은 문서 "새 코드를 둘 곳" | 새 항목: `work` 절차의 판정 규칙 → `src/harness/commands/work_check.py`. 기본 절차 `work` · `review-loop` 의 단계와 배선 → `src/templates/defaults.toml` 의 `[workflows.work]` · `[workflows.review-loop]` |
+| `.ai/project/glossary.md` "용어" 새 행 `구현자 결과` | 구현자가 구현 · 재시도 · 마무리 모드마다 마지막에 내는 구조화 출력(동봉 스키마 `developer-result`). `status`(committed · no_change · verify_failed · escalate) · `mr` · `reason` · `handled` |
+| 같은 표 새 행 `판정 명령` | `harness work-check`(shim `script/work-check.sh`). `work` 의 작업 트리 확인 · 구현 판정 · 수정 판정 · 마무리 확인을 구현자 결과와 git · forge 관측으로 내린다. 관측이 자기 보고에 앞선다 |
+| 같은 표 새 행 `리뷰 루프` | `work` 의 하위 절차 `review-loop`. 리뷰 명령 → 수정 → 수정 판정을 돈다 |
+| 같은 표 새 행 `구현자 모드` | 구현 · 재시도 · 마무리. 부르는 쪽이 알린다 |
+| `.ai/project/glossary.md` "폐기된 별칭" 새 행 | `/work <이슈>` (기본 `work` 절차의 진입점) → `harness run work <이슈>`. `/work` 커맨드는 `work` 가 agent 절차일 때만 깔린다 |
+| `.ai/project/testing.md` "외부 의존을 어떻게 다루나" 의 에이전트 CLI 항목(#208 이 고친 것) | 끝에 덧붙인다: 기본 `work` 의 구현자 스텁은 `developer-result` 를 내고, 케이스에 따라 커밋 · push 와 페이크 forge 의 리뷰 요청 생성 · 답글 · 노트를 흉내 낸다 |
 
 ## 14. 결정 기록
 
