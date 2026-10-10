@@ -12,6 +12,10 @@
 이 명세는 함수와 모듈을 #206 의 배치로 가리킨다. 지금 이름(`normalize()` · `validate()` · `derive()` · `run_plan()` · `set_line()` 등)은
 그 배치 안에서 같은 일을 하는 함수를 뜻한다.
 
+이 명세 뒤에 #208 · #211 · #213 이 온다. 이 명세의 기준 코드에서 실행 계획을 읽는 쪽은 아직 관리 스크립트이고, 이 명세가 그
+스크립트를 고친다(7-3). #211 · #213 은 고친 스크립트를 하위 명령으로 옮기고, 옮긴 하위 명령은 실행 계획을 이 명세의 `run_plan()` 으로
+같은 프로세스에서 받는다(7-1).
+
 정본 위치:
 
 | 대상 | 정본 |
@@ -22,7 +26,7 @@
 | 내장 기본값 | `src/templates/defaults.toml` |
 | 설치가 까는 최소 설정 | `src/templates/harness.toml` |
 | 리뷰어 어댑터 본문 | `src/templates/agents/code-reviewer.md` |
-| 역할 실행기 · 리뷰 루프 · 지표 기록기 | `src/templates/managed/script/` 의 `run-agent.py` · `review-mr.sh` · `_review.py` · `post-review.sh` · `metric.py`. 하위 명령으로 이식된 것(#211 · #213)은 이식된 자리 |
+| 역할 실행기 · 리뷰 루프 · 지표 기록기 | `src/templates/managed/script/` 의 `run-agent.py` · `review-mr.sh` · `_review.py` · `post-review.sh` · `metric.py` |
 | UI | `src/ui/lib/harness.js` · `src/ui/lib/labels.js` · `src/ui/lib/doctor.js` · `src/ui/app/page.js` · `src/ui/app/[project]/settings/page.js` · `src/ui/app/[project]/agents/` |
 | 회귀 테스트 | `src/test/unit/` · `src/test/render-test.sh` · `src/templates/managed/script/test-review-loop.sh` · `src/ui/lib/*.test.js` |
 | 사람용 설명 | `README.md` · `src/templates/managed/docs/workflow/` · `src/templates/managed/script/README.md` |
@@ -52,7 +56,7 @@
   예외는 전체 값 사본에서 지운 역할 하나다(5-2)
 - 같은 값이면 생성 파일은 위에 적은 것 말고는 지금과 같다. 전체 값 사본과, 그 사본과 공유 설정이 같은 최소 설정은 같은 생성 파일을 만든다
 - 플래그 없는 `harness set` 은 지금처럼 `harness.toml` 에 쓰고 render 한다
-- 역할이 서브에이전트로 도는지 CLI 러너로 도는지(실행 방식)는 공유 설정이 정한다. 절차 문서의 구조는 그것만 따른다
+- 역할이 서브에이전트로 도는지 CLI 러너로 도는지(러너 방식)는 공유 설정이 정한다. 절차 문서의 구조는 그것만 따른다
 - 내장 기본값 파일은 `templates/` 안에 있어 고정 사본(`.harness/templates/defaults.toml`)에 함께 들어간다. 프로젝트는 설치한 버전의 기본값으로만 돈다
 - 매니페스트(`.harness/generated` · `.harness/managed`)의 형식과 뜻
 
@@ -87,6 +91,16 @@
 | `run` · `run-plan` · `set --local` | 실효 설정. 개인 레이어가 성립하지 않으면 멈춘다(6-2) |
 | `doctor` · `status` | 둘 다. 생성 파일 대조는 공유 설정으로, 역할 · 불변식 · 모델 항목은 실효 설정으로 본다. 개인 레이어가 성립하지 않으면 멈추지 않고 그 사실을 항목으로 내며 나머지는 공유 설정으로 본다(11절) |
 | `schema` | 둘 다(10절). 개인 레이어가 성립하지 않으면 멈추지 않고 그 오류를 출력에 싣는다 |
+
+이 명세 뒤의 이슈가 더하는 명령도 아래 원칙으로 읽는 설정을 정하고, 그 명령의 명세가 자기 줄을 적는다.
+
+| 명령이 하는 일 | 읽는 설정 | 해당하는 새 명령 |
+|---|---|---|
+| 리포 · forge · 검증처럼 모든 클론에서 같아야 하는 일 | 공유 설정 | `forge` · `preflight` · `sync-tasks` · `work-check` · `work-lock` · `carryover` · `rollback` · `usage` · `verify` |
+| 역할을 띄우거나 실행 지표를 남기는 일 | 실효 설정 — 실행 계획(`run_plan()`, 7-1)으로 받는다 | `review` 의 리뷰 러너 · `run-agent` · `span` |
+| 설정 값이 필요 없는 일 | 레이어를 읽지 않는다 | `bash-guard` · `secret-scan` · `clone-key` |
+
+한 명령이 두 가지 일을 하면 일마다 따른다 — `review` 는 회차 상한 같은 값을 공유 설정에서, 리뷰 러너를 실행 계획에서 받는다.
 
 ### 2-3. 내장 기본값 — `src/templates/defaults.toml`
 
@@ -221,7 +235,8 @@ checks = [
 | 조건 | 어기면 |
 |---|---|
 | `locked` 와 항목의 `locked` 는 내장 기본값과 preset 레이어만 선언한다 | 프로젝트 · 개인 레이어 파일에 있으면 거부: `error: harness.toml declares locked — only the built-in defaults and presets can lock values` |
-| 경로는 선언한 레이어까지 병합한 설정에서 스칼라를 가리킨다 | `error: <레이어>: locked path <경로> is not a scalar value` (없는 키 · 테이블 · 배열) |
+| 경로는 선언한 레이어까지 병합한 설정에서 스칼라나 배열을 가리킨다 | `error: <레이어>: locked path <경로> is not a scalar or an array` (없는 키 · 테이블) |
+| 보호 목록(`docs.protected` · `branches.protected`)과 `verify.checks` 는 경로로 잠그지 않는다 — 보호 목록은 위 레이어가 항목을 뺄 수 없는 합집합이고(3-2), 검사는 항목의 `locked` 로 잠근다 | `error: <레이어>: <경로> cannot be locked — upper layers can only add to it` (보호 목록) · `error: <레이어>: verify.checks cannot be locked as a whole — mark its items with locked = true` |
 | 개인 레이어가 받는 키 넷(6-1)은 잠그지 않는다 — 에이전트 CLI · 모델은 사람마다 고른다 | `error: <레이어>: <경로> cannot be locked — it is a personal choice` |
 | 항목의 `locked` 는 참 · 거짓 값이다 | `verify.checks` 항목 검증 오류 |
 
@@ -231,7 +246,7 @@ checks = [
 ### 4-3. 판정
 
 - 잠긴 경로를 그 위의 레이어(위의 preset · 프로젝트)가 적으면, 값이 잠근 레이어까지의 병합 값과 **같으면 받아들이고 다르면 거부한다**
-- 같은지는 TOML 로 읽은 값의 동등이다
+- 같은지는 TOML 로 읽은 값의 동등이다. 배열은 원소와 순서가 모두 같아야 같다 — 위 레이어 배열이 통째로 바뀌는 단위(3-1)로 본다
 - 잠긴 `verify.checks` 항목은, 위 레이어의 같은 `name` 항목이 `locked` 를 뺀 모든 키에서 같으면 받아들이고 다르면 거부한다
 - 한 번 잠긴 경로는 그 위의 모든 레이어에 잠긴 채다
 
@@ -299,7 +314,7 @@ help: or take it
 |---|---|
 | `harness.orchestrator` | 공유 설정과 같은 검증 — 벤더 선언에 `launch` 가 있는 벤더 id |
 | `harness.model` | 문자열 |
-| `roles.<역할>.runner` | **공유 설정의 그 역할과 실행 방식이 같은 값.** 공유 설정이 `inproc` 이면 `inproc` 만, CLI 러너면 벤더 선언에 `headless` 가 있는 벤더 id 만 받는다 |
+| `roles.<역할>.runner` | **공유 설정의 그 역할과 러너 방식이 같은 값.** 공유 설정이 `inproc` 이면 `inproc` 만, CLI 러너면 벤더 선언에 `headless` 가 있는 벤더 id 만 받는다 |
 | `roles.<역할>.model` | 문자열. 공유 설정에서 그 역할이 `inproc` 이면 빈 문자열만 받는다(7-7) |
 
 - `<역할>` 은 공유 설정에서 켜진 역할이어야 한다
@@ -315,7 +330,7 @@ help: or take it
 | TOML 이 깨졌다 | `error: could not parse config` (`--> harness.local.toml`) |
 | 받지 않는 키 | `error: harness.local.toml sets <키>, which is not a personal choice` — 받는 키 넷과 `help: put project values in harness.toml` 을 함께 낸다 |
 | 켜진 역할이 아니다 | `error: harness.local.toml sets roles.<역할>.<키>, but <역할> is not a configured role` |
-| 실행 방식을 바꾼다 | `error: roles.<역할>.runner = <값> in harness.local.toml, but the project runs <역할> <as a subagent \| through a CLI>` — 개인 러너는 실행 방식을 유지하고 CLI 만 고른다는 설명과 고를 수 있는 값을 `help` 로 낸다 |
+| 러너 방식을 바꾼다 | `error: roles.<역할>.runner = <값> in harness.local.toml, but the project runs <역할> <as a subagent \| through a CLI>` — 개인 러너는 러너 방식을 유지하고 CLI 만 고른다는 설명과 고를 수 있는 값을 `help` 로 낸다 |
 | 서브에이전트 역할의 모델 | `error: roles.<역할>.model in harness.local.toml has no effect — <역할> runs as a subagent and uses the orchestrator's model` 과 `help: harness set --local harness.model <model>` |
 | 값의 형 | `error: harness.local.toml: <키> must be a string (got <값>)` |
 | 불변식 위반 | 8절의 오류 |
@@ -405,11 +420,13 @@ help: untrack it and keep your copy
 | `roles.*.label` | 그 벤더 선언의 `label`, 없으면 `name`. 리뷰 댓글의 작성자 표시다 |
 | `roles.*.model` | 그 역할이 실제로 쓰는 모델(7-7) |
 | `exe` · `argv` · `output` · `usage_format` · `usage_parser` · `auth_check` · `auth_timeout` · `entry` | CLI 러너 역할에만. 뜻과 계산은 지금과 같고 실효 설정으로 계산한다 |
-| `metrics` | 공유 설정의 `[metrics]` 값 그대로. 자리표시는 풀지 않는다 — 지표 기록기가 실행할 때 푼다 |
+| `metrics` | 공유 설정의 `[metrics]` 값 그대로. `dir` 의 자리표시(`{clone}` · `{project}`)는 풀지 않는다 — 지표를 기록하는 쪽이 클론 키로 풀어 기록기에 넘긴다(7-3) |
 
 - 실효 설정이 성립하지 않으면(공유 설정 오류 · 6-2 · 잠금 · 8절) 아무것도 내지 않고 그 오류로 종료 코드 2
-- 실행 계획을 계산하는 함수는 하나다. `run-plan` 과, 같은 프로세스 안에서 실행 계획이 필요한 CLI 코드(`harness run` · doctor)가 같은 함수를 부른다.
-  절차 드라이버(#208) · 하위 명령으로 이식된 실행기와 지표 기록기(#211 · #213)도 같은 함수를 부른다
+- 실효 설정을 읽는 함수가 6-2 · 8절 검사까지 하고, 실행 계획은 그 결과를 받는 함수 `run_plan()` 하나가 계산한다. `run-plan` 과, 같은
+  프로세스 안에서 실행 계획이 필요한 CLI 코드(`harness run` · doctor)가 이 두 함수를 같은 순서로 부른다
+- 이 명세 뒤에 오는 절차 드라이버(#208)와, 관리 스크립트를 옮긴 하위 명령(#211 의 `review`, #213 의 `run-agent` · `span`)도 CLI 를 다시
+  띄우지 않고 이 두 함수를 같은 프로세스에서 부른다
 - 출력은 기기마다 다를 수 있다. 파일로 남기지 않는다
 
 ### 7-2. `script/harness.plan.json` 걷기
@@ -420,15 +437,25 @@ help: untrack it and keep your copy
 
 ### 7-3. 실행 계획을 읽는 쪽
 
-스크립트는 하네스 루트에서 `.harness/bin/harness`, 없으면 `src/bin/harness` 중 처음 실행할 수 있는 것을 CLI 로 쓴다 — `run-lint-test.sh` 와 같은 순서다.
-둘 다 없으면 실행 계획이 없는 것이다. CLI 를 `run-plan --target <하네스 루트>` 로 부르고 표준 출력의 JSON 을 읽는다.
+이 명세의 기준 코드에서 실행 계획을 읽는 쪽은 아래 표의 관리 스크립트다. 스크립트는 이 절차로 CLI 를 찾아 부른다 — #213 의 shim 이 CLI 를 찾는 절차와 같다.
 
-| 읽는 쪽 | 받는 것 | 실행 계획을 받지 못했을 때 |
-|---|---|---|
-| 역할 실행기 `run-agent.py` | 자기 역할의 항목 | CLI 의 표준 오류를 그대로 흘리고 종료 코드 2. CLI 가 없으면 `error: no harness CLI to resolve the run plan (.harness/bin/harness or src/bin/harness)`. `--check` 도 같다 |
-| 리뷰 루프 `review-mr.sh` | `code-reviewer` 의 `exe` 와 `label` | 회차를 올리기 전에 CLI 의 표준 오류를 흘리고 `help: the round was not used — fix the config, then rerun` 과 종료 코드 2 |
-| 리뷰 등록 `post-review.sh` | 작성자 표시 인자가 없을 때 `code-reviewer` 의 `label` | 지금 기본값 `자동 리뷰` 를 쓴다. 등록은 계속한다 |
-| 지표 기록기 `metric.py` | `metrics` | 기록하지 않는다. 부른 쪽의 출력 · 종료 코드를 바꾸지 않는다 |
+1. 자기 파일이 있는 디렉터리의 부모를 하네스 루트로 잡는다
+2. `<루트>/.harness/bin/harness`, `<루트>/src/bin/harness` 순으로 실행할 수 있는 첫 것을 CLI 로 고른다 — ADR 0013 의 순서이고 `run-lint-test.sh` 가 쓰는 순서다
+3. `<CLI> --target <루트> run-plan` 을 부르고 표준 출력의 JSON 을 읽는다
+
+CLI 를 찾지 못하면 실행 계획이 없는 것이다. 표에서 오류를 내는 쪽은 아래 두 줄을 표준 오류에 낸다 — #213 의 shim 이 CLI 를 찾지 못할 때 내는 문구와 같다.
+
+```
+error: harness CLI not found under <루트> (.harness/bin/harness or src/bin/harness)
+help: harness install --target <루트>
+```
+
+| 읽는 쪽 | 옮겨 갈 하위 명령 | 받는 것 | 실행 계획을 받지 못했을 때 |
+|---|---|---|---|
+| 역할 실행기 `run-agent.py` | `run-agent` (#213) | 자기 역할의 항목 | CLI 의 표준 오류를 그대로 흘리고(CLI 를 찾지 못하면 위 두 줄) 종료 코드 2. `--check` 도 같다 |
+| 리뷰 루프 `review-mr.sh` | `review` (#211) | `code-reviewer` 의 `exe` 와 `label` | 회차를 올리기 전에 멈춘다 — CLI 의 표준 오류(CLI 를 찾지 못하면 위 두 줄) 뒤에 `help: the round was not used — fix the config, then rerun` 을 내고 종료 코드 2 |
+| 리뷰 등록 `post-review.sh` | `review post` (#211) | 작성자 표시 인자가 없을 때 `code-reviewer` 의 `label` | 지금 기본값 `자동 리뷰` 를 쓴다. 등록은 계속한다 |
+| 지표 기록기 `metric.py` | `span` (#213) | `metrics` | 기록하지 않는다. 부른 쪽의 출력 · 종료 코드를 바꾸지 않는다 |
 
 - `run-agent.py` 의 역할이 실행 계획에 없으면 `error: no role \`<역할>\` in the config (have: <역할들>)` 이다. 실행 계획의 필수 필드가 없거나 형이 틀리면
   `error: the run plan from <CLI 경로> is broken` 과 종료 코드 2 다
@@ -436,7 +463,14 @@ help: untrack it and keep your copy
   `plan-label` 이 같은 입력에서 `label` 을 낸다. 받은 `label` 을 `post-review.sh` 의 작성자 표시로 넘긴다. `exe` 가 비면 지금처럼
   `no review runner is configured` 로 멈춘다
 - `metric.py` 는 프로세스 하나에서 한 번만 CLI 를 부른다. `HARNESS_METRICS=off` 면 CLI 를 부르지 않고 기록하지 않는다
-- CLI 가 지표 기록기를 같은 프로세스에 불러 쓸 때(`harness run`)는 CLI 가 해석한 지표 설정을 넘기고 CLI 를 다시 띄우지 않는다
+- `metrics.dir` 의 자리표시는 기록을 시작하는 쪽이 클론 키(#96)로 푼다. 스크립트로 불린 `metric.py` 는 지금처럼 `_clone_key.py` 로 푼다.
+  CLI 가 지표 기록기를 같은 프로세스에 불러 쓸 때(`harness run`)는 CLI 가 실효 설정의 지표 설정을 클론 키로 푼 값을 기록기에 넘기고,
+  CLI 를 다시 띄우지 않는다
+
+#211 · #213 이 위 스크립트를 표의 하위 명령으로 옮기면, 받는 것과 받지 못했을 때의 처리(작성자 표시 기본값, 지표를 기록하지 않음, 회차 전
+종료 코드 2)는 그 하위 명령의 절이 이어받는다. 하위 명령은 실행 계획을 `run_plan()` 으로 같은 프로세스에서 받으므로(7-1) CLI 를 찾지
+못하는 경우가 없다. 지표 설정의 자리표시는 그때도 부르는 쪽(`span` 명령 · `harness run`)이 풀어 기록기에 인자로 넘긴다 — 패키지의
+`metrics/` 는 다른 하네스 모듈을 불러오지 않는다(#206).
 
 ### 7-4. 역할 어댑터
 
@@ -496,7 +530,8 @@ help: give code-reviewer a different runner on this machine
         harness set --local roles.code-reviewer.runner <claude|codex>
 ```
 
-- `run-agent.py` · `review-mr.sh` 는 실행 계획을 받을 때 `run-plan` 이 이 검사로 거부하므로 진입에서 멈춘다(7-3)
+- 역할 실행기 · 리뷰 루프는 실행 계획을 받을 때 이 검사에 거부되므로 진입에서 멈춘다(7-3). 같은 프로세스에서 받는 쪽도 실효 설정을 읽는 함수가
+  거부한다(7-1)
 - 불변식을 끄는 키(`invariants.distinct_reviewer`)는 개인 레이어가 받지 않는다. 끄는 것은 프로젝트의 결정이다
 - `harness doctor` 는 실효 설정의 위반을 `bad` 항목으로 낸다(11절)
 
@@ -589,7 +624,7 @@ help: give code-reviewer a different runner on this machine
 
 | 문서 | 반영할 사실 |
 |---|---|
-| `README.md` | 새 절 "설정 레이어" — 레이어 순서와 파일, 병합 규칙 표, `locked`, 개인 레이어(받는 키 · 실행 방식 유지 · 무시 보장 · 추적 금지 · `set --local`), `run-plan`. "`harness.toml` 이 정하는 것" 표에 `roles.<역할>.enabled` 행, `roles.<역할>.runner · model · access` 행에서 모델 · 벤더가 생성물에 들어가지 않고 실행 계획으로 간다는 것, `doctor.remote_timeout` 행의 `script/harness.plan.json` 을 실행 계획으로. 그 아래 실행 계획 문단과 "파일은 세 부류다" 의 생성 목록에서 `script/harness.plan.json` 을 뺀다. "시작하기" 의 "설정이 없으면 기본값을 깔아" 를 최소 설정으로 |
+| `README.md` | 새 절 "설정 레이어" — 레이어 순서와 파일, 병합 규칙 표, `locked`, 개인 레이어(받는 키 · 러너 방식 유지 · 무시 보장 · 추적 금지 · `set --local`), `run-plan`. "`harness.toml` 이 정하는 것" 표에 `roles.<역할>.enabled` 행, `roles.<역할>.runner · model · access` 행에서 모델 · 벤더가 생성물에 들어가지 않고 실행 계획으로 간다는 것, `doctor.remote_timeout` 행의 `script/harness.plan.json` 을 실행 계획으로. 그 아래 실행 계획 문단과 "파일은 세 부류다" 의 생성 목록에서 `script/harness.plan.json` 을 뺀다. "시작하기" 의 "설정이 없으면 기본값을 깔아" 를 최소 설정으로 |
 | `src/templates/managed/docs/workflow/README.md` · `changing.md` · `flow.md` | "값의 정본은 `harness.toml` 하나" 를 "프로젝트 값은 `harness.toml`, 기본값은 내장 기본값, 개인 선택은 `harness.local.toml`" 로. `changing.md` 의 역할 삭제를 `harness set roles.<이름>.enabled false` 로, 역할별 모델 행에 서브에이전트 역할은 오케스트레이터 모델을 쓴다는 것을 |
 | `src/templates/managed/script/README.md` | `run-agent.py` 행의 "실행 계획(`harness.plan.json`)" 을 "고정 사본 CLI 의 `run-plan`" 으로. `metric.py` 행에 지표 설정을 `run-plan` 에서 받는다는 것을 |
 | `src/templates/generated/.ai/AI_AGENT.md` | 10장 배치 표의 `harness.toml` 행을 "프로젝트 레이어 — 기본값과 다르게 정하는 규칙 값" 으로, `harness.local.toml`(개인 레이어, 커밋하지 않는다) 행과 내장 기본값(고정 사본의 `templates/defaults.toml`, 고치지 않는다) 행을 더한다. 9장 문서 지도의 `harness.toml` 행에 값마다의 출처는 `harness schema` 라는 것을 |
@@ -602,7 +637,7 @@ help: give code-reviewer a different runner on this machine
 
 ### 14-1. 단위 테스트 — `src/test/unit/`
 
-#206 이 둔 단위 테스트 자리(`python3 -m unittest`, 소스 리포 전용)에 설정 패키지의 순수 함수를 레이어를 직접 넣어 본다.
+#206 이 둔 단위 테스트 자리(단계와 실행 명령은 #206 이 정한다, 소스 리포 전용)에 설정 패키지의 순수 함수를 레이어를 직접 넣어 본다.
 
 | 케이스 | 확인하는 것 |
 |---|---|
@@ -613,9 +648,9 @@ help: give code-reviewer a different runner on this machine
 | `verify.checks` | 같은 `name` 은 위 항목으로 아래 자리에서 바뀌고, 새 이름은 뒤에 붙는다 |
 | 절차 | 위 레이어의 `[workflows.work]` 가 단계를 줄이면 그 단계만 남고, 위에 없는 절차는 아래 것이다 |
 | 형이 다른 값 | 테이블 · 배열 대 다른 형은 3-5 오류다 |
-| 잠금 | 같은 값은 받고 다른 값은 4-3 오류다. 잠긴 검사 항목도 같다. 프로젝트 · 개인의 `locked` 선언, 스칼라가 아닌 경로, 개인 키 잠금이 4-2 오류다 |
+| 잠금 | 같은 값은 받고 다른 값은 4-3 오류다. 잠긴 배열(`commit.tags`)은 원소와 순서가 모두 같을 때만 받는다. 잠긴 검사 항목도 같다. 프로젝트 · 개인의 `locked` 선언, 스칼라도 배열도 아닌 경로, 보호 목록 · `verify.checks` 경로, 개인 키 잠금이 4-2 오류다 |
 | 출처 | `sources` · `same_as_below` · `inherited_items` 가 레이어 구성대로 나온다 |
-| 개인 레이어 | 받는 키 넷만 받고, 실행 방식을 바꾸는 러너 · 꺼진 역할 · 서브에이전트 역할의 모델이 6-2 오류다 |
+| 개인 레이어 | 받는 키 넷만 받고, 러너 방식을 바꾸는 러너 · 꺼진 역할 · 서브에이전트 역할의 모델이 6-2 오류다 |
 | 역할 끄기 | `enabled = false` 인 역할이 병합 결과의 `roles` 에 없다 |
 | 실행 계획 | 같은 공유 설정에 개인 레이어만 다르게 넣으면 실행 계획의 `vendor` · `label` · `model` · `argv` 가 개인 값을 따르고, 서브에이전트 역할의 `model` 이 `harness.model` 이다 |
 
@@ -626,9 +661,9 @@ help: give code-reviewer a different runner on this machine
 | 최소 설정 설치 | 빈 리포에 `install` 하면 `harness.toml` 이 2-4 의 내용(이름 채움)이고, 생성 파일이 같은 이름의 내장 기본값 전체 사본으로 렌더한 것과 같다 |
 | 전체 값 사본 호환 | 레이어 이전 형식의 전체 값 사본이 그대로 렌더되고, 같은 값을 최소 설정 + 몇 줄로 적은 설정과 생성 파일이 같다 |
 | 레이어 병합 끝까지 | 최소 설정에 `commit.tags` 만 적으면 commit-msg 검사식이 그 태그만 받고, `docs.protected` 에 하나를 더하면 기본 여섯 항목과 함께 가드 · deny 에 들어간다 |
-| 잠금 | 소스 트리를 복제해 내장 기본값 사본에 `locked = ["review.max_rounds"]` 를 넣으면, 같은 값을 적은 프로젝트는 렌더되고 다른 값은 4-3 오류로 거부되며 파일이 바뀌지 않는다 |
+| 잠금 | 소스 트리를 복제해 내장 기본값 사본에 `locked = ["review.max_rounds", "commit.tags"]` 를 넣으면, 두 키에 같은 값을 적은 프로젝트는 렌더되고 어느 하나라도 다른 값이면 4-3 오류로 거부되며 파일이 바뀌지 않는다 |
 | 개인 레이어는 생성물에 닿지 않는다 | 오케스트레이터 · 리뷰어 러너 · 모델을 바꾼 `harness.local.toml` 을 두고 render 하면 생성 파일이 파일 없이 렌더한 것과 바이트까지 같고 `check` 가 통과한다. 파일을 깨뜨려도 render · check 가 통과한다 |
-| 개인 레이어 거부 | 받지 않는 키 · 실행 방식 변경 · 서브에이전트 역할의 모델이 든 개인 파일이면 `run-plan` 과 `run --dry-run` 이 종료 코드 2 와 6-2 오류를 낸다 |
+| 개인 레이어 거부 | 받지 않는 키 · 러너 방식 변경 · 서브에이전트 역할의 모델이 든 개인 파일이면 `run-plan` 과 `run --dry-run` 이 종료 코드 2 와 6-2 오류를 낸다 |
 | 실행 시점 불변식 | 공유 설정은 성립하고 개인 오케스트레이터가 리뷰어와 같은 러너를 만들면 render · check 는 통과하고 `run-plan` · `run --dry-run` · `set --local` 이 8절 오류로 거부한다 |
 | `run --dry-run` | 출력된 명령이 개인 레이어의 오케스트레이터와 모델을 쓴다 |
 | `run-plan` 출력 | 7-1 의 필드가 있고 `metrics.dir` 이 설정 값 그대로다. 개인 레이어의 러너 · 모델이 반영된다 |
@@ -654,9 +689,18 @@ help: give code-reviewer a different runner on this machine
 
 ### 14-4. `test-review-loop.sh`
 
-- 실행 계획 파일 사본 대신 샌드박스 리포에 페이크 CLI(`.harness/bin/harness`)를 둔다. `run-plan` 에 샌드박스의 실행 계획 JSON(지표 경로 · 스텁 로그인 확인 · `label`)을 내고, 케이스가 그 JSON 을 바꿔 리뷰 러너 준비 상태를 만든다
-- 스텁으로 갈아끼울 리뷰 도구의 이름은 실제 설치본의 `harness run-plan` 출력에서 읽는다
-- `review-mr.sh` 가 실행 계획의 `label` 을 등록의 작성자 표시로 넘기는 것, 실행 계획을 받지 못하면 회차 라벨을 올리지 않고 종료 코드 2 인 것을 본다
+실행 계획 파일 사본 대신 샌드박스 하네스 루트에 실제 CLI 의 고정 사본을 두고, 케이스는 그 고정 사본의 벤더 선언 사본으로 상황을 만든다.
+
+- 자기 하네스 루트에서 `.harness/bin/harness` → `src/bin/harness` 순서로 찾은 CLI 의 진입 스크립트 · 패키지 · 템플릿(#206 의 배치)을
+  샌드박스의 `.harness/bin/harness` · `.harness/lib/harness/` · `.harness/templates/` 로 복사한다. 심볼릭 링크가 아니라 사본이라 케이스가
+  그 템플릿을 고칠 수 있다
+- 샌드박스에 자기 하네스 루트의 `harness.toml` 사본을 두고 `metrics.dir` 를 샌드박스 안으로 덮는다. `HARNESS_HOME` 도 샌드박스 안이다
+- 리뷰 러너 준비 상태(로그인 확인 명령 · 실행 파일 이름)는 고정 사본의 벤더 선언 사본(`.harness/templates/vendors.toml`)에서 리뷰 러너 벤더의
+  `auth_check` · `exe` 를 고쳐 만든다. 로그인 확인은 그 벤더의 `auth_check` 를 스텁이 알아보는 인자로 바꿔 고정한다
+- 스텁으로 갈아끼울 리뷰 도구의 이름은 샌드박스 CLI 의 `run-plan` 출력(`roles.code-reviewer.exe`)에서 읽는다
+- 샌드박스에 더한 파일은 첫 커밋에 넣는다 — 리뷰 루프는 작업 트리가 깨끗할 때만 돈다
+- `review-mr.sh` 가 실행 계획의 `label` 을 등록의 작성자 표시로 넘기는 것, 실행 계획을 받지 못하면(설정 사본이 검증에 걸리거나 고정 사본이
+  없을 때) 회차 라벨을 올리지 않고 종료 코드 2 인 것을 본다
 - 기존 케이스의 기대값(종료 코드 · 라벨 · 등록 내용)은 그대로다
 
 ### 14-5. UI 단위 테스트
@@ -692,7 +736,7 @@ help: give code-reviewer a different runner on this machine
 |---|---|
 | 생성 파일 | 공유 설정에서 나오는 파일. 고치지 않고 `render` 로 다시 만든다 |
 | 정본 | 어떤 값·규칙을 고칠 때 손대는 유일한 자리. 프로젝트의 규칙 값은 `harness.toml`, 기본값은 내장 기본값, 개인 선택은 `harness.local.toml`, 프로젝트 사실은 `.ai/project/` |
-| 실행 계획 | 역할마다 무엇을 어떻게 띄우는지 실효 설정에서 실행 시점에 해석한 표. `harness run-plan` 이 내고 `run-agent.py` · `review-mr.sh` · `metric.py` 가 읽는다. 파일로 남기지 않는다 |
+| 실행 계획 | 역할마다 무엇을 어떻게 띄우는지 실효 설정에서 실행 시점에 해석한 표. `harness run-plan` 이 내고 역할 실행기 · 리뷰 루프 · 지표 기록기가 읽는다. 파일로 남기지 않는다 |
 
 "용어" 표에 더할 행:
 
@@ -705,7 +749,7 @@ help: give code-reviewer a different runner on this machine
 | 실효 설정 | 공유 설정에 개인 레이어를 더한 설정. 실행(`run` · `run-plan`)과 점검이 읽는다 |
 | 병합 규칙 | 키마다 하네스가 고정한 레이어 병합 방식 — 덮어쓰기 · 깊은 병합 · 교체 · 합집합 · 이름 병합 · 통째 교체 |
 | 잠금 | 내장 기본값이나 preset 이 `locked` 로 지정한 값. 위 레이어가 다른 값을 적으면 거부한다 |
-| 실행 방식 | 역할이 도는 방식 — 서브에이전트(`inproc`) 또는 CLI 러너. 공유 설정이 정하고 개인 레이어는 바꾸지 못한다 |
+| 러너 방식 | 역할이 도는 방식 — 서브에이전트(`inproc`) 또는 CLI 러너. 공유 설정이 정하고 개인 레이어는 바꾸지 못한다 |
 
 "폐기된 별칭" 표:
 
@@ -720,15 +764,15 @@ help: give code-reviewer a different runner on this machine
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "구성 요소" 의 CLI 항목 | 설정은 레이어로 읽어 병합 규칙 표대로 합치고 공유 설정과 실효 설정을 따로 낸다. 실행 계획은 실행 시점에 실효 설정에서 계산한다(`run-plan`) |
+| "구성 요소" 의 CLI 패키지 항목 (#206 이 나눈 `src/harness/` 항목) | "설정을 읽어 검증하고(`config/`)" → "설정을 레이어로 읽어 병합 규칙 표대로 합치고 공유 설정과 실효 설정을 따로 내어 검증하고(`config/`)". 항목 끝에 더한다: 실행 계획은 실행 시점에 실효 설정에서 계산한다(`run-plan`) |
 | "구성 요소" 의 `src/templates/` 항목 | `harness.toml`(기본 설정) → `defaults.toml`(내장 기본값 레이어 — 키마다 기본값과 설명) · `harness.toml`(설치가 까는 최소 설정) |
 | "데이터 흐름" 의 렌더 | `harness.toml` + `.ai/project/` → 공유 설정(내장 기본값 ← preset ← `harness.toml`) + `.ai/project/`. 생성 파일 목록에서 `script/harness.plan.json` 을 뺀다. 개인 레이어는 읽지 않는다 |
-| "데이터 흐름" 의 절차 실행 | "`script/run-agent.py` 가 실행 계획대로 띄운 CLI" → "`script/run-agent.py` 가 고정 사본 CLI 의 `run-plan` 으로 받은 실행 계획대로 띄운 CLI". `review-mr.sh` 의 단계에 실행 계획 조회를 더한다. `harness run` 은 실효 설정의 오케스트레이터로 띄우고, worktree 에 개인 레이어 파일을 옮긴다 |
-| "데이터 흐름" 의 실행 지표 | `script/metric.py` 는 지표 설정을 `run-plan` 에서 받는다 |
-| "신뢰 경계" 의 들어오는 입력 | `harness.local.toml`(개인 레이어 — 받는 키 넷과 실행 방식 유지만 받고 어기면 그것을 읽는 명령이 거부한다. git 이 무시하도록 `info/exclude` 에 적고, 커밋되면 `check` 가 거부한다) |
+| "데이터 흐름" 의 절차 실행 | 네 곳을 고친다. ① "`harness run` → 오케스트레이터 CLI" → "`harness run` → 실효 설정의 오케스트레이터 CLI" ② "`script/run-agent.py` 가 실행 계획대로 띄운 CLI" → "`script/run-agent.py` 가 고정 사본 CLI 의 `run-plan` 으로 받은 실행 계획대로 띄운 CLI" ③ "`review-mr.sh`(리뷰 러너 점검 ·" → "`review-mr.sh`(실행 계획 조회 · 리뷰 러너 점검 ·" ④ "이슈별 worktree 를 만들고 그 안에서" → "이슈별 worktree 를 만들어 개인 레이어 파일을 옮기고 그 안에서" |
+| "데이터 흐름" 의 실행 지표 | "`script/metric.py`(start · end · wrap)" 뒤에 더한다: 지표 설정은 실행 계획에서 받는다 — 스크립트는 고정 사본 CLI 의 `run-plan` 으로, `harness run` 은 같은 프로세스에서 자리표시를 푼 값을 기록기에 넘긴다 |
+| "신뢰 경계" 의 들어오는 입력 | `harness.local.toml`(개인 레이어 — 받는 키 넷과 러너 방식 유지만 받고 어기면 그것을 읽는 명령이 거부한다. git 이 무시하도록 `info/exclude` 에 적고, 커밋되면 `check` 가 거부한다) |
 | "새 코드를 둘 곳" 의 새 설정 키 | `src/templates/harness.toml` 의 주석과 기본값 → `src/templates/defaults.toml` 의 주석과 기본값(기본 규칙과 다르게 병합하면 병합 규칙 표에도). 개인 레이어에 여는 키면 개인 레이어의 받는 키 목록에도 |
 | "새 코드를 둘 곳" 의 새 역할 | `src/templates/harness.toml` 의 `[roles.<역할>]` → `src/templates/defaults.toml` 의 `[roles.<역할>]` |
-| "계층과 의존 방향" | "규칙 값은 `harness.toml` 에서 생성물로 내려간다. … 생성물(`script/harness.env` · `script/harness.plan.json` · `script/forge.sh`)에서 받는다" → "규칙 값은 공유 설정에서 생성물로 내려간다. 개인 레이어 값은 생성물에 들어가지 않는다. 대상 리포의 스크립트·훅·가드는 값을 하드코딩하지 않고 생성물(`script/harness.env` · `script/forge.sh`)에서, 역할의 실행 방법과 지표 설정은 고정 사본 CLI 의 `run-plan` 에서 실행할 때 받는다" |
+| "계층과 의존 방향" 의 규칙 값 항목 | 문장을 다시 쓰지 않고 고치고 더한다. ① "규칙 값은 `harness.toml` 에서" → "규칙 값은 공유 설정에서" ② 괄호 안 생성물 목록에서 `script/harness.plan.json` 을 뺀다 ③ 항목 끝에 더한다: 개인 레이어 값은 생성물에 들어가지 않는다. 역할의 실행 방법과 지표 설정은 실행할 때 실효 설정에서 해석한다 — 스크립트는 고정 사본 CLI 의 `run-plan` 으로, CLI 패키지 안의 코드는 같은 함수로 받는다 |
 | "검사하지 않는 것" | render · check 는 개인 레이어를 읽지 않는다. 개인 선택으로만 생기는 불변식 위반은 실행 시점(`run` · `run-plan`)에야 드러난다 |
 
 ### 16-4. `.ai/project/testing.md`
@@ -744,6 +788,7 @@ help: give code-reviewer a different runner on this machine
 
 - preset 레이어를 채우는 일 — `extends` 해석, preset 받기 · lock · `harness pull`, preset 이 선언하는 잠금의 실제 사용 (#216 이후)
 - 절차 확장 지점(빈 하위 절차)과 절차 블록 엔진 (#208)
+- 관리 스크립트(역할 실행기 · 리뷰 루프 · 지표 기록기)를 하위 명령으로 옮기는 일 (#211 · #213 — 이 명세 뒤에 오고, 옮긴 하위 명령이 실행 계획을 `run_plan()` 으로 같은 프로세스에서 받는다)
 - 전체 값 사본을 최소 설정으로 줄이는 쓰기 명령. 이 명세는 `schema` 의 `same_as_below` 로 읽기 보고만 한다
 - UI 에서 개인 레이어 값을 쓰거나 역할을 끄고 켜는 조작
 
