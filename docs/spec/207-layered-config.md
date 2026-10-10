@@ -96,9 +96,9 @@
 
 | 명령이 하는 일 | 읽는 설정 | 해당하는 새 명령 |
 |---|---|---|
-| 리포 · forge · 검증처럼 모든 클론에서 같아야 하는 일 | 공유 설정 | `forge` · `preflight` · `sync-tasks` · `work-check` · `work-lock` · `carryover` · `rollback` · `usage` · `verify` |
+| 리포 · forge · 검증처럼 모든 클론에서 같아야 하는 일 | 공유 설정 | `forge` · `forge-selftest` · `preflight` · `sync-tasks` · `work-check` · `work-lock` · `carryover` · `rollback` · `usage` · `verify` |
 | 역할을 띄우거나 실행 지표를 남기는 일 | 실효 설정 — 실행 계획(`run_plan()`, 7-1)으로 받는다 | `review` 의 리뷰 러너 · `run-agent` · `span` |
-| 설정 값이 필요 없는 일 | 레이어를 읽지 않는다 | `bash-guard` · `secret-scan` · `clone-key` |
+| 설정 값이 필요 없는 일 | 레이어를 읽지 않는다 | `bash-guard` · `git-hook` · `secret-scan` · `clone-key` |
 
 한 명령이 두 가지 일을 하면 일마다 따른다 — `review` 는 회차 상한 같은 값을 공유 설정에서, 리뷰 러너를 실행 계획에서 받는다.
 
