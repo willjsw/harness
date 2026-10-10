@@ -403,14 +403,15 @@ UI 는 `ROOT/ui` 다. 소스 리포와 Homebrew 에만 있고 고정 사본에�
 checks = [
   { name = "CLI 가 컴파일된다", run = "python3 script/project/check-cli.py compile", paths = ["src/bin/**", "src/harness/**", "script/project/check-cli.py"] },
   { name = "CLI 패키지 의존 방향", run = "python3 script/project/check-cli.py imports", paths = ["src/harness/**", "script/project/check-cli.py"] },
-  { name = "Python 단위 테스트", run = "cd src && python3 -B -m unittest discover -s test/unit", paths = ["src/harness/**", "src/test/unit/**"] },
+  { name = "Python 단위 테스트", run = "cd src && python3 -B -m unittest discover -s test/unit", paths = ["src/harness/**", "src/templates/**", "src/test/**"] },
   { name = "UI 단위 테스트", run = "cd src/ui && node --test lib/*.test.js", paths = ["src/ui/**", "src/bin/**", "src/harness/**"] },
 ]
 test_paths = ["src/bin/**", "src/harness/**", "src/templates/**", "src/test/**"]
 ```
 
 나머지 키는 그대로다. "UI 단위 테스트" 가 CLI 원문의 상수를 대조하므로(7-2) CLI 경로에도 걸린다. "Python 단위 테스트" 는
-"CLI 패키지 의존 방향" 바로 뒤이고 `on` 은 기본값(commit)이다. 그 자리와 실행 규칙은 7-5 다. render 가
+"CLI 패키지 의존 방향" 바로 뒤이고 `on` 은 기본값(commit)이다. 단위 테스트가 읽는 템플릿과 테스트 보조 파일
+(`src/templates/` · `src/test/` 아래)만 바뀌어도 돈다. 그 자리와 실행 규칙은 7-5 다. render 가
 `script/harness-verify.sh` 와 규칙 정본의 검증 순서를 따라 바꾼다.
 
 `script/project/check-cli.py` — python3 표준 라이브러리만 쓴다. 리포 루트는 이 파일의 위치에서 구한다.
