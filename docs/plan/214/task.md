@@ -96,15 +96,16 @@ UI 가 블록 팔레트 · 단계 패널 · 끝 상태 노드 · 실행 방식 �
 - 입력 JSON 이 형식을 어기면 지금 문장 그대로 거부한다(종료 코드 2). JSON 을 내지 않는다
 - 그 밖에는 표준 출력에 JSON 객체 하나를 내고 표준 오류는 비운다. 종료 코드는 검사가 통과하면 0, 거부하면 2 다
 - 키는 명세 2-3 의 표다 — `ok` · `error` · `at` · `wiring` · `start` · `steps[]`(`id` · `outcomes` · `open` · `next`)
-  - 검사는 텍스트 `--dry-run` 과 같은 함수에 같은 입력을 준다. 하위 절차는 저장된 설정의 그 절차다
+  - 검사는 텍스트 `--dry-run` 과 같은 함수에 같은 입력을 준다. 하위 절차는 저장된 설정에서 찾는다
   - 검사 중 표준 오류로 가던 문장을 모아 `error` 에 넣는다(거부한 첫 오류 문장의 원문, 여러 줄일 수 있다). 통과하면 `error` 는 null 이고 모인 경고는 내지 않는다
   - `at` 은 `error` 의 첫 위치 표기(#208 6절)에서 읽는다 — `step` 은 `steps[<i>]` 의 번호, `outcome` 은 `next[…]` 안의 JSON 문자열을 푼 값이다.
     outcome 표기가 없으면 `outcome` 이 null, 위치 표기가 없으면 둘 다 null 이다. 통과하면 `at` 이 null 이다
   - `wiring` · `start` · `steps[].outcomes` · `steps[].next` 는 #208 의 배선 판정 · 시작 단계 · outcome 집합 · 실효 배선 함수를 그대로 부른다.
     실행 방식과 상관없이 같은 함수다. 검사가 거부해도 낸다
-  - outcome 집합을 계산할 수 없는 단계(모르는 블록 · 없는 스키마 · 없는 하위 절차)는 `outcomes: []` · `open: true` 다. script 단계는 `open: true` 다.
+  - workflow 블록의 outcome 은 #208 의 고정 집합 `done` · `stop` · `handoff` 다
+  - outcome 집합을 계산할 수 없는 단계(모르는 블록 · 없는 스키마 · 저장된 설정에 없는 하위 절차)는 `outcomes: []` · `open: true` 다. script 단계는 `open: true` 다.
     실효 배선을 계산할 수 없는 단계는 `next` 키가 없다
-- `render-test.sh` 의 T1 블록에 명세 7-1 의 셋째 행부터 끝까지 — 검사 JSON 다섯 행, `--json` 단독, 형식 오류, 객체 형식 왕복 — 를 더한다
+- `render-test.sh` 의 T1 블록에 명세 7-1 의 셋째 행부터 끝까지 — 검사 JSON 다섯 행, `--json` 단독, 형식 오류, 객체 형식 왕복(driver 로 저장된 절차에 `"execute": "agent"` 를 넘기는 경우 포함) — 를 더한다
 - 건드릴 파일: `src/harness/commands/steps.py`(`cmd_steps`), `src/harness/cli.py`(공용 옵션 도움말), `src/test/render-test.sh`
 
 ### 완료 조건
@@ -118,7 +119,8 @@ UI 가 블록 팔레트 · 단계 패널 · 끝 상태 노드 · 실행 방식 �
   `execute` 값이 틀린 절차는 `at.step` · `at.outcome` 이 둘 다 null 이다
 - [ ] `--dry-run` 없는 `--json` 이 종료 코드 2 와 정해진 문구이고 설정 파일이 그대로다
 - [ ] 형식이 틀린 입력은 `--json` 이어도 종료 코드 2 이고 표준 출력이 비어 있다
-- [ ] `{title, execute, steps}` 로 저장한 뒤 `harness steps` 가 낸 단계(`builtin` · `body` 를 뺀 것)와 schema 의 `title` · `execute` 가 넘긴 값과 같다
+- [ ] `{title, execute, steps}` 로 저장한 뒤 `harness steps` 가 낸 단계(`builtin` · `body` 를 뺀 것)와 schema 의 `title` · `execute` 가 넘긴 값과 같다.
+  driver 로 저장된 절차에 `"execute": "agent"` 를 넘기면 절에 `execute = "agent"` 가 적히고 schema 의 `execute` 가 `agent` 다
 - [ ] 텍스트 `--dry-run` 의 출력과 종료 코드가 그대로다
 - [ ] 터미널 출력에 한글이 없다
 - [ ] `script/run-lint-test.sh` 가 통과한다
@@ -141,6 +143,7 @@ UI 가 블록 팔레트 · 단계 패널 · 끝 상태 노드 · 실행 방식 �
 | UT-07 | `--json` 단독 | `--dry-run` 없이 `--json` | 종료 코드 2, `error: steps takes --json only with --dry-run`, 설정 파일 그대로 |
 | UT-08 | 형식 오류 | JSON 이 아닌 입력에 `--dry-run --json` | 종료 코드 2, 표준 출력 빔 |
 | UT-09 | 객체 형식 왕복 | `{title, execute, steps}` 로 저장 | `harness steps` 단계와 schema 의 `title` · `execute` 가 넘긴 값과 같다 |
+| UT-10 | 기본값으로 되돌린 실행 방식 | driver 로 저장된 절차에 `{"execute": "agent", steps}` 저장 | 절에 `execute = "agent"`, schema 의 `execute` 가 `agent` |
 
 ## T3 · feat: 절차 그래프 변환·자동 배치 순수 함수 모듈 flow.js 추가
 
@@ -222,7 +225,8 @@ React 와 `@xyflow/react` 를 import 하지 않고, 입력을 바꾸지 않고 �
   - `checkSteps(project, workflow, payload)` 는 `harness steps <절차> <JSON> --dry-run --json`, `saveSteps(project, workflow, payload)` 는
     `harness steps <절차> <JSON>` 을 부른다. 단계에서 `builtin` · `body` 를 빼는 일은 두 액션이 한다
   - 객체(2-5): `title` 은 초안이면 새 절차 대화상자의 값, 저장된 절차면 `schema.workflows.<절차>.title` 이고 비어 있으면 넣지 않는다.
-    `execute` 는 편집 중인 실행 방식이 `schema.execute.default` 와 다를 때만 넣는다. `steps` 의 나머지 키는 그대로다
+    `execute` 는 편집 중인 실행 방식이 `schema.execute.default` 와 다르거나 저장된 값(`schema.workflows.<절차>.execute`)과 다를 때 넣는다 — 초안은 기본값과만 견준다.
+    `steps` 의 나머지 키는 그대로다
 - 편집 중인 실행 방식은 저장된 절차면 `schema.workflows.<절차>.execute`, 초안이면 `schema.execute.default` 다. "배선을 받는 절차" 는
   그 실행 방식의 `schema.execute.modes[].wiring` 이 참인 절차다
 - 검사(4-10)
@@ -253,7 +257,7 @@ React 와 `@xyflow/react` 를 import 하지 않고, 입력을 바꾸지 않고 �
 - [ ] driver 명시 배선 절차에서 outcome 핸들이 4-2 의 순서와 이름표로 놓이고, 실선 · 끝 상태 셋 · 고리 · 자기 자신 선 · `Start` 표지가 보이며 4-5 대로 층이 나뉜다
 - [ ] driver 암묵 배선 절차에서 `stop` 으로 가는 outcome 에 선이 없고 캔버스 아래 안내 줄이 보인다
 - [ ] 없는 대상을 가리키는 outcome 이 있으면 그 노드에 오류 표지가 붙고 그 선(없으면 핸들)이 오류 색이다. 절차 전체의 오류는 단계 목록 위에 보인다
-- [ ] 저장과 검사에 넘기는 객체가 2-5 형식이다 — 초안 제목이 들어가고, 기본 실행 방식이면 `execute` 가 없다
+- [ ] 저장과 검사에 넘기는 객체가 2-5 형식이다 — 초안 제목이 들어가고, 기본 실행 방식의 초안이면 `execute` 가 없으며, driver 로 저장된 절차는 `execute` 가 있다
 - [ ] `schema.blocks` 가 없는 고정 사본에서 `--dry-run --json` 을 부르지 않고 순서대로 이은 선이 보인다
 - [ ] Procedure 보기에서 driver 절차 문서의 Mermaid 블록이 코드 블록, 다음 표가 표로 보인다
 - [ ] UI 단위 테스트와 `script/run-lint-test.sh` 가 통과한다
@@ -413,7 +417,9 @@ React 와 `@xyflow/react` 를 import 하지 않고, 입력을 바꾸지 않고 �
 절차의 실행 방식(`execute`)을 편집 상태에 넣어 툴바와 새 절차 대화상자에서 고르게 하고, 슬래시 커맨드가 없는 절차에는 `/<이름>` 표기와 커맨드 안내를 보이지 않는다.
 
 - 명세 4-8 · 4-11 · 2-5 의 `execute` · 6절의 `workflow.execute` 도움말
-- 실행 방식은 편집 상태의 일부다 — 바꾸면 저장하지 않은 변경이고 `Revert` 가 되돌린다. 검사와 저장은 2-5 대로 넘긴다
+- 실행 방식은 편집 상태의 일부다 — 바꾸면 저장하지 않은 변경이고 `Revert` 가 되돌린다
+- 검사와 저장은 2-5 대로 넘긴다 — `execute` 는 편집 중인 실행 방식이 기본값과 다르거나 저장된 값과 다를 때 넣는다. driver 로 저장된 절차를 agent 로 바꾸면
+  `"execute": "agent"` 를 넘기고 설정에 `execute = "agent"` 가 명시로 저장된다
 - 툴바에 실행 방식 단추 묶음을 둔다. 값은 `schema.execute.modes` 의 `value` 이고 그 순서다
 - 바꾼 실행 방식이 받지 않는 키가 단계에 있으면 확인 대화상자를 연다
   - 받지 않는 키는 `strip()` 이 정한다 — 배선을 받지 않는데 있는 `next`, `blocks[].keys[].execute` 에 그 실행 방식이 없는 키
@@ -426,7 +432,7 @@ React 와 `@xyflow/react` 를 import 하지 않고, 입력을 바꾸지 않고 �
     거짓이면 `커맨드 없이 harness run <이름> <이슈> 로 시작한다. 단계를 더하고 저장해야 설정에 들어간다.`
   - 이름 변경 대화상자 안내: 커맨드가 있으면 지금 문구, 없으면 `절차 문서와 이 절차에 더한 지시 파일이 새 이름을 따라간다.`
   - 삭제 대화상자: 커맨드가 있으면 `/<이름> 절차와 그 커맨드를 지운다.`, 없으면 `<이름> 절차를 지운다.` 메모 경로 안내는 지금과 같다
-- `src/ui/lib/help.js` 에 `workflow.execute` 를 명세 6절 문구로 더하고 실행 방식 단추 묶음 옆 도움말로 보인다
+- `src/ui/lib/help.js` 에 `workflow.execute` 를 명세 6절 문구(합니다체)로 더하고 실행 방식 단추 묶음 옆 도움말로 보인다
 - 건드릴 파일: `src/ui/components/FlowCanvas.js`, `src/ui/lib/help.js`, `src/ui/app/globals.css`
 
 ### 완료 조건
@@ -436,7 +442,7 @@ React 와 `@xyflow/react` 를 import 하지 않고, 입력을 바꾸지 않고 �
 - [ ] 받지 않는 키가 없으면 대화상자 없이 바뀐다
 - [ ] 실행 방식을 바꾸면 저장하지 않은 변경으로 표시되고 `Revert` 가 되돌린다
 - [ ] driver 로 바꿔 저장하면 schema 의 `workflows.<절차>.execute` 가 `driver` 이고 그 절차의 커맨드 파일이 없다. driver 로 저장된 절차를 agent 로 바꿔 저장하면
-  `workflows.<절차>.execute` 가 `agent` 다
+  설정의 절에 `execute = "agent"` 가 적히고 `workflows.<절차>.execute` 가 `agent` 다
 - [ ] 새 절차 대화상자의 실행 방식 기본값이 `agent` 이고, 고른 실행 방식에 따라 안내 문구가 바뀐다
 - [ ] 커맨드가 없는 절차가 메뉴 · 빈 절차 안내 · 단계 목록 머리에서 `<이름>` 으로, 이름 변경 · 삭제 대화상자에서 커맨드 없는 문구로 보인다
 - [ ] 단추 묶음 옆에 `workflow.execute` 도움말이 보인다
@@ -453,7 +459,7 @@ React 와 `@xyflow/react` 를 import 하지 않고, 입력을 바꾸지 않고 �
 | --- | --- | --- | --- |
 | UT-01 | 실행 방식 바꾸기 | 명시 배선 driver 절차를 agent 로 | 단계별 지울 키 대화상자, 확인 · 취소 결과 (손 확인) |
 | UT-02 | 편집 상태 | 실행 방식 바꾸고 `Revert` | 저장하지 않은 변경 표시, 되돌림 (손 확인) |
-| UT-03 | 저장 | driver 로 바꿔 저장, 다시 agent 로 바꿔 저장 | schema `execute` 가 차례로 `driver` · `agent`, driver 일 때 커맨드 파일 없음 (손 확인) |
+| UT-03 | 저장 | driver 로 바꿔 저장, 다시 agent 로 바꿔 저장 | schema `execute` 가 차례로 `driver` · `agent`, driver 일 때 커맨드 파일 없음, agent 로 되돌린 뒤 절에 `execute = "agent"` (손 확인) |
 | UT-04 | 새 절차 | 새 절차 대화상자에서 driver 고르기 | 기본값 agent, 커맨드 없는 안내 문구, 메뉴 표기 `<이름>` (손 확인) |
 | UT-05 | 커맨드 표기 | 커맨드 있는 절차 · 없는 절차의 이름 변경 · 삭제 대화상자 | 4-11 의 두 문구 (손 확인) |
 
@@ -519,7 +525,7 @@ workflow 블록처럼 하위 절차를 가리키는 단계에서 그 절차의 �
   - 보이는 것은 편집할 때와 같다 — 노드, 선, 끝 상태, 패널의 읽기 모드, 하위 절차 이동, Procedure 보기
   - 빠지는 조작: 단계 추가 메뉴, 잇기 · 다시 잇기 · 선 끊기, 노드 끌기, 노드 지우기, 패널의 편집 모드 · 순서 바꾸기 · `Delete`, 실행 방식 선택(지금 값만 보인다),
     `Revert` · `Check & Save`, `Rename` · `Delete Workflow`
-  - 캔버스 위에 `이 절차는 <레이어> 에서 온다 — 읽기 전용이다.` 와 `Separate into Project` 단추를 보이고, 그 옆에 `workflow.source` 도움말을 보인다
+  - 캔버스 위에 `이 절차는 <레이어> 에서 온다 — 읽기 전용이다.` 와 `Separate into Project` 단추를 보이고, 그 옆에 `workflow.source` 도움말(명세 6절 문구, 합니다체)을 보인다
   - 절차 메모(Procedure 보기의 Project Instructions)는 출처와 상관없이 고친다
   - 읽기 전용 절차도 열 때 `--dry-run --json` 을 불러 선과 핸들을 그린다
 - 프로젝트로 분리(3-2)

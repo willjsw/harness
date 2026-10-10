@@ -148,7 +148,7 @@ schema 용으로 같은 표를 따로 두지 않는다. 입력 종류(`input`)�
 - outcome 집합을 계산할 수 없는 단계는 `"outcomes": []`, `"open": true` 다. 모르는 블록, 없는 스키마나 하위 절차가 그렇다
 - 계산은 #208 의 render 검증과 드라이버가 쓰는 함수를 그대로 부른다 — outcome 집합, 실효 배선, 시작 단계. `--json` 용으로 따로 짓지 않는다
 - 실효 배선은 실행 방식과 상관없이 같은 함수로 계산한다
-- 하위 절차의 끝 상태는 저장된 설정의 그 절차에서 계산한다. 텍스트 `--dry-run` 의 검사와 입력이 같다
+- workflow 블록의 outcome 은 #208 의 고정 집합 `done` · `stop` · `handoff` 다. 하위 절차는 저장된 설정에서 찾는다 — 텍스트 `--dry-run` 의 검사와 입력이 같고, 저장된 설정에 없으면 위의 계산할 수 없는 단계다
 - 검사 중 표준 오류로 가던 문장은 모아 `error` 에 넣는다. 통과했을 때 모인 경고는 내지 않는다
 
 ### 2-4. 오류 위치 표기
@@ -174,7 +174,8 @@ schema 용으로 같은 표를 따로 두지 않는다. 입력 종류(`input`)�
   - 초안이면 새 절차 대화상자의 값이다
   - 저장된 절차면 `schema.workflows.<절차>.title` 이다
   - 비어 있으면 넣지 않는다
-- `execute` 는 편집 중인 실행 방식이 `schema.execute.default` 와 다를 때만 넣는다
+- `execute` 는 편집 중인 실행 방식이 `schema.execute.default` 와 다르거나 저장된 값(`schema.workflows.<절차>.execute`)과 다를 때 넣는다. 초안은 기본값과만 견준다
+  - 그래서 driver 로 저장된 절차를 agent 로 바꾸면 `"execute": "agent"` 를 넘기고, 설정에 `execute = "agent"` 가 명시로 저장된다. 객체에 없는 절차 키는 지금 값을 두기 때문이다(#208)
 - 단계에서 `builtin` · `body` 를 뺀다(지금과 같다). 나머지 키는 그대로 넘긴다
 - 객체의 `execute` 를 받아 쓰는 것과 단계 키 전부·절차 키를 보존하는 것은 `harness steps` 가 한다(#208)
 
@@ -472,8 +473,8 @@ README
 
 | 키 | 문구 |
 |---|---|
-| `workflow.execute` | `agent 는 오케스트레이터가 절차 문서를 읽고 따른다. driver 는 하네스가 배선대로 돌리고, 슬래시 커맨드 없이 harness run 으로 시작한다.` |
-| `workflow.source` | `아래 레이어(내장 기본값·preset)가 준 절차는 읽기 전용이다. 프로젝트로 분리하면 고칠 수 있고, 그 뒤로는 아래 레이어의 갱신이 닿지 않는다.` |
+| `workflow.execute` | `agent는 오케스트레이터가 절차 문서를 읽고 따릅니다. driver는 하네스가 배선대로 돌리고, 슬래시 커맨드 없이 harness run으로 시작합니다.` |
+| `workflow.source` | `아래 레이어(내장 기본값·preset)가 준 절차는 읽기 전용입니다. 프로젝트로 분리하면 고칠 수 있고, 그 뒤로는 아래 레이어의 갱신이 닿지 않습니다.` |
 
 ## 7. 회귀 테스트
 
@@ -485,12 +486,12 @@ README
 | schema 의 절차별 커맨드와 기본 실행 방식 | 프로젝트가 만든 agent 절차는 `command` 가 그 이름이다. driver 절차와 커맨드 파일이 없는 기본 절차는 `null` 이다. `execute` 키가 없는 절차의 `workflows.<절차>.execute`(#208)가 `schema.execute.default` 와 같다 |
 | 검사 JSON 이 통과한 명시 배선 절차를 그린다 | 종료 코드 0. `ok` 참, `wiring` 이 `explicit`, `start` 가 첫 단계, 단계별 `outcomes` · `open` · `next`. 설정 파일 바이트가 그대로다 |
 | 검사 JSON 이 암묵 배선을 펼친다 | `next` 가 없는 절차에서 `wiring` 이 `implicit` 이다. 단계마다 `next` 가 암묵 배선을 펼친 값이다 |
-| 검사 JSON 의 블록별 outcome 집합 | gate 는 선택지, 스키마를 고른 agent 는 그 필드 값, workflow 는 하위 절차의 끝 상태다. script 는 `open` 참이다 |
+| 검사 JSON 의 블록별 outcome 집합 | gate 는 선택지, 스키마를 고른 agent 는 그 필드 값, 저장된 하위 절차를 부르는 workflow 는 `done` · `stop` · `handoff` 다. script 는 `open` 참이다 |
 | 검사 JSON 이 거부를 알린다 | 종료 코드 2. 표준 출력은 JSON 하나이고 표준 오류는 비어 있다. `error` 는 같은 입력의 텍스트 `--dry-run` 표준 오류와 같다. 거부해도 `steps` 가 있다 |
 | 오류 위치를 `at` 으로 읽는다 | 없는 대상을 가리키는 outcome 의 `at` 이 그 단계 번호와 outcome 키다. `.` 이 든 outcome 이름도 그 이름 그대로다. 단계 위치만 있는 오류는 `at.outcome` 이 `null` 이다. 절차 전체의 오류(`execute` 값이 틀리다)는 `at.step` · `at.outcome` 이 둘 다 `null` 이다 |
 | `--json` 은 `--dry-run` 과만 | `--dry-run` 없이 주면 종료 코드 2 이고 설정 파일이 그대로다 |
 | 형식이 틀린 입력은 `--json` 이어도 문장으로 거부한다 | 종료 코드 2. 표준 출력이 비어 있다 |
-| UI 가 넘기는 객체 형식의 왕복 | `{title, execute, steps}` 로 저장한 뒤 `harness steps` 가 낸 단계(`builtin` · `body` 를 뺀 것)와 schema 의 `title` · `execute` 가 넘긴 값과 같다 |
+| UI 가 넘기는 객체 형식의 왕복 | `{title, execute, steps}` 로 저장한 뒤 `harness steps` 가 낸 단계(`builtin` · `body` 를 뺀 것)와 schema 의 `title` · `execute` 가 넘긴 값과 같다. driver 로 저장된 절차에 `"execute": "agent"` 를 넘기면 절에 `execute = "agent"` 가 적히고 schema 의 `execute` 가 `agent` 다 |
 
 ### 7-2. `src/ui/lib/flow.test.js`
 
@@ -542,7 +543,7 @@ README
   - 하네스 기본 절차는 `harness steps --delete` 가 거부하므로 사람이 지운다
 - 읽기 전용은 UI 의 동작이다. `harness steps` 를 직접 부르면 아래 레이어 절차도 프로젝트 레이어로 교체된다(ADR 0007 이 프로젝트에 준 권한)
 - 검사는 첫 오류만 알린다. 여러 곳이 틀려도 한 곳씩 보인다
-- 하위 절차의 끝 상태는 저장된 하위 절차에서 계산한다. 하위 절차를 고치고 저장하지 않은 채 상위 절차로 돌아오면, 핸들은 저장된 것을 따른다
+- workflow 블록은 하위 절차를 저장된 설정에서 찾는다. 새 하위 절차를 저장하지 않은 채 상위 절차로 돌아오면, 그 블록은 outcome 을 모르는 단계(`open`)로 보인다
 - 자동 배치는 노드 높이를 재지 않는다. 본문이 긴 노드는 이웃과 겹쳐 보일 수 있다
 - 입력 종류가 `fixed` 인 키(표 값)와 `max_steps` · `max_visits` 같은 절차 키는 UI 에서 고치지 않는다. 저장할 때 보존되는 것은 #208 의 몫이다
 - 출력 스키마는 고르기만 한다. 스키마 파일을 UI 에서 쓰지 않는다
