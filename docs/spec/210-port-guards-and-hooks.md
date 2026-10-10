@@ -20,10 +20,11 @@
 | 명령 가드 — 입력 해석 · 명령 정리 · 낱말 분해 · 가드 6종 | `src/harness/guard/` |
 | 시크릿 스캔 | `src/harness/guard/` 의 시크릿 스캔 모듈 |
 | git 훅 본문 | `src/harness/hooks.py` |
-| 셸 대입 파일 읽기(`script/harness.env` · `script/harness-format.sh`) | `src/harness/envfile.py` |
-| 명령 등록과 명령 모듈 | `COMMANDS` · `DELEGATES` 와 `src/harness/commands/` 의 `bash_guard` · `secret_scan` · `git_hook` |
+| `script/harness.env` 읽기 | `src/harness/envfile.py` |
+| 표지 읽기(`script/harness-format.sh`) | `src/harness/format.py` 의 `markers()` — #209 와 이 명세 가운데 먼저 머지되는 쪽이 만든다 (6절) |
+| 명령 등록과 명령 모듈 | `COMMANDS` · `DELEGATES` 와 `src/harness/commands/` 의 `bash_guard` · `secret_scan` · `git_hook`. 셋 다 통과 명령이다 (2-1) |
 | 생성 — 훅 명령 · git 훅 shim · `harness.env` 의 새 키 | #206 의 생성 모듈(`settings_json()` · `derive()` · `plan()`)과 `src/templates/generated/script/githooks/` |
-| 호환 shim | `src/templates/managed/script/hooks/bash-guard.sh` · `src/templates/managed/script/secret-scan.sh` |
+| 옛 경로의 shim | `src/templates/managed/script/hooks/bash-guard.sh` · `src/templates/managed/script/secret-scan.sh` |
 | 회귀 테스트 | `src/templates/managed/script/test-bash-guard.sh` · `test-secret-scan.sh` · `src/test/render-test.sh` · `src/test/unit/` |
 
 이 리포의 `script/` 아래 같은 이름의 파일은 거기서 설치된 사본이다.
@@ -45,7 +46,7 @@
   `block pre-push protected-branch` · `block pre-push verify`)
 - `core.hooksPath` 와 그 기대 값, 훅 파일 이름, post-commit 훅
 - `.claude/settings.json` 의 `permissions`(allow · deny)와 에이전트가 보는 명령 표기(`script/secret-scan.sh` 등)
-- 파일 부류 — `script/githooks/*` 는 생성, 호환 shim 둘은 관리
+- 파일 부류 — `script/githooks/*` 는 생성, 옛 경로의 shim 둘(`script/hooks/bash-guard.sh` · `script/secret-scan.sh`)은 관리
 - Codex 에는 훅을 연결하지 않는다(`vendors.toml` 의 `hooks = false`)
 - doctor 의 `no command guard for <오케스트레이터>` 항목과 그 설명, UI Doctor 문구
 - 결정 기록 본문. 0012 · 0013 의 `script/…` 경로 표기는 그 시점의 관측이다
@@ -55,7 +56,7 @@
 - CLI 에 하위 명령 셋이 생긴다 — `bash-guard` · `secret-scan` · `git-hook` (2절)
 - `.claude/settings.json` 의 `PreToolUse` 훅 명령이 하네스 루트의 CLI 를 부른다 (3-1)
 - `script/githooks/` 의 commit-msg · pre-commit · pre-push 가 CLI 를 찾아 `git-hook` 으로 넘기는 shim 이다 (3-2)
-- `script/hooks/bash-guard.sh` · `script/secret-scan.sh` 가 CLI 로 넘기는 호환 shim 이다 (3-3)
+- `script/hooks/bash-guard.sh` · `script/secret-scan.sh` 가 CLI 로 넘기는 shim 이다 (3-3)
 - `script/hooks/_guards.sh` 가 관리 파일 목록에서 빠진다. 다음 render · install 의 정리가 대상 리포에서 지운다 — 관리
   파일 목록에서 빠진 경로는 수정 여부와 상관없이 지우고, 매니페스트에 없는 파일은 건드리지 않는 기존 정리 규칙이다
 - `script/harness.env` 에 `VERIFY_PRE_PUSH`(`1` · `0`)가 생긴다. `verify.pre_push` 의 값이다
@@ -71,18 +72,21 @@
 | `git-hook` | `<commit-msg\|pre-commit\|pre-push>` | `run a git hook body; script/githooks/ calls this` | 아니오 |
 
 - 셋 다 `DELEGATES` 에 든다. 전역 CLI 로 부르면 대상 리포의 고정 사본이 답한다
-- 하네스 루트는 `--target DIR`(기본 현재 디렉터리)이다. 판정 값 · 표지 · 사용 기록 스크립트를 그 아래에서 찾는다
+- 셋 다 통과 명령이다 — #206 3-3 의 인자 통과 장치를 쓴다. 형식은 `harness [--target DIR] <명령> <인자…>` 이고, 명령
+  이름 뒤의 인자는 전역 인자 해석을 거치지 않고 그 명령이 받는다. 이름 바로 뒤의 `--target DIR` 하나는 이름 앞의 것과
+  같은 뜻으로 받는다. 진입점(3절)은 `--target` 을 이름 앞에 둔다
+- 하네스 루트는 그 `--target DIR`(기본 현재 디렉터리)이다. 판정 값 · 표지 · 사용 기록 스크립트를 그 아래에서 찾는다
 - **작업 디렉터리를 옮기지 않는다.** 가드의 상대 경로 · 브랜치 판정과 commit-msg · pre-push 의 git 명령은 프로세스의
   작업 디렉터리에서 돈다. 시크릿 스캔의 git 만 하네스 루트에서 돈다(6절) — 현행 스크립트와 같다
 - 문구에 나오는 `<루트>` 는 `--target` 을 심볼릭 링크를 풀지 않고 절대 경로로 만든 것이다 — 현행 `cd … && pwd` 와 같다
 - `--target` 말고 경로 인수를 받지 않는다. commit-msg 의 메시지는 표준 입력으로 받는다 (3-2)
-- 인수 검사
-  - `secret-scan` 은 `--staged` 와 `--target DIR` 말고 아무것도 받지 않는다. 줄여 쓴 옵션(`--stage`) · 다른 명령의
-    옵션(`--purge` 등) · 남는 위치 인수는 `error: unknown option: <인수>` 와 `usage: harness secret-scan [--staged]` 를
-    내고 종료 코드 2
-  - `git-hook` 은 훅 이름 하나만 받는다. 없거나 모르는 이름이거나 남는 인수가 있으면
+- 인수 검사 — 이름 바로 뒤의 `--target DIR` 를 뺀 나머지 인수를 본다
+  - `secret-scan` 은 `--staged` 말고 아무것도 받지 않는다. 줄여 쓴 옵션(`--stage`) · 다른 명령의 옵션(`--purge` 등) ·
+    `--staged` 뒤에 온 `--target` · 남는 위치 인수는 `error: unknown option: <인수>` 와
+    `usage: harness secret-scan [--staged]` 를 내고 종료 코드 2
+  - `git-hook` 은 훅 이름 하나만 받는다. 없거나 모르는 이름이거나 남는 인수(훅 이름 뒤의 `--target` 포함)가 있으면
     `usage: harness git-hook <commit-msg|pre-commit|pre-push>` 를 내고 종료 코드 2
-  - `bash-guard` 는 위치 인수가 있으면 판정하지 않고 `usage: harness bash-guard` 를 내고 종료 코드 1 — 2 는 차단이라
+  - `bash-guard` 는 인수가 있으면 판정하지 않고 `usage: harness bash-guard` 를 내고 종료 코드 1 — 2 는 차단이라
     쓰지 않는다
 
 ### 2-2. 예기치 않은 예외
@@ -102,9 +106,11 @@
 
 `bash-guard` 는 Bash 도구 호출마다 돈다.
 
-- 진입 스크립트부터 판정까지 불러오는 모듈은 표준 라이브러리의 `json` · `os` · `re` · `subprocess` · `sys` 수준과
-  하네스 패키지의 CLI 진입 · 가드 모듈 · `envfile` 이다
-- `tomllib` · `urllib` · `http` 와 설정 해석 · 생성 · 지표 모듈을 불러오지 않는다
+- 진입 스크립트와 벤더 선언 말고는 `harness.toml` 해석 · render · 지표 모듈과 `urllib` · `http` 를 불러오지 않는다.
+  진입 스크립트가 맨 먼저 불러오는 `tomllib`(#206 2-2)와 `harness.cli` 를 불러올 때 읽는 벤더 선언(#206 3-3)은 모든
+  명령에 공통이고 이 제한에 들지 않는다
+- 판정에 쓰는 하네스 모듈은 가드 모듈(`src/harness/guard/`)과 `envfile` 이다
+- 차단 때의 사용 기록은 `script/usage-log.sh` 를 하위 프로세스로 부른다(1절). 사용 기록 모듈을 불러오지 않는다
 - 가드는 사용 기록 호출 말고 아무것도 쓰지 않는다
 
 ## 3. 진입점
@@ -114,11 +120,11 @@
 `hooks.PreToolUse[0]` 의 `matcher` 는 `Bash` 그대로이고, 그 `hooks[0].command` 가 아래 한 줄이다.
 
 ```sh
-for c in "$CLAUDE_PROJECT_DIR/.harness/bin/harness" "$CLAUDE_PROJECT_DIR/src/bin/harness"; do [ -x "$c" ] && exec "$c" bash-guard --target "$CLAUDE_PROJECT_DIR"; done; echo "warning: no harness CLI found (.harness/bin/harness, src/bin/harness), so the command guard did not run" >&2; exit 1
+for c in "$CLAUDE_PROJECT_DIR/.harness/bin/harness" "$CLAUDE_PROJECT_DIR/src/bin/harness"; do [ -x "$c" ] && exec "$c" --target "$CLAUDE_PROJECT_DIR" bash-guard; done; echo "error: harness CLI not found under $CLAUDE_PROJECT_DIR (.harness/bin/harness or src/bin/harness)" >&2; echo "help: harness install --target $CLAUDE_PROJECT_DIR" >&2; exit 1
 ```
 
 - 고정 사본의 CLI 를 먼저 찾고, 없으면 소스 리포의 CLI 를 쓴다(0013). 대상 리포와 소스 리포의 생성물이 같다
-- 둘 다 없으면 한 줄을 내고 1 로 끝난다. 통과다
+- 둘 다 없으면 #213 4-1 의 shim 공통 문구 두 줄을 내고 1 로 끝난다. 통과다
 - POSIX 셸 문법(`for` · `[ -x ]` · `&&` · `exec`)을 쓴다. Claude Code 가 훅 명령을 POSIX 셸로 실행한다는 전제다
   <!-- TBD: 확인 필요 — 훅 명령을 실행하는 셸 -->
 - worktree 에서는 `$CLAUDE_PROJECT_DIR` 가 worktree 이므로 worktree 의 CLI 가 worktree 의 `script/harness.env` 로 판정한다
@@ -131,32 +137,36 @@ for c in "$CLAUDE_PROJECT_DIR/.harness/bin/harness" "$CLAUDE_PROJECT_DIR/src/bin
 1. 하네스 루트를 현행과 같이 잡는다 — 자기 위치의 `../..`, 거기에 `script/harness.env` 가 없으면
    `git rev-parse --show-toplevel`
 2. 루트가 있으면 `<루트>/.harness/bin/harness`, `<루트>/src/bin/harness` 순으로 실행 가능한 첫 CLI 에
-   `exec <CLI> git-hook <훅> --target <루트>` 한다
+   `exec <CLI> --target <루트> git-hook <훅>` 한다
    - commit-msg 는 git 이 넘긴 메시지 파일을 표준 입력으로 연결한다(`< "$1"`)
    - pre-push 는 git 이 표준 입력으로 준 ref 줄을 그대로 물려준다. 원격 이름 · URL 인수는 넘기지 않는다
    - pre-commit 은 인수가 없다
-3. CLI 를 찾지 못하면 아래처럼 끝난다. 사용 기록은 남기지 않는다 — 규칙 위반이 아니라 하네스가 없는 것이다
+3. 루트를 잡지 못했거나 CLI 를 찾지 못하면 아래처럼 끝난다. 사용 기록은 남기지 않는다 — 규칙 위반이 아니라 하네스가
+   없는 것이다. 문구는 #213 4-1 의 shim 공통 문구이고, 종료 코드는 훅마다 현행의 통과 · 거부 뜻을 따른다
 
 | 훅 | 표준 오류 | 종료 코드 |
 |---|---|---|
-| commit-msg | `error: cannot check the commit message — no harness CLI found (.harness/bin/harness, src/bin/harness)` / `help: restore the pinned copy with \`harness install\`, then commit again` | 1 (거부) |
+| commit-msg | `error: harness CLI not found under <루트> (.harness/bin/harness or src/bin/harness)` / `help: harness install --target <루트>` | 1 (거부) |
 | pre-commit | (없음) | 0 (통과) |
-| pre-push | `blocked: cannot check the push — no harness CLI found (.harness/bin/harness, src/bin/harness)` / `help: restore the pinned copy with \`harness install\`, then push again` | 1 (거부) |
+| pre-push | commit-msg 와 같은 두 줄 | 1 (거부) |
 
+- 문구의 `<루트>` 는 1 에서 잡은 루트다. 잡지 못했으면 자기 위치의 `../..` 다
 - 머리글 주석(생성 표지 · 활성화 안내)은 현행대로 둔다. pre-commit 머리글의 "하네스를 찾지 못하면 통과시킨다" 도 그대로다
 - 모노레포 서브프로젝트의 훅은 그 서브프로젝트의 CLI 를 찾는다
 
-### 3-3. 호환 shim
+### 3-3. 옛 경로의 shim
 
 | 파일 | 하는 일 | CLI 를 찾지 못하면 |
 |---|---|---|
-| `script/hooks/bash-guard.sh` | 자기 위치의 `../..` 를 루트로, 3-2 의 순서로 CLI 를 찾아 `exec <CLI> bash-guard --target <루트>` | `warning: no harness CLI found (.harness/bin/harness, src/bin/harness), so the command guard did not run` · 1 |
-| `script/secret-scan.sh` | 자기 위치의 `..` 를 루트로, 같은 순서로 찾아 `exec <CLI> secret-scan --target <루트> "$@"` | `error: no harness CLI found (.harness/bin/harness, src/bin/harness)` · 2 |
+| `script/hooks/bash-guard.sh` | 자기 위치의 `../..` 를 루트로, 3-2 의 순서로 CLI 를 찾아 `exec <CLI> --target <루트> bash-guard` | 3-2 의 두 줄 · 1 (통과) |
+| `script/secret-scan.sh` | 자기 위치의 `..` 를 루트로, 같은 순서로 찾아 `exec <CLI> --target <루트> secret-scan "$@"` | 3-2 의 두 줄 · 2 (실행 실패) |
 
+- 형태는 #213 4-1 의 shim 과 같다 — 자기 위치로 루트를 잡고, ADR 0013 의 순서로 CLI 를 고르고, `--target <루트> <명령>`
+  으로 exec 하며, 현재 디렉터리 · 표준 입출력 · 환경을 바꾸지 않는다. CLI 를 찾지 못했을 때의 종료 코드만 지점의 뜻을 따른다
 - 이미 떠 있는 Claude Code 세션은 시작할 때 읽은 훅 명령(`$CLAUDE_PROJECT_DIR/script/hooks/bash-guard.sh`)을 계속 쓴다
   <!-- TBD: 확인 필요 -->. 그 세션의 가드도 shim 을 거쳐 새 구현으로 돈다
 - `script/secret-scan.sh` 는 사람이 직접 돌리는 경로다. pre-commit 은 이것을 거치지 않는다
-- 두 shim 을 걷는 일은 호환 shim · 셸 생성물 정리 Requirement 가 맡는다
+- 두 shim 을 걷는 일은 #221 이 맡는다
 
 ## 4. 명령 가드 — `harness bash-guard`
 
@@ -252,7 +262,7 @@ blocked: cannot read the harness config at <루트>/script/harness.env, so the g
 help: passing everything through without the lists is the same as having no guard — run `harness render` to generate it, then retry
 ```
 
-- 같은 리더가 `script/harness-format.sh` 를 읽는다 (6절)
+- `script/harness-format.sh` 는 `format.py` 가 읽는다 (6절)
 
 ## 5. 판정 불변의 범위
 
@@ -327,9 +337,12 @@ Code 가 보내는 입력에서 셸 가드보다 통과 쪽으로 뒤집히는 �
 
 - 하네스 루트에서 git 을 부른다. 기준은 HEAD 가 있으면 HEAD, 없으면 git 이 내는 빈 트리(`git hash-object -t tree /dev/null`)
 - 기본은 작업 트리, `--staged` 는 인덱스다 — `git diff [--cached] -U0 --no-color --diff-filter=ACMR <기준>`
-- 허용 표지는 `<루트>/script/harness-format.sh` 의 `FMT_SECRET_ALLOW` 를 `envfile` 로 읽는다. Python 쪽에 표지 문자열을
+- 허용 표지는 `src/harness/format.py` 의 `markers(<루트>)` 가 돌려준 `FMT_SECRET_ALLOW` 다. Python 쪽에 표지 문자열을
   적지 않는다. 읽지 못하거나 키가 없으면 `error: cannot read the secret allow marker from <루트>/script/harness-format.sh`
   를 내고 2
+- `markers(root)` 는 `<root>/script/harness-format.sh` 를 실행하지 않고 파싱해 `FMT_*` 이름과 값을 사전으로 돌려준다.
+  파싱 형식은 4-6 의 셸 대입 형식이다. 하네스 패키지에서 표지를 읽는 곳은 이 함수 하나다
+- `format.py` 는 #209 와 이 명세 가운데 먼저 머지되는 쪽이 만들고, 뒤에 머지되는 쪽은 있는 것을 쓴다
 - 탐지 규칙은 현행 그대로다 — 발급처를 확정하는 형태 18종, 이름이 자격증명을 가리키는 대입과 그 제외 검사(자리표시자 ·
   구조화된 이름 · `$` 로 시작 · 서로 다른 글자 6개 미만 · 엔트로피 3.0 미만). 줄 번호 계산과 출력 형식 · 문구도 그대로다
 - diff 를 UTF-8 로 풀 때 풀리지 않는 바이트는 대체 문자로 바꾼다 — 현행과 같다
@@ -366,7 +379,7 @@ help: run `harness render` to generate it, then retry
 
 ### 7-2. pre-commit
 
-1. 생성물 일치 검사 — `harness check --target <루트> --staged` 와 같은 검사다. 설정 오류를 포함해 0 이 아니면 1
+1. 생성물 일치 검사 — `harness --target <루트> check --staged` 와 같은 검사다. 설정 오류를 포함해 0 이 아니면 1
 2. 시크릿 스캔 `--staged`(6절). 0 이 아니면 `block pre-commit secret-scan` 사용 기록(출력 · 실패 버림) 뒤 1
 3. 0
 
@@ -404,7 +417,7 @@ help: run `harness render` to generate it, then retry
 
 | 지점 | CLI 를 찾지 못함 | CLI 를 띄우지 못함(python3 없음 · 3.11 미만) | 예기치 않은 예외 | 설정을 읽지 못함 |
 |---|---|---|---|---|
-| 명령 가드 — 훅 명령 · `script/hooks/bash-guard.sh` | 1, 경고 한 줄 — 통과 | 2 가 아닌 코드 — 통과 | 1, 오류 한 줄 — 통과 | 2, 4-6 의 문구 — 차단 |
+| 명령 가드 — 훅 명령 · `script/hooks/bash-guard.sh` | 1, 3-2 의 두 줄 — 통과 | 2 가 아닌 코드 — 통과 | 1, 오류 한 줄 — 통과 | 2, 4-6 의 문구 — 차단 |
 | commit-msg | 1 — 거부 | 0 이 아닌 코드 — 거부 | 1 — 거부 | 1 — 거부 |
 | pre-commit | 0 — 통과(생성물 검사와 시크릿 스캔을 모두 건너뛴다) | 0 이 아닌 코드 — 거부 | 1 — 거부 | 해당 없음 |
 | pre-push | 1 — 거부 | 0 이 아닌 코드 — 거부 | 1 — 거부 | 1 — 거부 |
@@ -454,7 +467,8 @@ help: run `harness render` to generate it, then retry
 
 ### 9-4. 단위 테스트 — `src/test/unit/`
 
-소스 리포에만 두고 `python3 -m unittest` 로 돈다. `[verify]` 의 Python 단위 테스트 단계가 돌린다.
+#206 이 둔 단위 테스트 기반 — 자리 `src/test/unit/`, 실행 명령, `[verify]` 의 "Python 단위 테스트" 단계 — 에 파일을
+더한다. 자리 · 실행 명령 · 단계는 #206 이 정한 그대로 쓴다.
 
 | 대상 | 확인하는 것 |
 |---|---|
@@ -464,12 +478,14 @@ help: run `harness render` to generate it, then retry
 | 입력 해석 | 5-2 의 행마다 이식 뒤 판정. 명령이 없거나 문자열이 아니거나 빈 입력이면 0 이고 `harness.env` 없이도 0 이다 |
 | 명령 정리와 줄 나누기 | 4-3 의 규칙 1–6 을 각각 |
 | 무예외 | 고정한 시드로 만든 임의 명령 문자열(따옴표 · 백슬래시 · `\|;&` · `<<` · `#` · `$(` · 백틱 · 공백 · 유니코드 공백 · 제어 문자를 섞은 것)에서 예외 없이 0 또는 2 |
-| import | 새 프로세스에서 `bash-guard` 를 한 번 돌린 뒤 불러온 모듈에 `tomllib` · `urllib` · `http` 가 없다 |
+| import | 새 프로세스에서 `bash-guard` 를 차단 · 통과 입력으로 한 번씩 돌린 뒤 불러온 모듈에 `urllib` · `http` 와 하네스의 생성(`harness.render`) · 지표(`harness.metrics`) 모듈이 없다. `harness.toml` 이 깨진 TOML 인 루트에서도 판정과 문구가 같다(설정 해석을 하지 않는다) |
 | 예외 정책 | 가드 하나가 예외를 내면 종료 코드 1, 표준 오류는 `error: the command guard stopped` 로 시작하는 한 줄이고 트레이스백이 없다 |
 | `envfile` | 세 형식, 여러 줄 홑따옴표, `'\''`, 겹따옴표의 `$HOME` · `${HOME}`, 주석 · 빈 줄. 형식이 아닌 줄 · 디렉터리 · 없는 파일은 읽지 못한 것이다 |
+| `format.py` 의 `markers()` | 이 리포 루트에서 읽은 `FMT_SECRET_ALLOW` 가 `harness:allow-secret` 이다. 값에 `$(…)` 가 든 견본을 읽어도 명령이 돌지 않고 값이 글자 그대로다. 없는 파일 · 형식이 아닌 줄은 읽지 못한 것이다 |
+| 인자 통과 | `--target R` 을 이름 앞에 둔 호출과 이름 바로 뒤에 둔 호출이 같은 루트로 돈다(세 명령 각각). `git-hook pre-push --target R` 은 2, `bash-guard x` 는 1 |
 | commit-msg | 제목은 첫 LF 앞까지다(CR 이 남은 제목은 맞지 않는다). `Merge ` 등 네 접두는 0. UTF-8 이 아닌 제목은 거부 |
 | pre-push | ref 줄 나누기, 보호 브랜치 비교는 정확히 같은 이름만, `VERIFY_PRE_PUSH=0` 이면 검증을 돌지 않는다 |
-| secret-scan 인수 | `--stage` · `--purge` · 남는 위치 인수는 2. 표지 파일이 없으면 2 |
+| secret-scan 인수 | `--stage` · `--purge` · `--staged --target R` · 남는 위치 인수는 2. 표지 파일이 없으면 2 |
 
 ### 9-5. `render-test.sh`
 
@@ -489,9 +505,9 @@ help: run `harness render` to generate it, then retry
 | 케이스 | 확인하는 것 |
 |---|---|
 | 훅 명령 | 설치한 리포와 소스 트리 복제본의 `.claude/settings.json` 훅 명령이 3-1 의 한 줄이다. 소스 트리 복제본에서 그 명령이 보호 브랜치 push 를 막는다 |
-| CLI 없음 | 설치한 리포에서 `.harness/bin/harness` 를 치우면 commit-msg 는 1 과 그 문구, pre-push 는 1, pre-commit 은 0, 훅 명령과 `script/hooks/bash-guard.sh` 는 1 과 경고 한 줄(2 가 아니다), `script/secret-scan.sh` 는 2 |
+| CLI 없음 | 설치한 리포에서 `.harness/bin/harness` 를 치우면 commit-msg 는 1, pre-push 는 1, pre-commit 은 0, 훅 명령과 `script/hooks/bash-guard.sh` 는 1(2 가 아니다), `script/secret-scan.sh` 는 2. pre-commit 을 뺀 다섯 곳의 표준 오류가 `error: harness CLI not found under <루트> (.harness/bin/harness or src/bin/harness)` 와 `help: harness install --target <루트>` 두 줄이다 |
 | 설정 없음 | `script/harness.env` 를 치우면 commit-msg · pre-push 는 1 과 그 문구, 훅 명령은 2 와 4-6 의 문구 |
-| 호환 shim | `script/hooks/bash-guard.sh` 가 보호 브랜치 push 를 막고(2), `script/secret-scan.sh --staged` 가 스테이징한 견본을 잡는다(1) |
+| 옛 경로의 shim | `script/hooks/bash-guard.sh` 가 보호 브랜치 push 를 막고(2), `script/secret-scan.sh --staged` 가 스테이징한 견본을 잡는다(1) |
 | 옛 가드 파일 정리 | `.harness/managed` 에 `script/hooks/_guards.sh` 가 있는 설치본을 render 하면 그 파일이 지워진다. 새 설치에는 없다 |
 | 모노레포 | 서브프로젝트의 commit-msg 훅이 그 서브프로젝트의 CLI 로 형식을 검사한다 |
 
@@ -512,11 +528,11 @@ help: run `harness render` to generate it, then retry
 | 문서 | 고칠 것 |
 |---|---|
 | `README.md` 명령 표 | `harness bash-guard`(Claude Code 의 명령 가드 훅 본문. `.claude/settings.json` 이 부른다) · `harness secret-scan [--staged]`(더한 줄의 자격증명 검사. 사람은 `script/secret-scan.sh` 로 부른다) · `harness git-hook <훅>`(git 훅 본문. `script/githooks/` 가 부른다) 세 줄 |
-| `src/templates/managed/script/README.md` | 목록 표의 `secret-scan.sh` · `hooks/bash-guard.sh` 행을 CLI 로 넘기는 호환 shim 으로 고치고 `hooks/_guards.sh` 행을 지운다 |
+| `src/templates/managed/script/README.md` | 목록 표의 `secret-scan.sh` · `hooks/bash-guard.sh` 행을 CLI 로 넘기는 shim 으로 고치고 `hooks/_guards.sh` 행을 지운다 |
 | `src/templates/managed/docs/workflow/changing.md` | "가드 판정" 행을 하네스 리포의 `src/harness/guard/` + 테스트 케이스로 |
 | `src/templates/vendors.toml` | `hooks` 주석의 `(bash-guard.sh)` 를 `(harness bash-guard)` 로 |
 | `test-bash-guard.sh` 머리글 | 가드 하나를 망가뜨린 사본 검사 서술을 지운다(단위 테스트로 옮겼다) |
-| `docs/spec/71-issue-worktree-run.md` 4절 | 명령 가드 줄: 훅 명령은 `$CLAUDE_PROJECT_DIR` 아래의 CLI(`.harness/bin/harness`, 없으면 `src/bin/harness`)로 `bash-guard --target "$CLAUDE_PROJECT_DIR"` 를 부른다 |
+| `docs/spec/71-issue-worktree-run.md` 4절 | 명령 가드 줄: 훅 명령은 `$CLAUDE_PROJECT_DIR` 아래의 CLI(`.harness/bin/harness`, 없으면 `src/bin/harness`)로 `--target "$CLAUDE_PROJECT_DIR" bash-guard` 를 부른다 |
 | `docs/spec/62-unify-ui-writes-through-cli.md` | 정본 위치 표의 `write-doc` 명령 가드 행을 `src/harness/guard/` 로, 6-1 첫 문장을 "가드 순서 목록에서 보호 문서 셸 편집 다음에 돈다" 로 |
 | `docs/spec/70-generate-permission-allow-list.md` | `hooks.PreToolUse` 줄의 괄호를 `harness bash-guard` 로 |
 
@@ -526,10 +542,10 @@ help: run `harness render` to generate it, then retry
 ## 11. 이행
 
 - #220 이 머지된 뒤에 착수한다. 그 머지가 넣은 셸 가드와 케이스가 이 이식의 오라클이다
-- 진입점(훅 명령 · git 훅 shim · 호환 shim)을 새 명령으로 돌리는 변경은 세 하위 명령이 들어간 뒤에 오고, 한 커밋에서
-  함께 바뀐다. 어느 커밋에서도 가드와 훅이 돈다
+- 진입점(훅 명령 · git 훅 shim · 옛 경로의 shim)을 새 명령으로 돌리는 변경은 세 하위 명령이 들어간 뒤에 오고, 한
+  커밋에서 함께 바뀐다. 어느 커밋에서도 가드와 훅이 돈다
 - `script/hooks/_guards.sh` 는 진입점을 돌리는 커밋에서 관리 파일 목록에서 빠진다
-- 이 리포는 자기 가드 아래에서 이 변경을 만든다. 진입점이 바뀐 뒤 떠 있던 세션은 호환 shim 을 거친다 (3-3)
+- 이 리포는 자기 가드 아래에서 이 변경을 만든다. 진입점이 바뀐 뒤 떠 있던 세션은 옛 경로의 shim 을 거친다 (3-3)
 
 ## 12. 보호 문서 개정 범위
 
@@ -539,19 +555,21 @@ help: run `harness render` to generate it, then retry
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "구성 요소" 의 CLI 항목(#206 이 패키지 배치로 고친 것) | 덧붙인다: 명령 가드 · 시크릿 스캔 · git 훅 본문도 CLI 하위 명령이다 — `bash-guard`(Claude Code `PreToolUse(Bash)` 훅) · `secret-scan` · `git-hook <commit-msg\|pre-commit\|pre-push>`. 코드는 `src/harness/guard/` · `src/harness/hooks.py` 이고, 셸 대입 파일(`script/harness.env` · `script/harness-format.sh`) 읽기는 `src/harness/envfile.py` 다 |
-| "구성 요소" 의 대상 리포 `script/` 항목 | "가드(`hooks/`)·시크릿 스캔" 을 "명령 가드 · 시크릿 스캔의 호환 shim(`hooks/bash-guard.sh` · `secret-scan.sh` — CLI 로 넘긴다)" 으로. 덧붙인다: `githooks/` 는 CLI 를 찾아 `git-hook` 으로 넘기는 생성 shim 이다 |
+| "구성 요소" 의 CLI 항목(#206 이 패키지 배치로 고친 것) | 덧붙인다: 명령 가드 · 시크릿 스캔 · git 훅 본문도 CLI 하위 명령이다 — `bash-guard`(Claude Code `PreToolUse(Bash)` 훅) · `secret-scan` · `git-hook <commit-msg\|pre-commit\|pre-push>`. 코드는 `src/harness/guard/` · `src/harness/hooks.py` 이고, `script/harness.env` 읽기는 `src/harness/envfile.py`, 표지(`script/harness-format.sh`) 읽기는 `src/harness/format.py` 다 |
+| "구성 요소" 의 대상 리포 `script/` 항목 | "가드(`hooks/`)·시크릿 스캔" 을 "명령 가드 · 시크릿 스캔의 shim(`hooks/bash-guard.sh` · `secret-scan.sh` — CLI 로 넘긴다)" 으로. 덧붙인다: `githooks/` 는 CLI 를 찾아 `git-hook` 으로 넘기는 생성 shim 이다 |
 | "데이터 흐름" | 새 항목 "가드 · 훅": Claude Code `PreToolUse(Bash)` → `.claude/settings.json` 의 훅 명령 → 하네스 루트의 CLI(`.harness/bin/harness`, 없으면 `src/bin/harness`) `bash-guard` → `script/harness.env` 의 값으로 판정(0 통과 · 2 차단). git → `script/githooks/<훅>` → 같은 CLI 의 `git-hook <훅>` |
 | "신뢰 경계" 의 들어오는 입력 | "도구 호출 JSON(`script/hooks/bash-guard.sh`)" 을 "도구 호출 JSON(`harness bash-guard`)" 으로 |
 | "새 코드를 둘 곳" 의 새 가드 | "새 가드 → `src/harness/guard/` 의 가드 함수와 가드 순서 목록 + `test-bash-guard.sh` 케이스 + `src/test/unit/` 의 단위 테스트. 판정에 쓰는 값은 `script/harness.env` 로 받는다" 로 바꾼다 |
 | "새 코드를 둘 곳" | 새 항목: "git 훅 본문 → `src/harness/hooks.py`. `script/githooks/*` 는 CLI 를 찾아 넘기는 shim 으로만 둔다" |
-| "새 코드를 둘 곳" 의 새 회귀 테스트 | 덧붙인다: 하네스 패키지의 Python 단위 테스트는 `src/test/unit/` |
+
+Python 단위 테스트 층의 기본 문장("새 코드를 둘 곳" 의 새 회귀 테스트, testing.md 의 단위 테스트 줄)은 #206 이 쓴다. 이 명세는
+그 위에 가드에 관한 것만 더한다.
 
 ### 12-2. `.ai/project/testing.md`
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "무엇을 어느 수준으로 검증하나" | 새 줄: 하네스 패키지(`src/harness/`)는 소스 리포의 `src/test/unit/` 에서 `python3 -m unittest` 로 단위 테스트한다. 대상 리포로 가지 않는다. 명령 가드는 셸 테스트가 보지 못하는 것 — 가드 하나를 끈 사본에서 그 계열만 통과로 뒤집히는지, 보호 목록과 비교되는 값이 셸이 넘기는 값인지, 임의 입력에서 예외가 나지 않는지, 가드 경로가 무거운 모듈을 불러오지 않는지 — 를 여기서 본다 |
+| "무엇을 어느 수준으로 검증하나" 의 Python 단위 테스트 줄(#206 이 더한 것) | 끝에 덧붙인다: 명령 가드는 셸 테스트가 보지 못하는 것 — 가드 하나를 끈 사본에서 그 계열만 통과로 뒤집히는지, 보호 목록과 비교되는 값이 셸이 넘기는 값인지, 임의 입력에서 예외가 나지 않는지, 가드 경로가 설정 해석 · 생성 · 지표 모듈을 불러오지 않는지 — 를 단위 테스트로 본다 |
 
 `glossary.md` · `scope.md` 는 고치지 않는다.
 
@@ -562,7 +580,7 @@ help: run `harness render` to generate it, then retry
 - python3 3.11 이상이 없는 기기에서는 명령 가드가 돌지 않는다(8-2)
 - CLI 를 찾지 못한 pre-commit 은 시크릿 스캔도 건너뛴다(8-2)
 - Claude Code 가 보내지 않는 형식의 입력은 통과한다(5-2). 5-1 의 전제가 틀리면 그 표가 늘어난다
-- `.claude/settings.json` 의 훅 명령을 손으로 고쳐 모르는 옵션을 넘기면 전역 인수 파서가 종료 코드 2 로 끝나 모든 명령이
-  막힌다. 생성 파일이라 `check` 가 잡는다
+- `.claude/settings.json` 의 훅 명령을 손으로 고쳐 명령 이름 앞에 모르는 옵션을 넣으면 전역 인자 해석이 종료 코드 2 로
+  끝나 모든 명령이 막힌다. 이름 뒤에 넣은 인수는 `bash-guard` 가 받아 1(통과)로 끝난다. 생성 파일이라 `check` 가 잡는다
 - 히어독 본문 안의 명령은 판정하지 않는다. 다루지 못하는 구조(4-3 의 6) 뒤로는 #220 이전 처리를 따른다
-- 가드 · 훅의 설정 출처는 `script/harness.env` 다. 그 파일과 호환 shim 을 걷는 정리 Requirement 가 출처를 함께 바꾼다
+- 가드 · 훅의 설정 출처는 `script/harness.env` 다. 그 파일과 shim 을 걷는 #221 이 출처를 함께 바꾼다
