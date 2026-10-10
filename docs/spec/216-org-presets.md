@@ -29,6 +29,7 @@
 | `extends` 설명 주석 | 씨앗 설정 원형 |
 | UI doctor 문구 | `src/ui/lib/doctor.js` |
 | preset 레이어의 이름표 | `src/ui/lib/labels.js` |
+| 이름표 호출부에 `schema.layers` 넘기기 | `src/ui/app/[project]/settings/` · `src/ui/app/[project]/workflow/page.js` · `src/ui/components/FlowCanvas.js` |
 | 규칙 문서 10장 | `src/templates/generated/.ai/AI_AGENT.md` |
 | 사람용 설명 | `README.md` · `src/templates/managed/docs/workflow/changing.md` |
 | 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/ui/lib/doctor.test.js` · `src/ui/lib/labels.test.js` |
@@ -435,6 +436,8 @@ UI 이름표 — `src/ui/lib/labels.js`:
 - #207 이 둔 레이어 이름표 함수에 preset 규칙을 더한다. `preset:<d>` 는 `preset — <ref>` 로 보인다. `ref` 는 schema `layers` 에서 같은 id 의 항목에서 읽는다
 - 이름표에 `ref` 가 필요하므로 함수는 레이어 id 와 schema 의 `layers` 를 받는 순수 함수다. 같은 id 의 항목이 없으면 `preset <d>` 로 보인다
 - 설정 화면의 출처 표시 · 잠근 레이어 표시(#207)와 절차의 출처 레이어 표시(#214)가 이 이름표를 쓴다
+- 이 명세가 이름표 함수를 부르는 곳 — #207 의 설정 화면(`src/ui/app/[project]/settings/`)과 #214 의 Workflows 캔버스(`src/ui/app/[project]/workflow/page.js` · `src/ui/components/FlowCanvas.js`) — 을 고쳐 레이어 id 와 함께 `schema.layers` 를 넘기게 한다.
+  두 호출부가 이 명세보다 먼저 들어와 있어도 이 명세가 고친다
 
 ### 6-2. 메모 렌더 순서
 
