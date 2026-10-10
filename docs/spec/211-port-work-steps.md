@@ -3,7 +3,16 @@
 리뷰 루프(`review-mr.sh` · `post-review.sh` · `_review.py`), 착수 판정(`work-preflight.sh`), task 이슈 동기화
 (`sync-task-issues.sh`)의 로직은 하네스 패키지의 하위 명령 `harness review` · `harness preflight` · `harness sync-tasks`
 가 갖는다. 인자 · 표준 출력 · 종료 코드는 이식 전과 같다. `script/` 의 같은 이름 스크립트는 하위 명령을 부르기만 하는
-호환 진입점(shim)이고, 에이전트 · 설정 · 사람은 지금 표기(`script/<이름>.sh`)로 부른다.
+shim 이고, 에이전트 · 설정 · 사람은 지금 표기(`script/<이름>.sh`)로 부른다.
+
+기준 코드는 #206 · #207 · #209 의 변경이 들어간 통합 브랜치다. 셋이 머지된 뒤에 착수한다.
+
+| 따르는 것 | 정하는 이슈 |
+|---|---|
+| 패키지 배치(모듈 지도, 명령 이름의 `-` 를 모듈 파일 이름에 적는 규칙, 진입 스크립트, 고정 사본 `.harness/lib/harness/`, 바이트코드 캐시 위치), 명령 표의 통과 표시와 `--target` 규칙, 단위 테스트 자리와 `[verify]` 단계 | #206 |
+| 공유 설정 · 실효 설정, 실행 계획 함수 `run_plan()` | #207 |
+| forge 파이썬 어댑터와 셸 페이크 주입 지점 | #209 |
+| 표지 모듈 `src/harness/format.py` — 하네스 루트의 `script/harness-format.sh` 를 실행하지 않고 파싱한다 | #209 · #210 가운데 먼저 머지된 쪽 |
 
 정본 위치:
 
@@ -11,15 +20,15 @@
 |---|---|
 | 하위 명령 | `src/harness/commands/review.py` · `preflight.py` · `sync_tasks.py` |
 | 리뷰 판정 데이터 · 집계 · 등록 댓글 렌더링 · 리뷰 입력 맥락 · 회차 라벨 · 반복 지적 이력 | `src/harness/review.py` |
-| 이식하지 않은 관리 스크립트 자산을 부르는 경계 (표지 파일 · 사용 기록 · 지표 기록 · 역할 실행기 · 실행 계획 파일) | `src/harness/scripts.py` |
-| 명령 표 · 고정 버전 위임 · 인자 규칙 | CLI 진입부 (`src/harness/cli.py`) |
-| 호환 진입점 | `src/templates/managed/script/review-mr.sh` · `post-review.sh` · `work-preflight.sh` · `sync-task-issues.sh` |
+| 이식하지 않은 관리 스크립트를 부르는 경계 (사용 기록 · 지표 기록 · 역할 실행기) | `src/harness/scripts.py` |
+| 명령 표 `COMMANDS` | `src/harness/commands/__init__.py` |
+| 고정 버전 위임 `DELEGATES` · 인자 해석 | `src/harness/cli.py` |
+| shim | `src/templates/managed/script/review-mr.sh` · `post-review.sh` · `work-preflight.sh` · `sync-task-issues.sh` |
 | 스크립트 목록 | `src/templates/managed/script/README.md` |
 | 회귀 테스트 | `src/templates/managed/script/test-review-loop.sh` · `test-work-preflight.sh` · `test-sync-task-issues.sh` · `src/test/unit/` · `src/test/render-test.sh` |
 | 사람용 설명 | `README.md` |
 
-- 패키지 배치(모듈 지도, 명령 이름의 `-` 를 모듈 파일 이름에 적는 규칙, 진입 스크립트, 고정 사본 `.harness/lib/harness/`,
-  바이트코드 캐시 위치)는 #206 이 정한다. 위 경로는 그 지도 안의 자리다
+- 위 경로는 #206 의 모듈 지도 안의 자리다
 - forge 는 #209 의 파이썬 어댑터로만 부른다
 - 이 리포의 `script/` 아래 같은 이름의 파일은 거기서 설치된 사본이다
 
@@ -34,7 +43,8 @@
 
 - 로직이 있는 자리. 세 하위 명령이 로직을 갖고, 네 스크립트는 하위 명령을 부르기만 한다 (3절)
 - `script/_review.py` 는 더 깔리지 않는다. 기존 설치본에서는 다음 `render` · `install` 이 지운다 (3-4)
-- 표지는 환경 변수가 아니라 표지 파일에서 읽는다 (2-1-5)
+- 표지는 환경 변수가 아니라 표지 모듈로 하네스 루트의 표지 파일에서 읽는다 (2-1-5)
+- 리뷰 러너와 작성자표시는 같은 프로세스에서 계산한 실행 계획에서 받는다. `harness run-plan` 을 하위 프로세스로 부르지 않는다 (2-1-2)
 - 예상하지 못한 실패는 종료 코드 2 로 끝난다 (2-1-3)
 
 바뀌지 않는 것:
@@ -47,7 +57,7 @@
   반복 지적 이력의 자리와 형식(`docs/spec/71-issue-worktree-run.md` 7절)
 - 부수 기록의 이름과 형식 (2-1-6)
 - 에이전트 · 설정 · 권한이 쓰는 명령 표기 (3-3)
-- 회차 라벨을 올리는 코드는 하나다 — `harness review`. 호환 진입점은 그것을 부르기만 한다
+- 회차 라벨을 올리는 코드는 하나다 — `harness review`. shim 은 그것을 부르기만 한다
 
 세 명령은 기계용 출력(`--json`)을 두지 않는다. 다음 단계는 종료 코드와 `preflight` 표준 출력의 첫 토큰으로 분기한다.
 
@@ -57,7 +67,8 @@
 
 #### 2-1-1. 명령 표
 
-`COMMANDS` 에 세 항목을 더한다. 셋 다 설정이 필요하고, 셋 다 `DELEGATES` 에 넣는다 — 프로젝트가 고정한 버전이 답한다.
+`COMMANDS`(`commands/__init__.py`)에 세 항목을 더한다. 셋 다 설정이 필요하고, 셋 다 통과 명령(#206 3-3)이며, 셋 다
+`DELEGATES` 에 넣는다 — 프로젝트가 고정한 버전이 답한다.
 
 | 이름 | 인수 | 설명 |
 |---|---|---|
@@ -67,17 +78,28 @@
 
 #### 2-1-2. 하네스 루트와 설정 값
 
-- 하네스 루트는 다른 명령처럼 `--target`(기본 현재 디렉터리)이다. 명령은 하네스 루트를 작업 디렉터리로 삼아 돈다 —
-  git, forge 어댑터, 역할 실행기, 사용 기록이 모두 그 자리에서 불린다
-- 설정 값은 설정 로더(`load` · `normalize` · `validate`)로 읽는다. 값은 `script/harness.env` 에 쓰이는 것과 같은 파생(`derive()`)이다
-- 설정 파일이 없거나 검증에 실패하면 다른 명령과 같은 안내로 종료 코드 2 다
+- 하네스 루트는 `--target`(기본 현재 디렉터리)이다 (2-1-3). 명령은 git, forge 어댑터, 역할 실행기, 사용 기록을 하네스 루트를
+  작업 디렉터리로 해서 부른다. 자기 프로세스의 현재 디렉터리는 바꾸지 않는다
+- 설정 값은 #207 의 공유 설정(내장 기본값 · preset · 프로젝트 레이어)에서 읽는다. `script/harness.env` 에 쓰이는 값과 같은 파생(`derive()`)이다
+- 공유 설정이 없거나 검증에 실패하면 다른 명령과 같은 안내로 종료 코드 2 다
+- 리뷰 러너와 그 작성자표시는 실행 계획에서 받는다. 실행 계획은 같은 프로세스에서 #207 의 `run_plan()` 으로 실효 설정(공유 설정 +
+  개인 레이어)을 계산한 것이다. `harness run-plan` 을 하위 프로세스로 부르지 않고, 실행 계획 파일을 읽지 않는다
 
-| 값 | 설정 | 쓰는 명령 |
+명령마다 읽는 설정:
+
+| 명령 | 읽는 설정 |
+|---|---|
+| `preflight` · `sync-tasks` | 공유 설정. 개인 레이어 파일을 열지 않는다 — 그 파일이 깨져 있어도 돈다 |
+| `review` | 공유 설정과 실행 계획. 실행 계획을 계산하지 못하면 회차를 쓰기 전에 멈춘다 (2-2 의 1단계) |
+| `review post` | 공유 설정. 작성자표시를 주지 않았을 때만 실행 계획을 계산하고, 계산하지 못하면 기본값으로 등록을 계속한다 (2-3) |
+
+| 값 | 출처 | 쓰는 명령 |
 |---|---|---|
 | 회차 상한 | `review.max_rounds` | `review` |
 | 연속 상한 | `review.repeat_file_max` | `review` · `review post` |
 | 회차 라벨 접두 | `review.round_label` | `review` |
-| 리뷰 러너의 작성자표시 | 리뷰 러너 벤더 선언의 `label`(없으면 `name`) | `review` 가 등록에 넘긴다 |
+| 리뷰 러너 | 실행 계획의 `roles.code-reviewer` — `exe` 가 있으면 CLI 러너다 | `review` |
+| 리뷰 러너의 작성자표시 | 실행 계획의 `roles.code-reviewer.label` — 그 역할을 실행하는 벤더 선언의 `label`, 없으면 `name` | `review` 가 등록에 넘긴다. `review post` 의 기본값 |
 | 통합 브랜치 | `branches.base` | `preflight` · `sync-tasks` |
 | 이슈 참조 표기 | `commit.issue_ref` — `suffix` 면 `#{id}`, 아니면 `{id}` | `sync-tasks` |
 | 필수 필드 | `issues.required_fields` | `sync-tasks` |
@@ -85,9 +107,11 @@
 
 #### 2-1-3. 인자 규칙 · 종료 코드 · 출력 순서
 
-- 명령마다 받는 인자는 2-2 ~ 2-5 의 표가 정한다. 그 밖에는 모든 명령이 받는 전역 `--target` 만 받는다
-- 그 밖의 옵션은 거부한다. 다른 명령의 전역 옵션(`--json` · `--remote` · `--yes` · `--staged` 등), 줄임 철자(`--forc` · `--dry` · `--targ`),
-  `-h` · `--help` 가 모두 해당한다. 표준 오류에 `error: unknown option: <인자>` 와 사용법을 내고 종료 코드 2 다
+- 세 명령은 통과 명령이다 — 호출 꼴은 `harness [--target DIR] <명령> <인자…>` 이고, 명령 이름 뒤의 인자는 전부 그 명령이 받는다.
+  하네스 루트는 이름 앞의 전역 `--target DIR`, 또는 이름 바로 뒤에 한 번 오는 `--target DIR` 로 정한다. 규칙은 #206 3-3 의 통과 장치다
+- 명령마다 받는 인자는 2-2 ~ 2-5 의 표가 정한다. 그 밖의 옵션은 거부한다. 다른 명령의 전역 옵션(`--json` · `--remote` · `--yes` ·
+  `--staged` 등), 줄임 철자(`--forc` · `--dry` · `--targ`), 이름 바로 뒤가 아닌 자리의 `--target`, `-h` · `--help` 가 모두 해당한다.
+  표준 오류에 `error: unknown option: <인자>` 와 사용법을 내고 종료 코드 2 다. `review post` 다음 자리는 옵션이 아니라 값이다 (2-3)
   - 세 명령의 종료 코드 0 에는 판정 뜻(PASS · 착수 가능 · 동기화 완료)이 있어서, 도움말 요청도 0 으로 끝내지 않는다.
     명령과 인수 목록은 `harness help` 가 보인다
 - 사용법:
@@ -119,18 +143,17 @@ forge 는 #209 의 파이썬 어댑터로만 부른다. 부르는 계약 함수�
 - 테스트는 #209 가 정한 주입 지점(환경 변수)으로 셸 페이크를 끼운다. 명령이 하네스 루트에서 돌므로 페이크 함수도
   그 자리에서, 부른 쪽의 환경을 받아 불린다
 
-#### 2-1-5. 이식하지 않은 관리 스크립트 자산
+#### 2-1-5. 표지와 이식하지 않은 관리 스크립트
 
-표지 · 사용 기록 · 지표 기록 · 역할 실행기는 이 변경에서 옮기지 않는다. 하위 명령은 이것들을 `src/harness/scripts.py`
-한 곳에서 읽거나 부른다. 파이썬 쪽에 그 값이나 로직의 사본을 두지 않는다.
+표지는 표지 모듈 `src/harness/format.py` 로 읽는다. 사용 기록 · 지표 기록 · 역할 실행기는 이 변경에서 옮기지 않고, 하위 명령은
+이것들을 `src/harness/scripts.py` 한 곳에서 부른다. 파이썬 쪽에 표지 값이나 그 스크립트 로직의 사본을 두지 않는다.
 
 | 자산 | 하위 명령이 쓰는 방법 |
 |---|---|
-| 표지 `harness-format.sh` | CLI 자기 템플릿의 `managed/script/harness-format.sh`(소스 리포 `src/templates/…`, 고정 사본 `.harness/templates/…`)에서 `FMT_<이름>='<값>'` 꼴의 한 줄 대입을 읽는다. 필요한 표지가 없거나, `FMT_` 로 시작하는 줄이 이 꼴이 아니면 표준 오류에 `error:` 와 표지 이름을 내고 종료 코드 2 |
+| 표지 `script/harness-format.sh` | 표지 모듈이 하네스 루트의 `script/harness-format.sh` 를 실행하지 않고 파싱해 돌려준 값을 쓴다. 필요한 표지를 읽지 못하면 표준 오류에 `error:` 와 표지 이름을 내고 종료 코드 2. 파싱 규칙은 표지 모듈이 정한다 |
 | 사용 기록 `script/usage-log.sh` | 하네스 루트의 스크립트를 `<종류> <출처> <상세>` 인자로 부른다. 그 종료 코드는 판정에 닿지 않는다 |
 | 지표 기록 `script/metric.py` | 2-1-6 의 감싸기 |
-| 역할 실행기 `script/run-agent.py` | `code-reviewer --check`(러너 점검)와 `code-reviewer --out <파일> --prompt <프롬프트>`(리뷰어 실행)를 이식 전과 같은 인자 · 입출력으로 부른다 |
-| 실행 계획 `script/harness.plan.json` | `roles.code-reviewer.exe` 로 리뷰 러너가 CLI 러너인지 판정한다. 역할 실행기가 띄울 때 읽는 파일과 같은 파일이다 |
+| 역할 실행기 `script/run-agent.py` | `code-reviewer --check`(러너 점검)와 `code-reviewer --out <파일> --prompt <프롬프트>`(리뷰어 실행)를 이식 전과 같은 인자 · 입출력으로 부른다. 역할 실행기는 실행 계획을 스스로 받는다(#207 7-3) |
 
 #### 2-1-6. 부수 기록
 
@@ -148,6 +171,7 @@ forge 는 #209 의 파이썬 어댑터로만 부른다. 부르는 계약 함수�
 - 명령은 자기 실행 전체를 `script/metric.py wrap --name <이름> --kind script --attr script=<이름> -- <자기 진입 스크립트> <같은 인자>`
   로 다시 실행해 감싼다. 감싼 실행의 환경에는 `HARNESS_METRIC_SELF=<이름>` 이 있다
 - `HARNESS_METRIC_SELF` 가 이미 그 이름이거나 하네스 루트의 `script/metric.py` 가 실행 파일이 아니면 감싸지 않는다
+- 지표 설정은 지표 기록기가 스스로 받는다(#207 7-3). 받지 못하면 스팬을 기록하지 않고 감싼 실행을 그대로 돌린다 — 출력과 종료 코드가 같다
 - 감싸기는 명령 자신의 인자 검사보다 앞이다. 인자가 틀린 실행도 스팬 하나를 남긴다
 - 그래서 역할 실행기가 남기는 리뷰어 스팬은 `review-mr` 스팬의 자식이고, 실패한 실행에는 `[metrics]` 의 `capture_logs` 대로
   표준 오류 끝부분이 남는다. 출력과 종료 코드는 감싸기와 무관하다
@@ -187,19 +211,20 @@ forge 는 #209 의 파이썬 어댑터로만 부른다. 부르는 계약 함수�
 
 | 단계 | 멈추는 조건 | 종료 코드 |
 |---|---|---|
-| 1. 리뷰 러너 | 실행 계획 파일이 없거나 읽히지 않음(`help: harness render`). 리뷰 러너 실행 파일이 비었음 — 서브에이전트 역할이라는 안내 | 2 |
-| 2. 러너 점검 | `script/run-agent.py code-reviewer --check` 가 0 이 아님. 그 표준 오류 뒤에 `help: the round was not used — fix the review runner, then rerun`. 표준 출력은 버린다 | 2 |
-| 3. 역할 계약 | `.ai/templates/code-reviewer.md` 가 없음 | 2 |
-| 4. 리뷰 호스트 | `review_require` 실패 | 2 |
-| 5. 리뷰 요청 조회 | `review_mr_view` 실패 | 2 |
-| 6. 회차 읽기 | 라벨을 읽지 못함. 회차가 숫자가 아님 | 2 |
-| 7. 회차 상한 | 읽은 회차 ≥ `review.max_rounds` 이고 `--force` 가 없음 | 3 (`stop=mrl-cap`) |
-| 8. 리비전 일치 | 소스 브랜치를 모름 · 현재 브랜치와 다름 · 원격 head 를 모름 · 로컬 `HEAD` 와 다름 · 작업 트리가 깨끗하지 않음(추적하지 않는 파일 포함) | 2 |
-| 9. diff | 조회 실패 · 빈 diff | 2 |
-| 10. 회차 라벨 | `<접두>:<N+1>` 을 붙이고 다른 회차 라벨을 떼는 갱신이 실패 | 2 |
-| 11. 맥락 | 스레드 조회 · 이슈 조회 · 맥락 구성이 실패하면 `warning:` 만 내고 그 절 없이 간다 | — |
-| 12. 리뷰어 실행 | 실행 실패 · 빈 출력. 실행 기록의 끝 30줄을 함께 낸다 | 2 |
-| 13. 등록 | 2-3 의 동작. 작성자표시는 리뷰 러너의 작성자표시(2-1-2), 리뷰한 리비전은 8단계에서 원격 head 와 맞춰 본 `HEAD` | 등록의 종료 코드 |
+| 1. 실행 계획 | 실효 설정으로 실행 계획을 계산하지 못함(개인 레이어 · 잠금 · 불변식 등 #207 7-1 의 오류). 그 오류 문구 뒤에 `help: the round was not used — fix the config, then rerun` | 2 |
+| 2. 리뷰 러너 | 실행 계획에 `code-reviewer` 가 없거나(역할이 꺼짐) 그 `exe` 가 없거나 비었음 — `error: no review runner is configured` 와 서브에이전트 역할이라는 안내 | 2 |
+| 3. 러너 점검 | `script/run-agent.py code-reviewer --check` 가 0 이 아님. 그 표준 오류 뒤에 `help: the round was not used — fix the review runner, then rerun`. 표준 출력은 버린다 | 2 |
+| 4. 역할 계약 | `.ai/templates/code-reviewer.md` 가 없음 | 2 |
+| 5. 리뷰 호스트 | `review_require` 실패 | 2 |
+| 6. 리뷰 요청 조회 | `review_mr_view` 실패 | 2 |
+| 7. 회차 읽기 | 라벨을 읽지 못함. 회차가 숫자가 아님 | 2 |
+| 8. 회차 상한 | 읽은 회차 ≥ `review.max_rounds` 이고 `--force` 가 없음 | 3 (`stop=mrl-cap`) |
+| 9. 리비전 일치 | 소스 브랜치를 모름 · 현재 브랜치와 다름 · 원격 head 를 모름 · 로컬 `HEAD` 와 다름 · 작업 트리가 깨끗하지 않음(추적하지 않는 파일 포함) | 2 |
+| 10. diff | 조회 실패 · 빈 diff | 2 |
+| 11. 회차 라벨 | `<접두>:<N+1>` 을 붙이고 다른 회차 라벨을 떼는 갱신이 실패 | 2 |
+| 12. 맥락 | 스레드 조회 · 이슈 조회 · 맥락 구성이 실패하면 `warning:` 만 내고 그 절 없이 간다 | — |
+| 13. 리뷰어 실행 | 실행 실패 · 빈 출력. 실행 기록의 끝 30줄을 함께 낸다 | 2 |
+| 14. 등록 | 2-3 의 동작. 작성자표시는 1단계 실행 계획의 `code-reviewer.label`(2-1-2), 리뷰한 리비전은 9단계에서 원격 head 와 맞춰 본 `HEAD` | 등록의 종료 코드 |
 
 - 회차는 `<접두>:<숫자>` 꼴 라벨의 숫자 가운데 가장 큰 값이다. 그런 라벨이 없으면 0
 - 리뷰 입력(머리말 · 맥락 절 · 증분 diff · 누적 diff)의 구성, 증분 기준의 판정, 리뷰어 프롬프트, 리뷰 입력을 표준 입력으로
@@ -210,18 +235,18 @@ forge 는 #209 의 파이썬 어댑터로만 부른다. 부르는 계약 함수�
 ### 2-3. `harness review post <리뷰요청번호> - [작성자표시] [리뷰한리비전]`
 
 리뷰어의 판정 데이터를 검증해 리뷰 요청에 등록하고 판정을 종료 코드로 돌려준다. 사용자가 지시해 루프 밖에서
-등록하는 경로(`script/post-review.sh`, 3-2)와 `harness review` 의 13단계가 이 구현 하나를 쓴다.
+등록하는 경로(`script/post-review.sh`, 3-2)와 `harness review` 의 14단계가 이 구현 하나를 쓴다.
 
 | 인자 | 규칙 |
 |---|---|
 | `<리뷰요청번호>` | 형식을 검사하지 않는다 |
 | `-` | 정확히 `-`. 리뷰어 출력은 표준 입력으로 받는다 |
-| `[작성자표시]` | 없거나 빈 문자열이면 `자동 리뷰` |
+| `[작성자표시]` | 없거나 빈 문자열이면 실행 계획의 `code-reviewer.label`(2-1-2). 실행 계획을 계산하지 못하거나 거기 `code-reviewer` 가 없으면 `자동 리뷰` 이고, 등록은 계속한다 |
 | `[리뷰한리비전]` | 비어 있지 않으면 `^[0-9a-f]{7,40}$` 꼴이어야 한다. 없거나 빈 문자열이면 하네스 루트의 `HEAD` |
 
 - `post` 다음 인자는 전부 값이다. `-` 로 시작해도 옵션으로 읽지 않는다 — 작성자표시는 자유 문자열이다
 - 값이 2개보다 적거나 4개보다 많거나, 둘째가 `-` 가 아니면 사용법과 종료 코드 2
-- 리뷰어 출력은 파일 경로로 받지 않는다. 파일로 가진 쪽은 호환 진입점이 표준 입력으로 넘긴다 (3-2)
+- 리뷰어 출력은 파일 경로로 받지 않는다. 파일로 가진 쪽은 shim 이 표준 입력으로 넘긴다 (3-2)
 
 순서:
 
@@ -325,9 +350,9 @@ T<N> (dry-run) create  <제목>
 - 어느 경로로 끝나든(신호 포함, 2-1-3) 잠금을 지운다
 - 잠금은 같은 기계 안에서만 막는다. 다른 기계 · CI 와의 경합은 8단계가 잡는다
 
-## 3. 호환 진입점 — `script/*.sh`
+## 3. shim — `script/*.sh`
 
-### 3-1. 배치
+### 3-1. 배치와 형태
 
 | 스크립트 | 하는 일 |
 |---|---|
@@ -336,27 +361,34 @@ T<N> (dry-run) create  <제목>
 | `work-preflight.sh` | `harness preflight` 에 받은 인자를 그대로 넘긴다 |
 | `sync-task-issues.sh` | `harness sync-tasks` 에 받은 인자를 그대로 넘긴다 |
 
-- shim 은 자기 위치의 부모(하네스 루트)로 이동하고, 그 자리의 `.harness/bin/harness` → `src/bin/harness` 순서로 처음 만난
-  실행 파일을 `exec` 한다
-- 둘 다 없으면 표준 오류에 아래 두 줄을 내고 종료 코드 2 로 끝난다
+형태와 문구는 모든 하네스 shim 이 같다(#209 · #210 · #213 의 shim 과 같은 공통 형태).
+
+1. 자기 파일이 있는 디렉터리의 부모를 하네스 루트로 잡는다
+2. `<루트>/.harness/bin/harness`, `<루트>/src/bin/harness` 순으로 실행 가능한 첫 것을 CLI 로 고른다
+3. `<CLI> --target <루트> <명령> <받은 인자 그대로>` 로 `exec` 한다
+
+- 현재 디렉터리 · 표준 입출력 · 환경을 바꾸지 않는다. 종료 코드는 CLI 의 것이다
+- CLI 를 찾지 못하면 표준 오류에 아래 두 줄을 내고 종료 코드 2 로 끝난다
 
   ```
-  error: no harness CLI in this repository — looked for .harness/bin/harness and src/bin/harness
-  help: run `harness install` in this repository
+  error: harness CLI not found under <루트> (.harness/bin/harness or src/bin/harness)
+  help: harness install --target <루트>
   ```
 
 - PATH 의 전역 `harness` 는 부르지 않는다. 프로젝트가 고정한 버전이 돈다
 - shim 에는 값 · 표지 · 판정이 없다. `script/harness.env` · `script/harness-format.sh` · `script/forge.sh` 를 source 하지 않는다.
   지표 감싸기와 사용 기록은 하위 명령이 한다 — shim 은 한 번 더 감싸지 않는다
-- 머리 주석에는 무엇을 부르는지와 인자 · 종료 코드 계약을 적는다
+- 첫 줄은 `#!/usr/bin/env sh` 이고 `bash <파일>` 로도 돈다. 실행 권한은 지금과 같다
+- 머리 주석에는 부르는 명령의 이름, 로직은 패키지에 있다는 것, 인자 · 종료 코드 계약을 적는다
 
 ### 3-2. `post-review.sh <리뷰요청번호> <본문파일> [작성자표시] [리뷰한리비전]`
 
 - 인자가 2개보다 적으면 `usage: script/post-review.sh <review-request-number> <review-body-file> [author-label] [reviewed-revision]`
   과 종료 코드 2
-- 본문 파일이 없거나 비었으면 `error: the review body is empty: <본문파일>` 과 종료 코드 2. CLI 를 부르지 않는다
-- 그 밖에는 본문 파일을 표준 입력으로 해서 `harness review post <번호> - [작성자표시] [리뷰한리비전]` 을 `exec` 한다.
-  다섯째부터의 인자는 넘기지 않는다
+- 본문 파일의 상대 경로는 하네스 루트 기준이다 — 이식 전과 같다. 절대 경로도 받는다
+- 본문 파일이 없거나 비었으면 `error: the review body is empty: <본문파일>` 과 종료 코드 2. CLI 를 찾지 않는다
+- 그 밖에는 3-1 의 순서로 CLI 를 고르고, 본문 파일을 표준 입력으로 해서 `<CLI> --target <루트> review post <번호> - [작성자표시] [리뷰한리비전]`
+  을 `exec` 한다. 셋째 · 넷째 인자는 받은 만큼 그대로 넘기고, 다섯째부터는 넘기지 않는다. 작성자표시의 기본값은 `review post` 가 정한다 (2-3)
 - 이 진입점을 부르는 곳(`code-reviewer` · `security-guard` 어댑터의 사용자 지시 등록, `/security-guard` 커맨드, `security-guard`
   역할 계약)의 표기는 그대로다
 
@@ -382,9 +414,9 @@ T<N> (dry-run) create  <제목>
 
 - shim 이 지키는 호출은 셋이다 — 프로젝트 소유 `harness.toml` 의 단계 `run` 값, 에이전트가 읽는 절차 · 역할 문서, 사람의 호출
 - 이 리포가 이 변경의 리뷰 요청을 리뷰할 때도 리뷰는 그 브랜치의 구현으로 돈다. `harness review` 는 현재 브랜치가 소스 브랜치이고
-  `HEAD` 가 원격 head 와 같고 작업 트리가 깨끗할 때만 리뷰한다(2-2 의 8단계). 구현이 깨져 있으면 종료 코드 2 로 멈추고
+  `HEAD` 가 원격 head 와 같고 작업 트리가 깨끗할 때만 리뷰한다(2-2 의 9단계). 구현이 깨져 있으면 종료 코드 2 로 멈추고
   리뷰 요청은 열린 채 사람에게 간다. 그 앞에서 pre-push 의 회귀 테스트가 먼저 막는다
-- shim 과 `check-open-mrs.sh` 를 걷고 에이전트가 보는 표기를 바꾸는 일은 main 릴리스를 한 번 거친 뒤 별도 요구사항 이슈가 한다
+- shim 과 `check-open-mrs.sh` 를 걷고 에이전트가 보는 표기를 바꾸는 일은 main 릴리스를 한 번 거친 뒤 #221 이 한다
 
 ## 4. 패키지 안의 배치
 
@@ -394,9 +426,10 @@ T<N> (dry-run) create  <제목>
 | `commands/preflight.py` | 2-4 |
 | `commands/sync_tasks.py` | 2-5 — 잠금 · 계획 · 재조회 · 생성 |
 | `review.py` | 판정 데이터 스키마(키 이름 · 허용 값)를 한 곳에 정의하고 검증 · 집계 · 렌더링이 함께 쓴다. 인라인 발견 접두를 만드는 코드와 알아보는 코드, 리뷰 입력 맥락(절 추출 · 인용), 회차 계산, 반복 지적 이력 읽기 · 쓰기 |
-| `scripts.py` | 2-1-5 의 경계 — 표지 파일 읽기, 사용 기록 · 역할 실행기 호출, 지표 감싸기, 실행 계획 파일 읽기 |
+| `scripts.py` | 2-1-5 의 경계 — 사용 기록 · 역할 실행기 호출, 지표 감싸기 |
 
 - `commands/` 의 파일 이름에 명령 이름의 `-` 를 적는 방법은 #206 의 모듈 지도 규칙을 따른다
+- 명령 모듈은 표지를 표지 모듈 `format.py` 에서, 실행 계획을 #207 의 `run_plan()` 에서 받는다. 둘 다 이 변경이 두지 않는 공용 코드다
 - 각 명령은 결과(판정 · 건수 · 회차 · 매핑)를 값으로 만든 뒤 그 값을 텍스트로 출력한다
 - `review.py` 는 forge 와 하위 프로세스를 부르지 않는다. forge 응답과 설정 값은 인자로 받는다
 
@@ -417,8 +450,8 @@ T<N> (dry-run) create  <제목>
 
 | 무엇 | 어떻게 |
 |---|---|
-| CLI | 테스트는 자기 하네스 루트에서 `.harness/bin/harness` → `src/bin/harness` 순서로 CLI 를 찾는다(없으면 종료 코드 2). 샌드박스 하네스 루트의 `.harness/bin/harness` 에 그 CLI 를 가리키는 심볼릭 링크를 둔다 |
-| 설정 | 샌드박스 하네스 루트에 자기 하네스 루트의 `harness.toml` 사본을 둔다. `test-review-loop.sh` 가 고정하는 상한(`cap` · `repeat`)은 그 사본의 `review.max_rounds` · `review.repeat_file_max` 로 덮는다. `script/harness.env` 사본은 사용 기록 스크립트를 위해 그대로 둔다 |
+| CLI | 테스트는 자기 하네스 루트에서 `.harness/bin/harness` → `src/bin/harness` 순서로 CLI 를 찾는다(없으면 종료 코드 2). 샌드박스 하네스 루트에 그 CLI 의 고정 사본을 복사해 둔다 — #206 2-1 의 배치에서 그 CLI 의 진입 스크립트 · 패키지 · 템플릿을 `.harness/bin/harness` · `.harness/lib/harness/` · `.harness/templates/` 로. 진입 스크립트는 자기 실제 경로에서 패키지와 템플릿을 찾으므로 심볼릭 링크로는 샌드박스의 템플릿을 쓰지 않는다. 실행 계획을 흉내 내는 페이크 CLI 는 두지 않는다 — 실행 계획은 샌드박스의 CLI 가 계산한다 |
+| 설정 | 샌드박스 하네스 루트에 자기 하네스 루트의 `harness.toml` 사본을 둔다. `test-review-loop.sh` 가 고정하는 상한(`cap` · `repeat`)은 그 사본의 `review.max_rounds` · `review.repeat_file_max` 로, 지표 경로는 `metrics.dir` 로 샌드박스 안을 가리키게 덮는다. 개인 레이어 파일은 케이스가 둘 때만 있다. `script/harness.env` 사본은 사용 기록 스크립트를 위해 그대로 둔다 |
 | forge 페이크 | 페이크 파일을 #209 의 주입 환경 변수로 가리킨다. 페이크의 함수와 그것이 남기는 호출 기록은 그대로다 |
 | git 상태 | 샌드박스에 더한 파일은 첫 커밋에 넣는다 — `harness review` 는 작업 트리가 깨끗할 때만 돈다 |
 | 배치 목록 | 새 구현이 쓰지 않는 파일(`_review.py` · `check-open-mrs.sh`)을 복사 목록과 필수 파일 확인에서 뺀다 |
@@ -428,13 +461,16 @@ T<N> (dry-run) create  <제목>
 | 테스트 | 줄 | 처리 |
 |---|---|---|
 | `test-review-loop.sh` | 이력 형식 판별자(`#format N`)를 `_review.py` 에서 읽는 줄 | 같은 값을 패키지의 `review.py`(`.harness/lib/harness/` → `src/harness/` 순서)에서 읽는다 |
-| | 리뷰 러너 실행 파일을 `_review.py plan-exe` 로 읽는 줄 | 실행 계획 파일의 `roles.code-reviewer.exe` 를 직접 읽는다 |
+| | 스텁으로 갈아끼울 리뷰 러너 실행 파일을 읽는 줄 | 샌드박스 하네스 루트에서 CLI 의 `run-plan` 출력의 `roles.code-reviewer.exe` 를 읽는다 |
+| | 리뷰 러너 상황(로그인 확인 · 설치되지 않은 러너 · 서브에이전트 역할)을 만드는 줄 | 샌드박스 고정 사본의 벤더 선언 사본(`.harness/templates/vendors.toml`)과 샌드박스 설정으로 만든다 — 로그인 확인은 리뷰 러너 벤더의 `auth_check` 를 스텁이 알아보는 인자로, 설치되지 않은 러너는 그 벤더의 `exe` 를 고친다. 서브에이전트 역할은 샌드박스 설정의 `roles.code-reviewer.runner = "inproc"` 와 `invariants.distinct_reviewer = false` 로 만든다. 기대값은 그대로다 |
+| | 실행 계획을 받지 못하는 상황을 만드는 줄 | 샌드박스에 성립하지 않는 `harness.local.toml`(받지 않는 키)을 둔다. 기대값(종료 코드 2 · 회차 라벨 그대로 · `help: the round was not used — fix the config, then rerun`)은 그대로다 |
+| | 등록의 작성자표시를 보는 줄 | 기대 label 은 벤더 선언 사본에서 리뷰 러너 벤더의 `label` 이다 |
 | | UT-21 — 모듈의 스키마 키 · 표지가 두 역할 계약에 있다, 읽은 뒤 바이트코드가 없다 | 단위 테스트로 옮긴다 (5-4) |
 | | UT-24 — 리뷰 스크립트에 내장 파이썬이 없다 | 그대로 둔다. shim 에 대해 참이다 |
 | | UT-26 — 회차는 회차 라벨의 최댓값 | 단위 테스트로 옮긴다 |
 | | UT-27 — 표지가 환경에 없으면 모듈이 2 | 단위 테스트로 옮기고 "표지 파일에 없으면 2" 로 바꾼다 |
 | | UT-28 — `script/__pycache__` 가 없다 | 그대로 둔다 |
-| | UT-31 — 하위 하네스 루트(`script/` 복사) | 설정 사본과 CLI 링크도 함께 둔다 |
+| | UT-31 — 하위 하네스 루트(`script/` 복사) | 설정 사본과 고정 사본도 함께 둔다 |
 | | UT-32 · UT-33 — 페이크 자신의 계약 | 그대로 둔다. 페이크 파일을 직접 source 한다 |
 | `test-work-preflight.sh` | 준비부만 바꾼다 | |
 | `test-sync-task-issues.sh` | `lock_path` — 잠금 경로를 다시 계산하는 도우미 | 하네스 루트를 심볼릭 링크까지 푼 경로(`pwd -P`)로 계산한다 (2-5 잠금) |
@@ -446,24 +482,27 @@ T<N> (dry-run) create  <제목>
 |---|---|
 | `test-review-loop.sh` | `review-mr.sh` 에 `--json` · `--forc` · `-h` 를 각각 주면 종료 코드 2, 회차 라벨 그대로, 리뷰어 호출 0, forge 호출 0 |
 | | `post-review.sh` 에 없는 본문 파일을 주면 종료 코드 2, 표준 오류에 `error: the review body is empty`, 등록 호출 0 |
-| | 샌드박스에서 CLI 링크를 치우면 `review-mr.sh` 가 종료 코드 2 이고 표준 오류에 `error: no harness CLI` |
+| | 하네스 루트가 아닌 디렉터리에서 하네스 루트 기준 상대 경로의 본문 파일로 `post-review.sh` 를 부르면 등록된다 |
+| | `post-review.sh` 에 작성자표시를 주지 않으면 요약에 벤더 선언 사본의 리뷰 러너 `label` 이 붙는다. 성립하지 않는 `harness.local.toml` 을 두면 `자동 리뷰` 가 붙고 종료 코드는 판정대로다 |
+| | 샌드박스에서 고정 사본을 치우면 `review-mr.sh` 가 종료 코드 2 이고 표준 오류에 `error: harness CLI not found under` 와 `help: harness install --target` |
 | `test-work-preflight.sh` | `100 --json` 과 `--help` 는 종료 코드 2 이고 이슈 조회 0 |
 | `test-sync-task-issues.sh` | `100 --dry` 와 `--dry-run 100` 은 종료 코드 2, 목록 조회 0, 생성 호출 0 |
 
 ### 5-4. 단위 테스트 — `src/test/unit/`
 
-#209 가 들인 자리와 실행 단계(`python3 -m unittest`)를 쓴다. 대상 리포로 가지 않는다.
+#206 이 둔 자리와 `[verify]` 의 Python 단위 테스트 단계를 쓴다. 대상 리포로 가지 않는다.
 
 | 케이스 | 확인하는 것 |
 |---|---|
 | 스키마와 역할 계약 | `review.py` 의 최상위 키 · 발견 키 · 심각도와 표지 `FMT_REVIEW_BLOCK` · `FMT_VERDICT_PASS` · `FMT_VERDICT_CHANGES` 가 `src/templates/managed/.ai/templates/code-reviewer.md` · `security-guard.md` 에 백틱으로 둘러싸여 있다. 두 계약에 `## 발견 사항` · `REVIEW_VERDICT` 규칙이 없다 (UT-21 에서 옮김) |
 | 회차 | 라벨 `<접두>:1` · `other` · `<접두>:3` · `<접두>:x` 에서 회차 3, 회차 라벨 `<접두>:1 <접두>:3`. 회차 라벨이 없으면 0 (UT-26 에서 옮김) |
-| 표지 | 필요한 표지가 빠진 표지 파일이면 종료 코드 2. 꼴이 다른 `FMT_` 줄이 있어도 2 (UT-27 에서 옮김) |
-| 인자 규칙 | 세 명령과 `review post` 가 2-1-3 · 2-2 ~ 2-5 의 인자는 받고 그 밖은 거부한다. 거부는 종료 코드 2 이고 forge 를 부르지 않는다 |
+| 표지 | 하네스 루트의 표지 파일에서 필요한 표지를 읽지 못하면 종료 코드 2 (UT-27 에서 옮김) |
+| 인자 규칙 | 세 명령과 `review post` 가 2-1-3 · 2-2 ~ 2-5 의 인자는 받고 그 밖은 거부한다. `--target DIR` 은 이름 바로 뒤에서 한 번 받고 다른 자리면 거부한다. 거부는 종료 코드 2 이고 forge 를 부르지 않는다 |
+| 실행 계획 | 실행 계획을 계산하지 못하면 `review` 가 forge 를 부르기 전에 종료 코드 2 이고 `help: the round was not used — fix the config, then rerun` 을 낸다. 같은 공유 설정에 개인 레이어의 리뷰어 러너만 바꾸면 `review` 가 등록에 넘기는 작성자표시가 그 벤더의 `label` 이다. `review post` 는 작성자표시가 없으면 실행 계획의 `label`, 계산하지 못하면 `자동 리뷰` 를 쓴다 |
 | 예외 | 명령 본문에서 처리하지 않은 예외가 나면 종료 코드 2 이고 표준 오류 마지막 줄이 `error: harness <명령> stopped on an unexpected error` |
 | 잠금 경로 | 여러 경로에서 `<cksum>` 이 POSIX `cksum` 명령의 출력과 같다. `TMPDIR` 이 `/` 로 끝나도 그대로 이어 붙인 문자열이다 |
 | 신호 | 신호 처리를 부르면 잠금 · 임시 디렉터리를 지우고 128 + 신호 번호로 끝난다 |
-| 명령 표 | `review` · `preflight` · `sync-tasks` 가 `COMMANDS` 와 `DELEGATES` 에 있다 |
+| 명령 표 | `review` · `preflight` · `sync-tasks` 가 `COMMANDS` 에 통과 표시와 함께 있고 `DELEGATES` 에 있다 |
 
 ### 5-5. `src/test/render-test.sh`
 
@@ -477,8 +516,8 @@ T<N> (dry-run) create  <제목>
 
 ### 5-6. 순서
 
-- 옛 구현에서도 성립하는 준비부 변경(CLI 링크 · 설정 사본 · 주입 환경 변수 · 첫 커밋 · 실행 계획 직접 읽기)은 이식보다 먼저 하고
-  옛 구현에서 통과하는 것을 확인한다
+- 옛 구현에서도 성립하는 준비부 변경(고정 사본 · 설정 사본 · 주입 환경 변수 · 첫 커밋 · 벤더 선언 사본과 샌드박스 설정으로 만드는
+  리뷰 러너 상황)은 이식보다 먼저 하고 옛 구현에서 통과하는 것을 확인한다
 - 새 구현에서만 성립하는 줄(배치 목록에서 옛 파일 빼기, 구조 검사 이동, 잠금 경로 계산)은 옛 모듈을 걷는 변경과 함께 바꾼다
 - 회귀 테스트 전체(`script/run-lint-test.sh`)가 통과한다
 
@@ -486,7 +525,7 @@ T<N> (dry-run) create  <제목>
 
 | 문서 | 바뀌는 것 |
 |---|---|
-| `src/templates/managed/script/README.md` | `review-mr.sh` · `post-review.sh` · `work-preflight.sh` · `sync-task-issues.sh` 행의 용도에 "`harness <명령>` 을 부르는 호환 진입점" 을 적는다. 종료 코드 설명은 그대로다. `_review.py` 행을 지운다. `check-open-mrs.sh` 행의 호출 시점은 "수동 — 착수 판정은 같은 조회를 `harness preflight` 안에서 한다". "규칙" 절에 "하위 명령은 설정과 표지 파일을 직접 읽는다" 를 더한다 |
+| `src/templates/managed/script/README.md` | `review-mr.sh` · `post-review.sh` · `work-preflight.sh` · `sync-task-issues.sh` 행의 용도에 "`harness <명령>` 을 부르는 shim" 을 적는다. 종료 코드 설명은 그대로다. `_review.py` 행을 지운다. `check-open-mrs.sh` 행의 호출 시점은 "수동 — 착수 판정은 같은 조회를 `harness preflight` 안에서 한다". "규칙" 절에 "하위 명령은 설정을 직접 읽고, 표지를 표지 모듈로 읽는다" 를 더한다 |
 | `src/templates/managed/script/harness-format.sh` | 절 머리 주석의 `_review.py` 를 `src/harness/review.py` 로 |
 | `README.md` "명령" 표 | 아래 세 행을 더한다 |
 | `docs/spec/64-modularize-cli-review-scripts.md` | 정본 위치 표의 리뷰 루프 행, 5절(공용 모듈 `script/_review.py`)이 이 명세 4절을 가리키게, 6절의 머리 주석 문장, 12-1 의 "계약·모듈 일치" · "내장 파이썬 없음" 행 |
@@ -507,35 +546,37 @@ README 명령 표에 더하는 행:
 ## 7. 보호 문서 개정 범위
 
 이 이슈의 사용자 결정으로 허용된 범위다. 분해의 task 하나가 구현과 함께 고치고, 고친 뒤 `harness render` 로 `.ai/AI_AGENT.md` 를
-다시 만든다. #206 · #209 가 같은 절을 먼저 고치므로, 아래는 그 위에 더하는 이 변경의 사실이다.
+다시 만든다. 보호 문서 개정의 적용 순서는 #206 → #207 → #208 · #209 · #210 → #211 이다. 아래 문안은 그 이슈들이 고친 문장 위에
+더하며, 표에 적지 않은 문장은 앞 이슈가 고친 그대로 둔다. 용어 `shim` 의 행은 #209 가 용어집에 둔다.
 
 | 문서 · 위치 | 문안 |
 |---|---|
-| `.ai/project/architecture.md` "구성 요소" 의 CLI 항목 | 명령에 리뷰(`review` — 리뷰 러너 점검 · diff 조회 · 회차 라벨 · 리뷰어 실행 · 판정 데이터 검증 · 등록. `review post` — 등록만), 착수 판정(`preflight`), task 이슈 동기화(`sync-tasks`)가 있다. 리뷰 판정 데이터 · 집계 · 등록 댓글 렌더링 · 리뷰 입력 맥락은 리뷰 모듈(`src/harness/review.py`)이 갖는다 |
-| 같은 문서 "구성 요소" 의 대상 리포 `script/` 항목 | 착수 판정(`work-preflight.sh`) · task 이슈 동기화(`sync-task-issues.sh`) · 리뷰 루프(`review-mr.sh` · `post-review.sh`)는 같은 일을 하는 하위 명령을 부르는 호환 진입점이다. "그 공용 모듈 `_review.py` — …" 를 지운다 |
-| 같은 문서 "데이터 흐름" 의 절차 실행 | 리뷰 루프는 `harness preflight`(호환 진입점 `script/work-preflight.sh` — 이슈 확인 · 착수 판정) → 구현자 → `harness review`(호환 진입점 `script/review-mr.sh` — 리뷰 러너 점검 · diff 조회 · 회차 라벨 · 리뷰어 실행) → 리뷰어의 판정 데이터(JSON 블록) → 등록(`harness review post` 와 같은 구현 — 스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약 · 인라인 댓글 렌더링) → 종료 코드로 분기 |
-| 같은 문서 "새 코드를 둘 곳" | "리뷰 루프의 파이썬 → `script/_review.py` …" 줄을 이것으로 바꾼다 — 리뷰 루프의 판정 · 렌더링 · 맥락 → `src/harness/review.py`. 리뷰 · 착수 판정 · task 동기화의 순서와 forge 호출 → 각 명령 모듈. 이식하지 않은 관리 스크립트 자산을 부르는 코드 → `src/harness/scripts.py` 한 곳. `script/` 의 호환 진입점에는 로직을 넣지 않는다 |
-| 같은 문서 "계층과 의존 방향" | 하위 명령은 설정 값을 설정 로더에서 받는다. 표지 파일 · 사용 기록 · 지표 기록 · 역할 실행기 · 실행 계획 파일은 `src/harness/scripts.py` 로만 쓴다 |
-| `.ai/project/glossary.md` "용어" 의 `task 이슈` | 승인된 분해에서 `harness sync-tasks`(호환 진입점 `script/sync-task-issues.sh`)가 만드는 하위 이슈. 커밋의 단위 |
-| 같은 표의 `착수 판정` | `harness preflight`(호환 진입점 `script/work-preflight.sh`)가 원격 기준으로 내리는 판정 — `plan` · `standalone` · 착수 불가 |
-| 같은 표의 `회차 라벨` | 리뷰 요청에 붙는 `<prefix>:<N>` 라벨. `harness review`(호환 진입점 `script/review-mr.sh`)만 올린다 |
-| 같은 표에 새 행 `호환 진입점` | 하위 명령을 부르기만 하는 `script/<이름>.sh`. 에이전트 · 설정 · 사람이 쓰는 표기를 유지하고 로직을 갖지 않는다 |
+| `.ai/project/architecture.md` "구성 요소" 의 CLI 항목 | 덧붙인다: 명령에 리뷰(`review` — 실행 계획 계산 · 리뷰 러너 점검 · diff 조회 · 회차 라벨 · 리뷰어 실행 · 판정 데이터 검증 · 등록. `review post` — 등록만), 착수 판정(`preflight`), task 이슈 동기화(`sync-tasks`)가 있다. 리뷰 판정 데이터 · 집계 · 등록 댓글 렌더링 · 리뷰 입력 맥락은 리뷰 모듈(`src/harness/review.py`)이 갖는다 |
+| 같은 문서 "구성 요소" 의 대상 리포 `script/` 항목 | 착수 판정(`work-preflight.sh`) · task 이슈 동기화(`sync-task-issues.sh`) · 리뷰 루프(`review-mr.sh` · `post-review.sh`)는 같은 일을 하는 하위 명령을 부르는 shim 이다. "그 공용 모듈 `_review.py` — …" 를 지운다 |
+| 같은 문서 "데이터 흐름" 의 절차 실행 | #207 · #208 이 고친 항목에서 리뷰 루프 문장만 이것으로 바꾼다 — 리뷰 루프는 `harness preflight`(shim `script/work-preflight.sh` — 이슈 확인 · 착수 판정) → 구현자 → `harness review`(shim `script/review-mr.sh` — 실효 설정으로 실행 계획 계산 · 리뷰 러너 점검 · diff 조회 · 회차 라벨 · 리뷰어 실행) → 리뷰어의 판정 데이터(JSON 블록) → 등록(`harness review post` 와 같은 구현 — 스키마 검증 · 등급 집계 · 반복 지적 누적 · 요약 · 인라인 댓글 렌더링) → 종료 코드로 분기 |
+| 같은 문서 "새 코드를 둘 곳" | "리뷰 루프의 파이썬 → `script/_review.py` …" 줄을 이것으로 바꾼다 — 리뷰 루프의 판정 · 렌더링 · 맥락 → `src/harness/review.py`. 리뷰 · 착수 판정 · task 동기화의 순서와 forge 호출 → 각 명령 모듈. 이식하지 않은 관리 스크립트를 부르는 코드 → `src/harness/scripts.py` 한 곳. `script/` 의 shim 에는 로직을 넣지 않는다 |
+| 같은 문서 "계층과 의존 방향" | 덧붙인다: 하위 명령은 설정 값을 공유 설정에서, 역할의 실행 방법을 실행 계획 함수에서 같은 프로세스 안에 받는다 — `script/harness.env` 와 `harness run-plan` 을 거치지 않는다. 표지는 표지 모듈(`src/harness/format.py`)로만 읽는다. 이식하지 않은 관리 스크립트(사용 기록 · 지표 기록 · 역할 실행기)는 `src/harness/scripts.py` 로만 부른다 |
+| `.ai/project/glossary.md` "용어" 의 `task 이슈` | 승인된 분해에서 `harness sync-tasks`(shim `script/sync-task-issues.sh`)가 만드는 하위 이슈. 커밋의 단위 |
+| 같은 표의 `착수 판정` | `harness preflight`(shim `script/work-preflight.sh`)가 원격 기준으로 내리는 판정 — `plan` · `standalone` · 착수 불가 |
+| 같은 표의 `회차 라벨` | 리뷰 요청에 붙는 `<prefix>:<N>` 라벨. `harness review`(shim `script/review-mr.sh`)만 올린다 |
+| 같은 표의 `실행 계획`(#207 이 고친 행) | "`run-agent.py` · `review-mr.sh` · `metric.py` 가 읽는다" 의 `review-mr.sh` 를 "`harness review`(같은 프로세스에서 계산한다)" 로 |
 | `.ai/project/scope.md` "할 수 있는 일" | 새 줄 — 이슈의 착수를 판정하고(`preflight`), 승인된 분해로 task 이슈를 만들고(`sync-tasks`), 리뷰 요청을 리뷰해 회차를 세고 결과를 등록한다(`review`). 뒤의 둘은 원격에 쓴다 |
 
 `.ai/project/testing.md` 는 고치지 않는다. 관리 스크립트마다 `script/test-<이름>.sh` 를 갖는다는 서술은 그대로 참이고,
-단위 테스트의 자리는 #209 가 더한다.
+단위 테스트의 자리는 #206 이 더한다.
 
 ## 8. 다른 이슈와의 경계
 
 | 이슈 | 그 이슈가 정하는 것 | 이 명세와 닿는 곳 |
 |---|---|---|
-| #206 | 패키지 모듈 지도와 파일 이름 규칙, 진입 스크립트, 고정 사본 `.harness/lib/harness/`, 바이트코드 캐시 자리, `COMMANDS` · `DELEGATES` 의 자리 | 4절의 모듈이 그 지도 안에 놓인다. 5-2 의 패키지 위치 |
-| #209 | forge 파이썬 어댑터(계약 함수의 파이썬 이름), `script/forge.sh` shim, 셸 페이크 주입 환경 변수, 단위 테스트 자리와 `[verify]` 단계 | 2-1-4, 3-4 의 `check-open-mrs.sh`, 5-2 · 5-4 |
-| #207 | 개인 레이어와 실행 시점의 실효 설정, 실행 계획 파일의 내용 | 리뷰 러너 판정(실행 계획 파일)과 작성자표시 · 설정 값(설정 로더)의 근거를 실효 설정으로 바꾸는 일은 #207 이 한다 |
+| #206 | 패키지 모듈 지도와 파일 이름 규칙, 진입 스크립트, 고정 사본 `.harness/lib/harness/`, 바이트코드 캐시 자리, `COMMANDS`(`commands/__init__.py`) · `DELEGATES`(`cli.py`) 의 자리, 통과 명령 표시와 `--target` 규칙(3-3), 단위 테스트 자리와 `[verify]` 단계 | 4절의 모듈이 그 지도 안에 놓인다. 2-1-1 · 2-1-3, 5-2 의 패키지 위치와 고정 사본 배치, 5-4 |
+| #207 | 공유 설정 · 실효 설정, 실행 계획 함수 `run_plan()`, 역할 실행기 · 지표 기록기가 실행 계획을 받는 방법. 이 명세보다 먼저 머지된다 | 2-1-2 의 설정과 실행 계획, 2-2 의 1 · 2 · 14단계, 2-3 의 작성자표시 기본값, 5-2 의 리뷰 러너 상황 |
+| #209 | forge 파이썬 어댑터(계약 함수의 파이썬 이름), `script/forge.sh` shim, 셸 페이크 주입 환경 변수, 용어 `shim` 의 행 | 2-1-4, 3-4 의 `check-open-mrs.sh`, 5-2 |
+| #209 · #210 | 표지 모듈 `src/harness/format.py` — 먼저 머지된 쪽이 둔다 | 2-1-5 |
 | #208 · #212 | 블록 엔진과 driver 절차 | script 블록은 이 명령들의 종료 코드와 `preflight` 표준 출력 첫 토큰으로 분기한다. 기계용 출력은 그것을 쓰는 쪽이 생기는 이슈가 더한다 |
-| #213 | 표지 · 사용 기록 · 지표 기록 · 역할 실행기의 이식 | `src/harness/scripts.py` 를 이식된 모듈로 바꾼다. 5-5 의 모듈 스크립트 검사 대상(`_clone_key.py`)도 그때 다시 정한다 |
+| #213 | 사용 기록 · 지표 기록 · 역할 실행기의 이식, 표지 정본을 `format.py` 로 옮기는 일 | `src/harness/scripts.py` 를 이식된 모듈로 바꾼다. 5-5 의 모듈 스크립트 검사 대상(`_clone_key.py`)도 그때 다시 정한다 |
 | #215 | 반복 지적 이력의 리뷰 요청 이전, 착수 잠금 | 2-1-6 의 이력 파일과 2-4 의 순서를 바꾼다 |
-| shim 정리 요구사항 (main 릴리스 한 번 뒤) | shim · `check-open-mrs.sh` 를 걷고, 에이전트가 보는 표기를 하네스 루트 종류별 CLI 경로로 바꾼다. sh 테스트의 거취 | 3-3 · 3-5 |
+| #221 (main 릴리스 한 번 뒤) | shim · `check-open-mrs.sh` 를 걷고, 에이전트가 보는 표기를 하네스 루트 종류별 CLI 경로로 바꾼다. sh 테스트의 거취 | 3-3 · 3-5 |
 
 ## 9. 한계
 
