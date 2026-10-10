@@ -9,7 +9,8 @@ UI Workflows 화면에서 블록을 이어 분기·루프가 있는 절차를 �
 #207(설정 계층)도 들어 있다.
 
 - 블록의 의미는 #208 이 정하고 이 명세는 그것을 그대로 쓴다. 블록 5종의 outcome, `next` 문법, 끝 상태,
-  암묵 배선, 시작 단계, 실행 방식별 허용 키, render 검증, `harness steps` 의 키 보존이 여기에 든다
+  암묵 배선, 시작 단계, 실행 방식별 허용 키, render 검증과 그 오류 위치 표기, `harness steps` 의 키 보존,
+  `harness schema` 의 `output_schemas` · `workflows.<절차>.execute` 가 여기에 든다
 - 명령 코드가 어느 모듈에 있는지는 #206 의 모듈 지도를 따른다. 이 명세는 명령과 함수 단위로 적는다
 
 정본 위치:
@@ -55,8 +56,6 @@ UI Workflows 화면에서 블록을 이어 분기·루프가 있는 절차를 �
 | `ends` | 끝 상태 목록 — `["done", "stop", "handoff"]` |
 | `wildcard` | 나머지 outcome 을 받는 `next` 키 — `"*"` |
 | `execute` | `{ "default": "<실행 방식>", "modes": [{ "value": "<실행 방식>", "wiring": <bool>, "command": <bool> }] }` |
-| `output_schemas` | `{ "<스키마 이름>": { "fields": { "<필드>": ["<값>", ...] } } }` |
-| `workflows.<절차>.execute` | 그 절차의 실행 방식. 기본값을 채운 값이다 |
 | `workflows.<절차>.command` | render 가 그 절차를 부르는 커맨드 파일(생성 파일이든 관리 파일이든)을 대상 리포에 두면 그 이름(`/` 없이). 두지 않으면 `null` |
 
 `blocks`
@@ -73,13 +72,13 @@ UI Workflows 화면에서 블록을 이어 분기·루프가 있는 절차를 �
 - `modes[].wiring` 은 그 실행 방식의 절차가 `next` 를 받는지다
 - `modes[].command` 는 프로젝트가 만든 그 실행 방식의 절차에 render 가 슬래시 커맨드를 만드는지다
 
-`output_schemas`
+#208 이 같은 출력에 더하는 키
 
-- agent 블록이 고를 수 있는 이름 스키마다. 하네스가 싣고 온 것과 프로젝트 소유 자리의 것을 모두 든다
-- `fields` 는 `on` 이 가리킬 수 있는 필드와 그 필드의 값 목록이다
-- 읽지 못하는 스키마 파일은 목록에서 빠진다. 그 이름을 쓰는 단계는 `--dry-run` 이 거부한다
+- `output_schemas`(`{ "<스키마 이름>": { "source", "path", "fields" } }`)와 `workflows.<절차>.execute` 는 #208 이 정하고 낸다. 이 명세는 두 키를 더하지 않고 읽기만 한다
+- UI 는 `output_schemas` 의 이름을 agent 블록의 스키마 후보로, 그 항목 `fields` 의 필드 이름을 `on` 의 후보로 쓴다 (2-2)
+- `workflows.<절차>.execute` 는 기본값을 채운 값이다. `execute` 키가 없는 절차에서는 위 `execute.default` 와 같다
 
-값은 모두 #208 의 정의에서 만든다 — 블록 정의, 단계 키 정의, 끝 상태, 실행 방식별 허용 키, 스키마 해석.
+값은 모두 #208 의 정의에서 만든다 — 블록 정의, 단계 키 정의, 끝 상태, 실행 방식별 허용 키.
 schema 용으로 같은 표를 따로 두지 않는다. 입력 종류(`input`)는 단계 키 정의 옆에 둔다.
 **단계 키 정의의 모든 키에 입력 종류가 있다** — 키를 더하는 변경은 입력 종류도 함께 정하고, 빠지면 회귀 테스트가 막는다 (7-1).
 
@@ -97,7 +96,7 @@ schema 용으로 같은 표를 따로 두지 않는다. 입력 종류(`input`)�
 | `choice` | 문자열 | `choices` 중 하나 또는 "없음" |
 | `workflow` | 문자열 | 절차 고르기. 후보는 이 절차를 뺀 `schema.workflows` 의 이름 |
 | `output_schema` | 문자열 | 스키마 고르기. 후보는 `schema.output_schemas` 의 이름과 "없음" |
-| `schema_field` | 문자열 | 필드 고르기. 후보는 같은 단계의 `output_schema` 키 값이 가리키는 스키마의 `fields` 이름과 "없음". 그 키가 비어 있으면 고를 수 없다 |
+| `schema_field` | 문자열 | 필드 고르기. 후보는 같은 단계에서 입력 종류가 `output_schema` 인 키의 값이 가리키는 `schema.output_schemas` 항목의 `fields` 이름과 "없음". 그 키가 비어 있으면 고를 수 없다 |
 | `fixed` | 무엇이든 | 고치지 않는다. 값을 읽기 전용으로 보이고 그대로 돌려보낸다 |
 
 - 표(TOML 테이블) 값을 받는 단계 키의 입력 종류는 `fixed` 다
@@ -154,15 +153,14 @@ schema 용으로 같은 표를 따로 두지 않는다. 입력 종류(`input`)�
 
 ### 2-4. 오류 위치 표기
 
-render 검증 가운데 단계 하나나 outcome 하나에 걸리는 오류 문장은 `error: ` 바로 뒤에 위치를 적는다.
+오류 문장의 위치 표기는 #208 의 render 검증이 정한다 — 단계는 `workflows.<절차>.steps[<i>]`, 단계의 outcome 은
+`workflows.<절차>.steps[<i>].next[<outcome 의 JSON 문자열>]`(예: `workflows.work.steps[2].next["*"]`)이다.
+이 명세는 그 표기를 더하거나 바꾸지 않고 `at` 을 거기서 읽는다.
 
-| 오류 | 위치 표기 |
-|---|---|
-| 단계 하나 | `workflows.<절차>.steps[<i>]` (지금과 같다) |
-| 단계 하나의 outcome 하나 (없는 대상, 이어지지 않은 outcome 등) | `workflows.<절차>.steps[<i>].next[<outcome 의 JSON 문자열>]` — 예: `workflows.work.steps[2].next["*"]` |
-
-- `at` 은 오류 문장의 첫 위치 표기에서 읽는다. 표기가 없으면 `step` · `outcome` 이 둘 다 `null` 이고 절차 전체의 오류다
-- #208 의 검증 가운데 단계 하나나 outcome 하나에 걸리는 거부는 모두 이 표기를 쓴다 (7-1)
+- `at` 은 오류 문장의 첫 위치 표기에서 읽는다
+  - `step` 은 `steps[<i>]` 의 번호다
+  - `outcome` 은 `next[…]` 안의 JSON 문자열을 푼 값이다. outcome 이름에 `.` 이 있어도 그대로 읽힌다
+- outcome 표기가 없으면 `outcome` 은 `null` 이다. 위치 표기가 없으면 `step` · `outcome` 이 둘 다 `null` 이고 절차 전체의 오류다
 
 ### 2-5. 저장·검사 때 UI 가 넘기는 것
 
@@ -182,14 +180,17 @@ render 검증 가운데 단계 하나나 outcome 하나에 걸리는 오류 문�
 
 ## 3. 편집 권한 — 절차의 출처 레이어
 
-- 절차마다의 출처 레이어는 #207 이 `harness schema` 에 내는 값 출처의 `workflows.<절차>` 항목이다
+- 절차마다의 출처 레이어는 #207 이 `harness schema` 에 내는 값 출처 `sources` 의 `workflows.<절차>` 값(레이어 id)이다
   - `workflows.<이름>` 은 레이어 사이에서 통째로 교체되므로, 절차 하나에 출처 레이어는 하나다
-- 출처가 프로젝트 레이어(`harness.toml`)인 절차는 편집한다
-- 그 밖의 레이어(내장 기본값 · 조직 preset · 스택 preset)에서 온 절차는 읽기 전용이다
-- 개인 레이어는 절차를 갖지 않는다 (#207 의 개인 레이어 허용 키)
-- 프로젝트 `harness.toml` 에 `[workflows.<절차>]` 절이 있으면 출처는 프로젝트 레이어다. 기본 절차를 옮겨 적은 옛 설치본도 그렇다
-- 초안(저장하지 않은 새 절차)은 프로젝트 레이어다
-- 레이어 값은 UI 의 이름표로 보인다. 이름표가 없는 값은 값 그대로 보인다
+- 출처가 `project`(프로젝트 레이어, `harness.toml`)인 절차는 편집한다
+- 출처가 그 밖의 레이어 — `default`(내장 기본값)와 preset 레이어(조직 preset · 스택 preset) — 인 절차는 읽기 전용이다
+  - 판정은 출처가 `project` 인지만 본다. preset 레이어 id 의 형식에 기대지 않는다
+- 개인 레이어(`local`)는 절차를 갖지 않는다 (#207 의 개인 레이어 허용 키)
+- 프로젝트 `harness.toml` 에 `[workflows.<절차>]` 절이 있으면 출처는 `project` 다. 기본 절차를 옮겨 적은 옛 설치본도 그렇다
+- 초안(저장하지 않은 새 절차)은 `project` 로 다룬다
+- 화면 문구의 `<레이어>` 는 출처 레이어 id 를 `src/ui/lib/labels.js` 의 레이어 표시 이름 함수(#207)로 바꾼 것이다
+  - preset 레이어의 id 와 그 표시 이름은 #216 이 정한다
+  - 이 명세는 그 함수에 표시를 더하지 않는다
 
 ### 3-1. 읽기 전용
 
@@ -312,7 +313,8 @@ render 검증 가운데 단계 하나나 outcome 하나에 걸리는 오류 문�
   - 이미 이어져 있으면 대상을 바꾼다. 핸들 하나에 선은 하나다
 - 다시 잇기: 선의 끝을 다른 노드로 옮기면 대상을 바꾼다
 - 끊기: 선을 고르고 `Delete` · `Backspace` 를 누르면 그 outcome 을 `next` 에서 뺀다
-  - 마지막 outcome 을 빼도 `next` 는 빈 표로 남는다. 절차가 몰래 암묵 배선으로 돌아가지 않게 한다
+  - 마지막 outcome 을 빼도 `next` 는 빈 표로 남는다. 절차가 몰래 암묵 배선으로 돌아가지 않게 한다.
+    빈 표도 명시 배선으로 보고 `harness steps` 가 그대로 쓰는 것은 #208 이 정한다
 - 자기 자신으로 잇기도 받는다. 성립하는지는 검사가 정한다
 - 끝 상태에서 나가는 선은 없다
 
@@ -458,7 +460,7 @@ React 를 import 하지 않는 순수 함수다. 입력을 바꾸지 않고 새 
 README
 
 - 명령 표의 `harness steps` 행: `--dry-run --json` 이면 검사 결과와 단계별 outcome·실효 배선을 JSON 으로 낸다
-- 명령 표의 `harness schema` 행: 블록 목록·끝 상태·실행 방식·출력 스키마, 절차별 실행 방식과 커맨드도 낸다
+- 명령 표의 `harness schema` 행: 블록 목록·끝 상태·와일드카드 키·실행 방식 목록과 절차별 커맨드도 낸다
 - UI 표의 Workflows 행
   - 무엇을: 블록을 팔레트에서 끼우고 outcome 핸들을 이어 분기·루프를 만든다. 실행 방식을 고르고, 하위 절차로 이동한다.
     아래 레이어가 준 절차는 읽기 전용이고 프로젝트로 분리해야 고친다. 절차 끝에 붙는 이 프로젝트의 지시를 고친다
@@ -479,13 +481,13 @@ README
 
 | 블록 | 확인하는 것 |
 |---|---|
-| schema 가 블록 편집에 필요한 표를 낸다 | `blocks` · `ends` · `wildcard` · `execute` · `output_schemas` 가 있다. 모든 블록의 모든 키에 `input` 이 있고 2-2 의 어휘 안에 있다. `choice` 키에만 `choices` 가 있다 |
-| schema 의 절차별 실행 방식과 커맨드 | 프로젝트가 만든 agent 절차는 `command` 가 그 이름이다. driver 절차와 커맨드 파일이 없는 기본 절차는 `null` 이다. `execute` 가 없는 절차는 `schema.execute.default` 다 |
+| schema 가 블록 편집에 필요한 표를 낸다 | `blocks` · `ends` · `wildcard` · `execute` 가 있다. 모든 블록의 모든 키에 `input` 이 있고 2-2 의 어휘 안에 있다. `choice` 키에만 `choices` 가 있다 |
+| schema 의 절차별 커맨드와 기본 실행 방식 | 프로젝트가 만든 agent 절차는 `command` 가 그 이름이다. driver 절차와 커맨드 파일이 없는 기본 절차는 `null` 이다. `execute` 키가 없는 절차의 `workflows.<절차>.execute`(#208)가 `schema.execute.default` 와 같다 |
 | 검사 JSON 이 통과한 명시 배선 절차를 그린다 | 종료 코드 0. `ok` 참, `wiring` 이 `explicit`, `start` 가 첫 단계, 단계별 `outcomes` · `open` · `next`. 설정 파일 바이트가 그대로다 |
 | 검사 JSON 이 암묵 배선을 펼친다 | `next` 가 없는 절차에서 `wiring` 이 `implicit` 이다. 단계마다 `next` 가 암묵 배선을 펼친 값이다 |
 | 검사 JSON 의 블록별 outcome 집합 | gate 는 선택지, 스키마를 고른 agent 는 그 필드 값, workflow 는 하위 절차의 끝 상태다. script 는 `open` 참이다 |
 | 검사 JSON 이 거부를 알린다 | 종료 코드 2. 표준 출력은 JSON 하나이고 표준 오류는 비어 있다. `error` 는 같은 입력의 텍스트 `--dry-run` 표준 오류와 같다. 거부해도 `steps` 가 있다 |
-| 배선 오류의 위치 | 없는 대상을 가리키는 outcome 의 `at` 이 그 단계 번호와 outcome 키다. #208 의 검증 가운데 단계 하나나 outcome 하나에 걸리는 거부 사례마다 `at.step` 이 `null` 이 아니다 |
+| 오류 위치를 `at` 으로 읽는다 | 없는 대상을 가리키는 outcome 의 `at` 이 그 단계 번호와 outcome 키다. `.` 이 든 outcome 이름도 그 이름 그대로다. 단계 위치만 있는 오류는 `at.outcome` 이 `null` 이다. 절차 전체의 오류(`execute` 값이 틀리다)는 `at.step` · `at.outcome` 이 둘 다 `null` 이다 |
 | `--json` 은 `--dry-run` 과만 | `--dry-run` 없이 주면 종료 코드 2 이고 설정 파일이 그대로다 |
 | 형식이 틀린 입력은 `--json` 이어도 문장으로 거부한다 | 종료 코드 2. 표준 출력이 비어 있다 |
 | UI 가 넘기는 객체 형식의 왕복 | `{title, execute, steps}` 로 저장한 뒤 `harness steps` 가 낸 단계(`builtin` · `body` 를 뺀 것)와 schema 의 `title` · `execute` 가 넘긴 값과 같다 |
@@ -527,10 +529,10 @@ README
 | 이슈 | 관계 |
 |---|---|
 | #206 | 명령 코드가 놓이는 모듈을 정한다. 이 명세의 CLI 변경은 그 모듈에 들어간다 |
-| #207 | 절차별 출처 레이어를 `harness schema` 의 값 출처로 낸다. 이 명세는 그것으로 편집 권한을 가른다 (3절). Harness 화면 등 설정 값의 출처 표시는 #207 이 한다 |
-| #208 | 블록·outcome·배선·끝 상태·암묵 배선·시작 단계·실행 방식별 허용 키·render 검증, `harness steps` 의 키 보존과 객체 형식의 `execute` 를 정한다. 이 명세는 그 계산을 schema 와 `--dry-run --json` 으로 내고 UI 가 그린다. 오류 위치 표기(2-4)는 그 검증 문장의 형식이다 |
+| #207 | 절차별 출처 레이어를 `harness schema` 의 값 출처(`sources`)로 내고, 레이어 id 를 표시 이름으로 바꾸는 함수를 `labels.js` 에 둔다. 이 명세는 그 둘로 편집 권한을 가르고 출처를 보인다 (3절). Harness 화면 등 설정 값의 출처 표시는 #207 이 한다 |
+| #208 | 블록·outcome·배선·끝 상태·암묵 배선·시작 단계·실행 방식별 허용 키·render 검증과 그 오류 위치 표기, `harness steps` 의 키 보존과 객체 형식의 `execute`, `harness schema` 의 `output_schemas` · `workflows.<절차>.execute` 를 정한다. 이 명세는 그 계산을 schema 의 새 키와 `--dry-run --json` 으로 내고 UI 가 그린다. `at` 은 그 오류 위치 표기에서 읽는다 (2-4) |
 | #212 | 기본 `work` · `review-loop` 를 driver 절차로 바꾼다. 출처가 아래 레이어이면 두 절차는 읽기 전용으로 보이고, `work` 의 workflow 블록에서 `review-loop` 로 이동한다. #212 가 단계 키를 더하면 그 키의 입력 종류도 함께 정한다 |
-| #216 | preset 레이어가 채워지면 거기서 온 절차도 읽기 전용으로 보인다. 이 명세에서 바꿀 것은 없다 |
+| #216 | preset 레이어의 id 와 `labels.js` 의 그 표시 이름을 정한다. preset 에서 온 절차는 출처가 `project` 가 아니므로 읽기 전용으로 보이고, 화면 문구의 레이어는 그 표시 이름이다. 이 명세에서 바꿀 것은 없다 |
 
 이 변경에는 결정 기록이 없다. 블록 그래프의 의미는 #208 의 결정 기록이 갖고, UI 의 쓰기 경계는 ADR 0009 그대로다.
 
