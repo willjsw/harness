@@ -559,7 +559,7 @@ README 명령 표에 더하는 행:
 | `.ai/project/glossary.md` "용어" 의 `task 이슈` | 승인된 분해에서 `harness sync-tasks`(shim `script/sync-task-issues.sh`)가 만드는 하위 이슈. 커밋의 단위 |
 | 같은 표의 `착수 판정` | `harness preflight`(shim `script/work-preflight.sh`)가 원격 기준으로 내리는 판정 — `plan` · `standalone` · 착수 불가 |
 | 같은 표의 `회차 라벨` | 리뷰 요청에 붙는 `<prefix>:<N>` 라벨. `harness review`(shim `script/review-mr.sh`)만 올린다 |
-| 같은 표의 `실행 계획`(#207 이 고친 행) | "`run-agent.py` · `review-mr.sh` · `metric.py` 가 읽는다" 의 `review-mr.sh` 를 "`harness review`(같은 프로세스에서 계산한다)" 로 |
+| 같은 표의 `실행 계획`(#207 이 고친 행) | "역할 실행기 · 리뷰 루프 · 지표 기록기가 읽는다" 의 `리뷰 루프` 를 "리뷰 루프(`harness review`, 같은 프로세스에서 계산)" 로 |
 | `.ai/project/scope.md` "할 수 있는 일" | 새 줄 — 이슈의 착수를 판정하고(`preflight`), 승인된 분해로 task 이슈를 만들고(`sync-tasks`), 리뷰 요청을 리뷰해 회차를 세고 결과를 등록한다(`review`). 뒤의 둘은 원격에 쓴다 |
 
 `.ai/project/testing.md` 는 고치지 않는다. 관리 스크립트마다 `script/test-<이름>.sh` 를 갖는다는 서술은 그대로 참이고,
