@@ -634,7 +634,9 @@ help: raise extends to the minimum or later, then run harness pull
 
 ## 13. 결정 기록
 
-결정 기록: the CI gate file is generated and checks the preset policy (분해에서 작성)
+CI 게이트를 생성 파일로 두고 `check` 가 preset 정책(허용 출처 · CI 변수로 받는 최소 버전)을 검사한다는 결정과 그 보장 범위는
+`docs/adr/0025-the-ci-gate-file-is-generated-and-checks-the-preset-policy.md` 가 기록한다. 0002 는 대체하지 않는다 — 그 Consequences 의
+"CI 설정은 소유 파일" 항목이 이제 GitLab 루트 파일과 서브프로젝트 골격에만 해당한다는 보완 범위를 0025 의 Consequences 가 적는다
 
 ## 14. 한계
 
