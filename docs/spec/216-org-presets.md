@@ -912,7 +912,8 @@ doctor 결과 목록에 `preset` 절을 더한다. 자리는 `managed files` 절
 
 ## 18. 결정 기록
 
-결정 기록: preset 은 고정 참조로 상속한다 — 참조 형식 · lock 형식 · `.harness/` 자리 재정의 (분해에서 작성)
+preset 을 고정 참조로 상속하는 결정 — 참조 형식, lock 형식과 내용 해시, `.harness/` 자리 재정의 — 은
+`docs/adr/0024-presets-are-inherited-through-pinned-references.md` 가 기록한다. 0005 · 0002 를 대체하지 않는다.
 
 ## 19. 한계
 
