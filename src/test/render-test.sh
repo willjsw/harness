@@ -5324,7 +5324,7 @@ check "an old usage log that shrinks while it is appended is left and its place 
 I110="$lg110/i"; mk110 "$I110" legacy110i || bad "could not set up the import-during-move repository"
 g110 "$I110" worktree add -q --detach "$lg110/i-wt" || bad "could not add a worktree to the import-during-move repository"
 python3 - "$root/bin/harness" "$I110" "$lg110/i-sessions" "$lg110/i-wt" > "$work/imp110.txt" 2>&1 <<'PY'
-import contextlib, datetime, importlib.machinery, importlib.util, io, json, os, re, shutil, subprocess, sys
+import contextlib, datetime, importlib.machinery, importlib.util, io, json, os, re, shutil, subprocess, sys, time
 from pathlib import Path
 sys.dont_write_bytecode = True
 loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
@@ -5361,19 +5361,43 @@ def lay(at):   # 옛 이름 디렉터리: 세션 하나를 이미 센 커서 · 
     open(new + "/metrics/" + name, "w").write(span(ev="start", span="s-new", trace="t-new", kind="script", name="new", attrs={}, t=ts(20)))
     return os.path.realpath(new + "/metrics/" + name)
 
-def start_import(at, seen):   # 하네스 루트 at 에서 가져오기를 띄우고 잠깐 기다린다 — 끝나지 않고 기다리고 있는지 본다
+# 가져오기 프로세스 — 등록부 잠금을 청하기 직전과 잡은 직후를 표시 파일에 한 줄씩 남기고 CLI 를 그대로 돈다
+CHILD = """
+import contextlib, importlib.machinery, importlib.util, sys
+sys.dont_write_bytecode = True
+harness, mark = sys.argv[1:3]
+loader = importlib.machinery.SourceFileLoader("harness_cli", harness)
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+held = cli.registry_lock
+@contextlib.contextmanager
+def registry_lock():
+    open(mark, "a").write("waiting\\n")
+    with held():
+        open(mark, "a").write("held\\n")
+        yield
+cli.registry_lock = registry_lock
+sys.argv = [harness] + sys.argv[3:]
+sys.exit(cli.main())
+"""
+
+def marks(mark):
+    return open(mark).read().split() if os.path.exists(mark) else []
+
+def start_import(at, mark):   # 하네스 루트 at 에서 가져오기를 띄우고 그것이 등록부 잠금을 청할 때까지 기다린다
     env = dict(os.environ, HARNESS_CLAUDE_DIR=sessions, HARNESS_CODEX_DIR=sessions + "/none")
-    p = subprocess.Popen([harness, "metrics", "import", "--target", at, "--since", "1d"], env=env,
+    p = subprocess.Popen([sys.executable, "-c", CHILD, harness, mark, "metrics", "import", "--target", at, "--since", "1d"], env=env,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    try:
-        p.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
-    seen.append(p.poll() is None)
+    deadline = time.monotonic() + 60
+    while not marks(mark) and p.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
     return p
 
 def run(pause, at):
     target = lay(at)
+    mark = os.path.join(os.path.dirname(sessions), "lock-%s-%s" % (pause, "wt" if at == wt else "main"))
+    if os.path.exists(mark):
+        os.remove(mark)
     real_open, real_write, fds, seen, procs = os.open, os.write, {}, [], []
     def os_open(p, flags, *a, **k):
         fd = real_open(p, flags, *a, **k)
@@ -5387,15 +5411,16 @@ def run(pause, at):
     def os_write(fd, data):   # 새 스팬 파일에 첫 조각을 쓴 직후 가져오기를 띄운다
         n = real_write(fd, data)
         if fd in fds and pause == "mid-append" and not procs:
-            procs.append(start_import(at, seen))
+            procs.append(start_import(at, mark))
         return n
     cli.COPY_CHUNK = 256
     os.open, os.write = os_open, os_write
     try:
         with contextlib.redirect_stdout(io.StringIO()), cli.registry_lock():
             if pause == "before-move":
-                procs.append(start_import(at, seen))
+                procs.append(start_import(at, mark))
             cli.migrate_legacy(cfg, Path(repo), "render")
+            seen.append(marks(mark) == ["waiting"])   # 옮기기가 끝나 잠금을 놓기 전까지 가져오기는 잠금을 청한 채 기다린다
     finally:
         os.open, os.write = real_open, real_write
     if not procs:
@@ -5409,6 +5434,8 @@ def run(pause, at):
         d = json.loads(out)
     except ValueError:
         return "%s: import failed: %s" % (pause, err.strip()[-200:])
+    if marks(mark) != ["waiting", "held"]:
+        return "%s: the import did not take the lock after the move: %s" % (pause, marks(mark))
     imp = d["diagnostics"]["imported"]
     tokens = {t["trace"]: t["tokens"] for t in d["traces"]}
     return "%s%s: waited %s | records %s | unattributed %s | run tokens %s" % (
