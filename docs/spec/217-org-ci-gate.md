@@ -30,7 +30,7 @@
 - 모노레포 서브프로젝트에서는 게이트를 생성하지 않는다. 그 자리에는 소유 골격을 없을 때만 깐다 (2-1)
 - GitLab 의 리포 루트 `.gitlab-ci.yml` 은 소유 파일이다. 없을 때만 게이트를 include 하는 원형을 깔고, 있으면 건드리지 않는다
 - 이미 깔린 게이트 경로의 파일은 매니페스트에 없으므로 사용자 파일이다. 하네스 갱신이 그 자리에서 한 번 멈추고 `--adopt` 를 요구한다 (4-1)
-- 무엇을 검증할지는 그대로 `[commands]` · `[verify]` 가 정한다. 게이트가 도는 검증 일괄은 `script/run-lint-test.sh` 다
+- 무엇을 검증할지는 그대로 `[commands]` · `[verify]` 가 정한다. 게이트가 도는 검증 일괄은 `script/run-lint-test.sh` 이고, #221 이 들어와 있으면 `<CLI> verify` 다 (2-3)
 - `check` 에 preset 정책 검사가 더해진다 (5절). 네트워크를 쓰지 않는다. 허용 출처는 pre-commit 의 `check --staged` 에서도 본다.
   최소 버전은 `--min-preset-version` 을 받을 때만 보고, 그 인자는 CI 게이트만 넘긴다
 - 게이트는 개인 레이어를 뺀 설정으로 렌더된다(#207). 오케스트레이터·러너·모델 값을 담지 않는다
@@ -109,12 +109,15 @@ CI 템플릿이 쓸 수 있는 변수는 아래 넷뿐이다. 다른 `{{…}}` �
 
 `{{CI_VERIFY}}` 가 내는 명령:
 
-| `policy.check_min_preset_version` | 명령 |
-|---|---|
-| `false` | `script/run-lint-test.sh` |
-| `true` | `<CLI> check --min-preset-version "$HARNESS_MIN_PRESET_VERSION" && script/run-lint-test.sh` |
+| `policy.check_min_preset_version` | 명령 | #221 이 들어와 있을 때의 명령 |
+|---|---|---|
+| `false` | `script/run-lint-test.sh` | `<CLI> verify` |
+| `true` | `<CLI> check --min-preset-version "$HARNESS_MIN_PRESET_VERSION" && script/run-lint-test.sh` | `<CLI> check --min-preset-version "$HARNESS_MIN_PRESET_VERSION" && <CLI> verify` |
 
-- `<CLI>` 는 하네스 루트가 하네스 소스 리포(`source_tree()`)면 `src/bin/harness`, 아니면 `.harness/bin/harness` 다
+- `<CLI>` 는 하네스 루트가 하네스 소스 리포(`source_tree()`)면 `src/bin/harness`, 아니면 `.harness/bin/harness` 다. #221 이 들어와 있으면
+  `derive()` 의 `{{HARNESS_CLI}}` 값을 쓴다 — 같은 값이다
+- #221 이 들어와 있으면 게이트는 `script/run-lint-test.sh` 를 부르지 않는다. #221 은 그 파일을 리포 루트의 CI 파일 가운데 render 가 생성하지
+  않는 것이 부를 때만 생성하고, 이번 render 가 생성하는 게이트는 그 판정에 들지 않는다(#221 3-1)
 - 게이트 템플릿은 검증 명령을 직접 적지 않는다. 검증 진입점은 이 값으로만 정해진다
 
 `{{CI_SETUP}}` 이 내는 항목 줄. 3-1 의 예라면 이렇다. 값은 모두 JSON 문자열 표기다.
@@ -212,18 +215,12 @@ preset 리포(#216 3절)는 루트의 `ci/` 아래에 게이트 템플릿을 둘
 | `ci/github/harness-verify.yml` | 선택 | `forge.review_host = "github"` 의 게이트 템플릿 (2-2 · 2-3) |
 | `ci/gitlab/harness-verify.yml` | 선택 | `forge.review_host = "gitlab"` 의 게이트 템플릿 (2-2 · 2-3) |
 
-- `ci` · `ci/github` · `ci/gitlab` 은 디렉터리이고, 두 템플릿은 일반 파일이다. 심볼릭 링크 · 서브모듈이면 preset 을 거부한다 — `project/` 와 같은 종류 판정이다
-- `ci/` 아래에는 위 두 파일과 그 부모 디렉터리만 둔다. 그 밖의 것(다른 디렉터리, `ci/` 바로 아래의 파일, `ci/<host>/` 아래의 다른 항목)이
-  하나라도 있으면 preset 을 거부한다. `ci/` 가 없거나 템플릿이 하나뿐인 preset 은 받는다
-- 판정은 #216 의 트리 멤버 판정 함수 하나가 한다. 이 명세는 그 함수가 받는 경로에 위 둘을 더할 뿐이고, 판정 함수를 따로 두지 않는다
-- 거부 안내는 #216 의 출력 정책을 따른다 — 경로를 옮기지 않는다. 이름이 어긋나면 담긴 디렉터리만 낸다
-
-  ```
-  error: preset <참조> has an entry under ci/ that is not github/ or gitlab/
-  error: preset <참조> has an entry under ci/<host>/ that is not harness-verify.yml
-  ```
-
-  `<host>` 는 `github` · `gitlab` 가운데 그 항목이 담긴 쪽이다. 종류 어긋남은 #216 3-2 의 종류 문구를 그대로 쓴다
+- 위 두 행이 #216 의 받는 파일 표(3-1)에 들어간다. 그러면 `ci` · `ci/github` · `ci/gitlab` 이 받는 디렉터리가 되고, 멤버 판정(#216 3-2)이
+  표에서 나오므로 판정 함수를 따로 두지 않는다
+- 그 결과 `ci/` 아래에는 두 템플릿과 받는 디렉터리만 받는다. `ci/` 아래의 다른 항목(다른 디렉터리, `ci/` 바로 아래의 파일, `ci/<host>/` 아래의
+  다른 항목)은 사유 `not a preset path` 로 거부되고, 템플릿이나 받는 디렉터리의 종류가 어긋나면 #216 3-2 표의 종류 사유로 거부된다.
+  `ci/` 가 없거나 템플릿이 하나뿐인 preset 은 받는다
+- 거부 안내는 #216 3-2 의 단일 형식(`… has an entry the harness does not accept (<사유>, entry <N>)`)이다. 경로를 옮기지 않는다
 - 템플릿의 내용(UTF-8 · 변수 규칙)은 멤버 판정이 보지 않는다. render 가 본다(2-2 · 2-3)
 - 받은 템플릿은 preset 사본의 같은 상대 경로(`.harness/preset/<깊이>/ci/<host>/harness-verify.yml`)에 놓이고 내용 해시(#216 4-4)에 든다
 
@@ -232,13 +229,8 @@ preset 리포(#216 3절)는 루트의 `ci/` 아래에 게이트 템플릿을 둘
 | 위치 | 개정 문안 |
 |---|---|
 | 3-1 받는 파일 표 | 두 행을 더한다 — `ci/github/harness-verify.yml` · `ci/gitlab/harness-verify.yml`, 선택, "CI 게이트 템플릿. 그 리뷰 호스트의 게이트 본문이 된다(#217)" |
-| 3-1 받지 않는 항목 줄 | 받는 항목에 `ci/` 를 더한다 — "`preset.toml` · `project/` · `ci/` 밖의 항목은 받지 않는다. 읽지도 판정하지도 않는다(README · preset 리포 자신의 CI 설정 · 테스트 등)" |
-| 3-1 새 줄 (`project/` 줄 뒤) | "`ci/` 아래에는 `github/` · `gitlab/` 디렉터리만, 그 아래에는 `harness-verify.yml` 파일만 둔다. 그 밖의 것이 하나라도 있으면 preset 을 거부한다" |
-| 3-1 UTF-8 줄 | 끝에 더한다 — "CI 템플릿의 내용은 받을 때 보지 않는다. render 가 본다(#217)" |
-| 3-2 부모 디렉터리 목록 | `project` · `project/roles` · `project/workflows` 에 `ci` · `ci/github` · `ci/gitlab` 을 더한다 |
-| 3-2 이름 어긋남 문구 | 위의 `ci/` 문구 둘을 더한다 |
-| 3-2 안내문의 help 줄 | 파일 목록에 `CI templates under ci/github/ and ci/gitlab/` 를 더한다 |
-| 4-2 사본 예시 | 깊이 1 아래에 `ci/github/harness-verify.yml` 한 줄을 더한다. "각 디렉터리에는 3-1 의 경로만 있다" 는 그대로 두고, 3-1 에 더한 `ci/` 경로가 그 안에 든다 |
+| 3-2 git 받기 안내문의 help 첫 줄 | 파일 목록에 CI 템플릿을 더한다 — `help: a preset holds regular files only — preset.toml, notes under project/roles/ and project/workflows/, and CI templates under ci/github/ and ci/gitlab/` |
+| 4-2 사본 예시 | 깊이 1 아래에 `ci/github/harness-verify.yml` 한 줄을 더한다 |
 
 ## 3. 설정
 
@@ -451,6 +443,8 @@ help: raise extends to the minimum or later, then run harness pull
 - "게이트를 생성하는 루트" 는 2-1 표의 첫 행(리포 루트, 또는 git 작업 트리 밖)이다
 - "게이트가 아닌 CI 파일" 은 github 면 `.github/workflows/` 바로 아래의 `*.yml` · `*.yaml` 가운데 게이트가 아닌 것, gitlab 이면
   루트 `.gitlab-ci.yml` 이다. 판정은 줄에 문자열이 있는지만 본다 — YAML 을 해석하지 않는다
+- #221 이 들어와 있으면 `<경로> runs script/run-lint-test.sh` 줄은 #221 3-4 의 `verification` 절 줄이 맡는다. 이 절은 그 줄을 내지 않고,
+  같은 파일을 두 절에서 알리지 않는다
 - 원격(forge 설정 · 조직 ruleset · CI 변수)은 보지 않는다. `--remote` 에도 더하지 않는다
 - UI: `src/ui/lib/doctor.js` 의 `SECTIONS` 에 `"ci gate": "CI 게이트"` 를 두고, 새 줄마다 사람이 읽는 설명을 둔다
 
@@ -489,7 +483,7 @@ help: raise extends to the minimum or later, then run harness pull
 구현과 같은 리뷰 요청에서 한다. 게이트가 생성 파일이 되면 이 리포의 CI(`check`)가 곧바로 그것을 대조하기 때문이다.
 
 1. `src/bin/harness render --adopt` 로 `.github/workflows/harness-verify.yml` 을 넘겨받고, `.orig` 를 지운다. 생성 게이트의
-   트리거 브랜치는 `["develop", "main"]` 이고, `[ci].setup` 은 비어 있고, `{{CI_VERIFY}}` 는 `script/run-lint-test.sh` 다
+   트리거 브랜치는 `["develop", "main"]` 이고, `[ci].setup` 은 비어 있고, `{{CI_VERIFY}}` 는 2-3 의 표대로 `script/run-lint-test.sh`(#221 이 들어와 있으면 `src/bin/harness verify`)다
 2. 지금 그 파일에 있는 `release` job 을 소유 파일 `.github/workflows/release.yml` 로 옮긴다
 
    ```yaml
@@ -538,7 +532,7 @@ help: raise extends to the minimum or later, then run harness pull
 | #219 | #219 는 이 명세가 들어간 뒤에 착수한다(#219 의 착수 전제). #219 의 레지스트리 운영 안내가 가리키는 대상 리포 CI 검사는 이 명세의 게이트다 — 체크 이름은 2-5, 운영 안내는 `docs/workflow/ci-gate.md`(7절). 대상 리포 CI 는 레지스트리 없이 커밋된 vendoring 과 lock 으로 검사한다 |
 | #207 | `[ci]` · `[policy]` 의 기본값과 주석은 `defaults.toml` 에 두고(3-1 · 3-2), 절의 키 검사는 그 파일에서 받을 키를 읽는다(#207 2-3). 병합 규칙은 3-3 이고 #207 의 병합 규칙 표에 더한다. 조직은 `locked` 로 잠그고, 배열 키의 잠금은 #207 의 일반 배열 잠금을 쓴다. 개인 레이어 허용 키가 아니다. 보호 브랜치 합집합이 트리거 브랜치에 그대로 들어간다 |
 | #206 | 코드는 `src/harness/` 모듈 지도에 놓인다 |
-| #213 · #221 | `script/run-lint-test.sh` 는 #213 이 shim 으로 남긴다. 이 명세가 든 릴리스부터는 리포 루트의 하네스 CI 파일을 render 가 쓴다. 그래서 기존 설치본의 소유 CI 파일 때문에 그 shim 을 둘 이유가 사라진다. shim 을 걷는 일과 `{{CI_VERIFY}}` 가 내는 명령을 새 검증 진입점으로 바꾸는 일은 #221 이 함께 한다. 남은 옛 호출(GitLab 루트 파일, 다른 워크플로)은 6절의 doctor 가 알린다 |
+| #213 · #221 | `script/run-lint-test.sh` 는 #213 이 shim 으로 남긴다. #221 은 그 shim 을 걷고, 리포 루트의 CI 파일 가운데 render 가 생성하지 않는 것에 그 경로가 든 줄이 있는 동안에만 생성 파일로 남긴다(#221 3절). 그 판정은 이번 render 가 생성하는 경로를 보지 않으므로 이 명세의 게이트는 조건에 들지 않는다. 그래서 #221 이 들어와 있으면 `{{CI_VERIFY}}` 는 `{{HARNESS_CLI}} verify`, 최소 버전 검사를 켜면 `{{HARNESS_CLI}} check --min-preset-version "$HARNESS_MIN_PRESET_VERSION" && {{HARNESS_CLI}} verify` 다(2-3). 두 이슈 사이에 순서는 없고, 나중에 들어가는 쪽이 이 명령을 맞춘다(#221 3-5). 서브프로젝트 골격 · GitLab 루트 원형의 주석도 같은 표기다. 남은 옛 호출(GitLab 루트 파일, 다른 워크플로)은 #221 이 없으면 6절의 doctor 줄이 알린다. #221 이 있으면 #221 3-4 의 줄이 알리고, 서브프로젝트에서 리포 루트로 옮긴 골격까지 본다 |
 | 하네스 최소 버전 | 대상 리포 하네스의 최소 버전은 #216 의 pull 멈춤 조건(요구 하네스 버전 미달)이 맡는다. 이 명세의 최소 버전은 preset 버전이다 |
 
 ## 10. 함께 고치는 현재형 문서
@@ -569,7 +563,7 @@ help: raise extends to the minimum or later, then run harness pull
 
 | 케이스 | 확인하는 것 |
 |---|---|
-| github 게이트 생성 | 리포 루트 설치에서 `.github/workflows/harness-verify.yml` 이 생기고 `.harness/generated` 에 있다. 머리말 세 줄, 트리거 브랜치가 base 와 보호 브랜치(중복 없이, base 먼저), `run: "script/run-lint-test.sh"` |
+| github 게이트 생성 | 리포 루트 설치에서 `.github/workflows/harness-verify.yml` 이 생기고 `.harness/generated` 에 있다. 머리말 세 줄, 트리거 브랜치가 base 와 보호 브랜치(중복 없이, base 먼저), `run: "script/run-lint-test.sh"`(#221 이 들어와 있으면 `run: ".harness/bin/harness verify"`) |
 | 손편집 | 게이트를 고치면 `check` 와 `check --staged` 가 `differs from the config` 로 1. render 가 되돌린다 |
 | 넘겨받기 | 매니페스트에 없는 게이트 파일이 있으면 render · install 이 종료 코드 2 이고 아무것도 쓰지 않으며, 안내문에 CI 줄이 있다. `--adopt` 면 `.orig` 와 생성 게이트가 생기고, `.orig` 는 매니페스트에 없다 |
 | gitlab 게이트 생성 | `.gitlab/harness-verify.yml` 이 생성되고 루트 원형(include 줄)이 깔린다. 이미 있는 루트 `.gitlab-ci.yml` 은 바이트 그대로다 |
@@ -580,13 +574,13 @@ help: raise extends to the minimum or later, then run harness pull
 | `[ci]` · `[policy]` 검증 | 3-1 · 3-2 표의 위반마다 render 가 종료 코드 2 로 거부한다. gitlab 에서 `uses` 를 거부한다. 절이 없는 설정은 기본값으로 렌더된다. 모르는 키의 help 줄이 `defaults.toml` 의 그 절의 키를 나열한다 |
 | 정책 키 잠금 | 조직 preset 이 두 `policy` 키를 잠그면, 프로젝트가 다른 `preset_sources` 배열이나 다른 `check_min_preset_version` 을 적을 때 render 가 종료 코드 2 로 거부하고, 같은 값은 받는다 |
 | preset 템플릿 고르기 | 조직·스택 두 단계 체인에서 스택 preset 의 템플릿을 쓰고, 스택에 없으면 조직 것, 둘 다 없으면 내장을 쓴다. 머리말의 템플릿 출처가 그것과 맞다 |
-| preset 의 `ci/` 멤버 | `ci/` 아래에 다른 호스트 디렉터리 · `ci/` 바로 아래 파일 · `ci/<host>/` 의 다른 파일 · 링크인 템플릿이 있으면 pull 이 종료 코드 2 로 거부하고 아무것도 바꾸지 않는다. 안내에 그 항목의 경로가 없다. 템플릿이 하나뿐인 preset 은 받는다 |
+| preset 의 `ci/` 멤버 | `ci/` 아래에 다른 호스트 디렉터리 · `ci/` 바로 아래 파일 · `ci/<host>/` 의 다른 파일이 있으면 사유 `not a preset path`, 링크인 템플릿이면 `a symbolic link` 로 pull 이 종료 코드 2 로 거부하고 아무것도 바꾸지 않는다. 안내에 그 항목의 경로가 없다. 템플릿이 하나뿐인 preset 은 받는다 |
 | pull 의 템플릿 규칙 | 새 체인의 템플릿이 2-3 의 규칙을 어기면 pull 이 종료 코드 2 로 멈추고 사본 · lock · 생성 파일이 그대로다 |
 | 템플릿 규칙 | `{{CI_VERIFY}}` 없음, 브랜치 변수 없음, setup 이 있는데 `{{CI_SETUP}}` 없음, 홀로 서지 않은 표지, 모르는 변수, 다른 호스트의 변수, `{{INCLUDE:…}}`, UTF-8 이 아닌 템플릿 — 각각 render 를 거부하고 아무것도 쓰지 않는다. `${{ vars.X }}` 는 그대로 남는다 |
 | vendoring 해시 | vendoring 된 `ci/github/harness-verify.yml` 을 고치면 #216 의 lock 대조가 render · check 를 멈춘다 |
 | 허용 출처 | 같은 값, `/` 접두, 어긋남을 가른다. 깊이 2 항목의 출처만 어긋나도 잡는다. `--staged` 가 인덱스의 lock 을 본다. pre-commit 이 커밋을 막는다. 값이 비어 있으면 검사하지 않는다 |
 | 최소 버전 | 이상이면 통과, 미만이면 1, 버전이 아닌 태그면 1, 빈 값 · 형식 어긋남 · 중복은 2(다른 검사 없이). 목록에 없는 체인 항목은 보지 않고, 인자가 없으면 검사하지 않는다 |
-| `{{CI_VERIFY}}` | `check_min_preset_version = true` 면 대상 리포는 `.harness/bin/harness check --min-preset-version …`, 소스 트리 복제는 `src/bin/harness check --min-preset-version …` 이다. 거짓이면 `script/run-lint-test.sh` 뿐이다 |
+| `{{CI_VERIFY}}` | `check_min_preset_version = true` 면 대상 리포는 `.harness/bin/harness check --min-preset-version …`, 소스 트리 복제는 `src/bin/harness check --min-preset-version …` 이다. 거짓이면 `script/run-lint-test.sh` 뿐이다. #221 이 들어와 있으면 `script/run-lint-test.sh` 자리가 `<CLI> verify` 다 |
 | 게이트 명령 실행 | 설치한 임시 리포에서 생성 게이트의 `run:` 값(JSON 문자열로 풀어서)을 셸로 돌리면 0 이다. 정책을 켜고 `HARNESS_MIN_PRESET_VERSION` 을 비우면 2 다 |
 | doctor | 6절 표의 줄마다 해당 조건을 만들어 상태·`what` 을 확인한다 |
 | 터미널 출력 | 새 오류와 안내에 한글이 없다 |
@@ -600,7 +594,7 @@ help: raise extends to the minimum or later, then run harness pull
 | 출처 일치 | `/` 로 끝나는 값의 접두 일치, 그 밖은 같음, 끝 `/` 를 정규화하지 않음 |
 | 표지 줄 치환 | 앞 공백 붙이기, 빈 목록이면 줄 삭제, 홀로 서지 않은 표지 거부 |
 | setup 항목 렌더 | github 의 `uses` · `with` · `run`, gitlab 의 `run`, JSON 문자열 표기 |
-| 트리 멤버 판정의 `ci/` | 두 템플릿과 그 부모 디렉터리를 받는다. `ci/` 아래 다른 항목과 종류 어긋남을 거부하고, 거부 문구에 그 항목의 경로가 없다 |
+| 트리 멤버 판정의 `ci/` | 두 템플릿과 받는 디렉터리를 받는다. `ci/` 아래 다른 항목은 `not a preset path`, 종류 어긋남은 #216 3-2 의 종류 사유로 거부하고, 돌려주는 값에 그 항목의 경로가 없다 |
 
 ### 11-3. UI
 
