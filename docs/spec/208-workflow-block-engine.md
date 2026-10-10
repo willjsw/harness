@@ -21,17 +21,18 @@
 | 프로젝트 구조화 출력 스키마 | 대상 리포의 `.ai/project/schemas/<이름>.json` |
 | `harness run` · `harness steps` · `harness schema` · `harness doctor` | #206 이 정한 명령 모듈 |
 | 절차 문서 · 커맨드 생성(`workflow_doc()` · `plan()` · `command_rows()` · 관리 파일 설치 판정) | #206 이 정한 render 자리 |
-| 역할 실행기 | `src/templates/managed/script/run-agent.py` (대상 리포의 `script/run-agent.py`) |
+| 역할 실행기 | `src/templates/managed/script/run-agent.py` (대상 리포의 `script/run-agent.py`). #213 이 하위 명령 `harness run-agent` 로 옮긴 뒤에는 그 명령 모듈이고 `script/run-agent.py` 는 그 shim 이다 |
+| 실행 계획의 `driver` · `prompt` 자리 | #207 의 실행 계획 함수(`run_plan()`) |
 | 벤더 선언 | `src/templates/vendors.toml` |
 | 지표 집계(`metrics_report()`) | #206 이 정한 metrics 자리 |
-| 기본 설정 주석 | `src/templates/harness.toml` |
+| 내장 기본값 주석 | `src/templates/defaults.toml` (#207) |
 | UI doctor 문구 | `src/ui/lib/doctor.js` |
 | 회귀 테스트 | `src/test/render-test.sh` · `src/test/unit/` · `src/ui/lib/doctor.test.js` |
 | 사람용 설명 | `README.md` · `src/templates/managed/docs/workflow/` · `src/templates/managed/script/README.md` |
 
 ## 1. 동작이 바뀌는 것과 바뀌지 않는 것
 
-- `execute` 를 적지 않은 절차는 agent 절차다. 기본 설정의 세 절차(`prework` · `work` · `retro`)는 agent 절차로 남고,
+- `execute` 를 적지 않은 절차는 agent 절차다. 내장 기본값의 세 절차(`prework` · `work` · `retro`)는 agent 절차로 남고,
   그 절차 문서와 커맨드는 이 변경 전과 바이트 단위로 같다
 - agent 절차의 `harness run` 은 지금과 같다 — 오케스트레이터를 대화형으로 띄우고 그 종료 코드로 끝난다.
   하위 절차로만 불리는 agent 절차의 거부와 새 플래그의 거부만 더해진다 (7-1)
@@ -42,6 +43,7 @@
 - `harness steps` 가 단계와 절차의 키를 전부 보존한다 (11-1)
 - 벤더 선언에 키 셋(`agent` · `driver_write` · `structured`)이 생기고 claude 의 `headless` 템플릿이 `agent` 키를 쓴다.
   렌더되는 역할 argv 는 지금과 같다 (7-4)
+- 실행 계획에 역할마다의 `driver` 항목과 최상위 `prompt` 항목이 더해진다. 기존 필드는 그대로다 (7-4)
 
 ## 2. 절차 설정
 
@@ -110,6 +112,8 @@ steps = [
 
 - **배선은 절차 단위다.** 한 단계라도 `next` 가 있으면 그 절차의 모든 단계가 `next` 를 가진다(명시 배선).
   어느 단계에도 없으면 암묵 배선이다 (2-4)
+- 빈 표(`next = {}`)도 `next` 가 있는 것이다. 그 단계는 outcome 이 하나도 이어지지 않은 명시 배선이고, 절차가 암묵 배선으로 돌아가지 않는다.
+  그런 단계는 render 의 완전성 · 끝 검사를 통과하지 못한다 (6절)
 - **시작 단계는 목록의 첫 단계다.** 목록 순서는 시작 단계와 문서의 단계 번호만 정한다 — 명시 배선 절차에서 순서를 바꿔도 배선은 그대로다
 - 실행 때 outcome 이 표의 키에 있으면 그 값으로, 없고 `"*"` 가 있으면 그 값으로 간다. 둘 다 없으면 실행 전체가 `stop` 으로
   끝난다 — 이유 `outcome <outcome> is not wired`
@@ -133,7 +137,8 @@ steps = [
   하위 절차의 끝 상태가 그 블록의 outcome 이다
 - 하위 절차는 같은 설정의 절차다. 부르는 절차와 `execute` 가 같아야 한다. 자기 자신이나 자기를 (거슬러 올라가며) 부르는 절차를 부를 수 없다
 - **단계가 없는 절차는 하위 절차일 때만 허용한다** — 확장 지점이다. 불리면 블록을 하나도 돌리지 않고 곧바로 `done` 으로 끝난다
-- agent 하위 절차는 커맨드가 없고 `harness run` 으로 직접 시작하지 않는다 (7-1, 10절). driver 하위 절차는 직접 시작할 수 있다
+- agent 하위 절차는 커맨드가 없고 `harness run` 으로 직접 시작하지 않는다 (7-1, 10절). driver 하위 절차는 자기 `set` 에 없는 변수를
+  자리표시로 쓰지 않으면 직접 시작할 수 있다 — 쓰면 부르는 절차가 그 값을 올리므로 직접 시작을 거부한다 (7-1)
 
 ## 3. 블록 계약
 
@@ -171,7 +176,7 @@ steps = [
 
 - 역할 실행기로 그 역할을 헤드리스로 한 번 돌린다 (7-4). 러너가 `inproc` 인 역할도 오케스트레이터 벤더의 headless 로 돈다
 - 프롬프트는 차례대로 이렇다
-  1. 역할 지시 — `run-agent.py` 의 기본 지시와 같은 문장(역할 이름 · 계약 경로 `.ai/templates/<역할>.md` · 규칙 정본)
+  1. 역할 지시 — 역할 실행기의 기본 지시와 같은 문장(역할 이름 · 계약 경로 `.ai/templates/<역할>.md` · 규칙 정본)
   2. `입력: 이슈 <이슈>`
   3. 단계의 `text` — 자리표시를 푼 것. 없으면 빠진다
   4. 스키마가 있으면 — 결과 끝에 그 스키마를 따르는 JSON 객체 하나를 info string 이 `json` 인 fenced 블록 하나로 내라는 지시와 스키마 원문
@@ -222,8 +227,8 @@ steps = [
 
 - 변수 이름은 `^[a-z][a-z0-9_]{0,31}$` 이고 `issue` · `steps` 는 쓸 수 없다. 키 이름은 `^[A-Za-z_][A-Za-z0-9_]{0,63}$` 이다
 - 필터 · 기본값 · 식 · 중첩 경로는 없다
-- `set = { <변수> = "<키>" }` — 그 단계가 끝나면 출력의 최상위 키 값을 그 절차 실행의 변수에 둔다. 출력이 없거나 키가 없으면
-  그 변수를 지운다. 출력이 있는 블록(`on = "exit"` 인 script, 스키마가 있는 agent)에만 쓴다
+- `set = { <변수> = "<키>" }` — 그 단계가 끝나면 출력의 최상위 키 값을 그 절차 실행의 변수에 둔다. 출력이 없거나 키가 없거나
+  값이 null 이면 그 변수를 지운다. 출력이 있는 블록(`on = "exit"` 인 script, 스키마가 있는 agent)에만 쓴다
 - 같은 단계가 다시 돌면 새 출력이 이전 출력을 대신한다. 출력 없이 끝나면 이전 출력도 없어진다
 
 ### 4-2. 쓰는 곳과 푸는 방법
@@ -231,8 +236,11 @@ steps = [
 - 자리표시는 `{` 와 `}` 사이가 영문자 · 숫자 · `_` · `.` · `-` 1자 이상이고, 앞뒤에 다른 중괄호가 붙지 않은 것이다.
   그 밖의 중괄호(`{}` · `{a: .b}` · `{{…}}`)는 글자 그대로다
 - 푸는 곳: script 의 `run`(인자로 나눈 뒤 원소마다), agent · prompt · gate 의 `text`. 조각 본문과 제목은 풀지 않는다
-- 값: 문자열은 그대로, 정수(불리언 제외)는 10진 문자열이다. 푼 값은 그 원소 안에 그대로 들어가고 인자 하나로 남는다 —
-  공백 · 따옴표 · `;` 가 있어도 셸이 해석하지 않는다
+- 값
+  - 문자열은 그대로다. 빈 문자열도 값이다 — 자리표시 하나로 된 원소는 빈 인자 하나가 된다
+  - 정수(불리언 제외)는 10진 문자열이다
+  - 배열 · 객체는 압축 JSON 한 문자열이다 — 구분자 `,` · `:` 뒤에 공백이 없고, 키 순서는 출력 그대로이며, 비ASCII 문자를 이스케이프하지 않는다
+  - 푼 값은 그 원소 안에 그대로 들어가고 인자 하나로 남는다 — 공백 · 따옴표 · `;` 가 있어도 셸이 해석하지 않는다
 - 벤더 argv 템플릿을 푸는 규칙(`expand()`)과 같다 — 모르는 이름은 막고, 값은 원소를 나누지 않는다
 - 순서: 단계 값은 먼저 절차 문서와 같은 render 치환(`{{VAR}}`)을 거치고, 그 뒤에 자리표시를 푼다. 푼 값은 다시 치환하지 않는다
 - agent 절차에서는 자리표시를 풀지 않는다. render 가 `{steps.…}` 만 거부하고, 나머지 중괄호는 지금처럼 글자 그대로 문서에 들어간다
@@ -243,8 +251,10 @@ steps = [
 
 | 경우 | 이유 |
 |---|---|
-| 변수가 없다 · 참조한 단계가 아직 돌지 않았다 · 출력이나 키가 없다 · 값이 null 이거나 빈 문자열이다 | `{<이름>} has no value` |
-| 값이 문자열도 정수도 아니다 | `{<이름>} is not a string or a whole number` |
+| 변수가 없다 · 참조한 단계가 아직 돌지 않았다 · 출력이나 키가 없다 · 값이 null 이다 | `{<이름>} has no value` |
+| 값이 불리언이거나 정수가 아닌 수다 | `{<이름>} is not a string, a whole number, an array or an object` |
+
+- 값이 없는 것은 키가 없거나 null 일 때뿐이다. 빈 문자열 · 빈 배열 · 빈 객체는 값이다 (4-2)
 
 ### 4-4. render 의 중괄호와의 구분
 
@@ -284,6 +294,7 @@ JSON Schema 의 부분 집합이다.
 | `required` | object | 있어야 하는 이름의 배열. 모두 `properties` 에 있다 |
 | `additionalProperties` | object | `true`(기본) · `false`. `false` 면 `properties` 밖의 이름을 거부한다 |
 | `enum` | string · integer | 허용 값 배열. 1개 이상, 서로 다르고, `type` 과 맞는다 |
+| `minLength` | string | 0 이상 정수(불리언 제외). 문자열의 길이(문자 수)가 그 값 이상이다 |
 | `items` | array | 원소의 스키마 |
 | `title` · `description` | 모든 스키마 | 설명. 검증하지 않는다 |
 
@@ -307,8 +318,17 @@ JSON Schema 의 부분 집합이다.
 
 ## 6. render 검증
 
-검증은 render · check · `harness steps`(`--dry-run` 포함)가 같은 함수로 한다. 오류 줄은 `error: workflows.<절차>` 로 시작하고,
-단계는 `workflows.<절차>.steps[<번호>]`, 배선은 `workflows.<절차>.steps[<번호>].next.<outcome>` 으로 위치를 적는다.
+검증은 render · check · `harness steps`(`--dry-run` 포함)가 같은 함수로 한다. 오류 줄은 `error: workflows.<절차>` 로 시작한다.
+
+| 걸리는 곳 | 위치 표기 |
+|---|---|
+| 절차 전체 (실행 방식 · 빈 절차 · 상한) | `workflows.<절차>` |
+| 단계 하나 | `workflows.<절차>.steps[<번호>]` — 번호는 0 부터 |
+| 단계 하나의 outcome 하나 | `workflows.<절차>.steps[<번호>].next[<outcome 의 JSON 문자열>]` — 예: `workflows.work.steps[2].next["*"]` |
+
+- outcome 하나에 걸리는 것: 대상 · outcome 키의 거부, 완전성의 빠진 outcome(그 outcome 이름으로 적는다)
+- 배선 섞임은 `next` 가 없는 첫 단계, 도달 · 끝은 걸린 단계 가운데 목록에서 첫 단계의 위치로 적는다
+- 그 밖의 행은 거부한 키가 있는 단계의 위치다
 
 | 검사 | 대상 | 거부하는 것 |
 |---|---|---|
@@ -323,15 +343,15 @@ JSON Schema 의 부분 집합이다.
 | 프롬프트 | prompt | 조각도 `text` 도 없다(지금과 같다). `access` 가 `read-only` · `write` 가 아니다 |
 | 선택지 | gate | `options` 가 서로 다른 outcome 이름 1개 이상의 배열이 아니다 |
 | 스키마 | agent | 없는 이름 · 5-2 를 어긴 파일 · 두 자리의 이름 겹침 · `schema` 없는 `on` · 5-2 조건을 어긴 `on` 필드. 프로젝트 자리의 `.json` 파일은 가리키지 않아도 문법을 본다 |
-| 배선 섞임 | driver | 일부 단계에만 `next` 가 있다 |
+| 배선 섞임 | driver | 일부 단계에만 `next` 가 있다 — 빈 표도 있는 것이다 (2-3) |
 | 암묵 배선의 `on` | driver | `next` 가 없는 절차의 `on` |
 | 대상 | driver | `next` 값이 같은 절차의 단계 id 도 끝 상태도 아니다 · 명시 배선 절차의 예약 id |
 | outcome 키 | driver | 키가 outcome 이름 형식도 `"*"` 도 아니다 · script 가 아닌 블록에서 그 블록의 outcome 집합에 없는 키 |
 | 완전성 | driver 의 script 가 아닌 블록 | outcome 집합의 원소가 키로도 없고 `"*"` 도 없다 |
 | 도달 | driver | 첫 단계에서 `next` 를 따라 닿지 않는 단계 |
 | 끝 | driver | `next` 를 따라 어느 끝 상태에도 닿지 못하는 단계 — script 의 표에 없는 outcome 이 `stop` 으로 가는 것은 세지 않는다 |
-| 자리표시 | driver | 4-1 의 형식이 아닌 이름 · 같은 절차의 `set` 에도, 그 절차를 (거슬러 올라가며) 부르는 절차의 `set` 에도 없는 변수 · 같은 절차에 없는 단계의 출력 · 출력이 없는 블록(`on = "stdout"` 인 script, 스키마 없는 agent, prompt · gate · workflow)의 출력 · 스키마의 최상위 `properties` 밖 키나 `type` 이 string · integer 가 아닌 키 |
-| `set` | driver | 변수 · 키 이름 형식 · 출력이 없는 블록 · 스키마의 최상위 `properties` 밖 키나 `type` 이 string · integer 가 아닌 키 |
+| 자리표시 | driver | 4-1 의 형식이 아닌 이름 · 같은 절차의 `set` 에도, 그 절차를 (거슬러 올라가며) 부르는 절차의 `set` 에도 없는 변수 · 같은 절차에 없는 단계의 출력 · 출력이 없는 블록(`on = "stdout"` 인 script, 스키마 없는 agent, prompt · gate · workflow)의 출력 · 스키마의 최상위 `properties` 밖 키나 `type` 이 string · integer · array · object 가 아닌 키 |
+| `set` | driver | 변수 · 키 이름 형식 · 출력이 없는 블록 · 스키마의 최상위 `properties` 밖 키나 `type` 이 string · integer · array · object 가 아닌 키 |
 | 상한 | driver | `max_steps` · `max_visits` 가 1 이상 1000 이하 정수가 아니다 |
 
 블록의 outcome 집합:
@@ -361,25 +381,31 @@ harness run <절차> <이슈> --discard
 | `--dry-run` | 상태 · 잠금 · worktree 를 만들거나 바꾸지 않고 7-3 의 출력 줄만 낸다 |
 
 - `COMMANDS` 표의 `run` 사용법과 README 명령 표는 `<workflow> <issue> [--worktree] [--resume] [--discard]` 다
-- 아래는 아무것도 바꾸지 않고 종료 코드 2 로 거부한다
+- 아래는 아무것도 바꾸지 않고 종료 코드 2 로 거부한다. 위에서부터 처음 맞는 줄의 출력을 낸다
 
 | 경우 | 출력 |
 |---|---|
-| driver 절차인데 이슈가 `^[0-9]{1,10}$` 가 아니다 | `` error: a driver workflow needs an issue number (got <값>) `` |
+| driver 절차인데 이슈가 숫자(`^[0-9]+$`)도 Jira 키(`^[A-Z][A-Z0-9_]*-[0-9]+$`)도 아니다 — 착수 잠금(#215)의 이슈 규칙과 같다 | `` error: a driver workflow needs an issue number or a Jira key (got <값>) `` |
+| `--worktree` 인데 이슈가 숫자(`^[0-9]{1,10}$`)가 아니다 — 71 명세 3절의 규칙 그대로. Jira 키 이슈의 driver 실행은 `--worktree` 없이 돈다 | `` error: --worktree needs an issue number (got <값>) `` |
 | agent 절차에 `--resume` · `--discard` | `` error: --resume and --discard work only for driver workflows (`<절차>` is an agent workflow) `` |
 | agent 하위 절차 | `` error: `<절차>` runs only as a sub-workflow of <부르는 절차, 쉼표로> `` |
+| driver 절차가 자기 `set` 에 없는 변수를 자리표시로 쓴다 — 그 값은 부르는 절차가 올린다 (2-5) | `` error: `<절차>` reads {<변수>} from a calling workflow — it runs only as a sub-workflow of <그 변수를 set 하는 부르는 절차, 쉼표로> `` |
 | 단계가 없는 절차 | `` error: `<절차>` has no steps — it is an extension point other workflows call `` |
 | `--discard` 와 다른 플래그 | `` error: --discard takes no other flag `` |
+
+- 자기 `set` 에 없는 변수의 판정은 시작한 절차의 단계만 본다. `{issue}` 와 `{steps.…}` 는 변수가 아니다. 여럿이면 단계 순서로 첫 변수를 적는다.
+  시작한 절차가 부르는 하위 절차 안의 값은 실행 때 4-3 이 판정한다
 
 ### 7-2. 시작 전 확인
 
 새 실행과 재개가 같다. 하나라도 걸리면 상태를 만들거나 바꾸지 않고 종료 코드 2 로 끝난다.
 
 1. 실효 설정(#207 — 개인 레이어 포함)을 읽고 #207 의 실행 시점 불변식 검사를 거친다
-2. 시작한 절차와 거기서 닿는 하위 절차의 agent · prompt 블록마다 실제 러너를 정한다 — 역할의 러너가 `inproc` 이면(prompt 블록은 늘)
-   `harness.orchestrator`, 아니면 그 러너. 그 벤더에 `headless` 가 없거나 실행 파일이 없으면 거부한다:
+2. 시작한 절차와 거기서 닿는 하위 절차의 agent · prompt 블록마다 실제 러너를 정한다 — 실행 계획의 그 역할 `driver` 항목(prompt 블록은
+   `prompt` 의 그 권한 항목)의 `vendor` 다 (7-4). 그 항목이 없거나(벤더에 `headless` 가 없다) 실행 파일이 없으면 거부한다:
    `` error: <실행 파일> is not installed — <절차>/<id> runs <역할 | the orchestrator> with it ``
-3. 역할 실행기 `script/run-agent.py` 가 없으면 거부한다: `error: script/run-agent.py is missing` 과 `help: harness render`
+3. 역할 실행기 `script/run-agent.py` 가 없으면 거부한다: `error: script/run-agent.py is missing` 과 `help: harness render`.
+   역할 실행기가 CLI 의 하위 명령이 된 뒤(#213)에는 이 확인이 없다
 4. `.ai/workflows/<절차>.md` 가 있다 (지금과 같다)
 
 ### 7-3. 실행 순서
@@ -412,21 +438,50 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
 
 | 인자 | 뜻 |
 |---|---|
-| `--driver` | 실행 시점 역할 계획의 `driver` 항목으로 띄운다. 러너가 `inproc` 인 역할도 실행한다 |
-| `--driver-prompt <권한>` | 역할 없이 실행 시점 역할 계획의 `prompt` 항목(그 권한)으로 띄운다 |
-| `--schema <파일>` | 그 벤더가 `structured` 를 선언했으면 그 인자를 붙인다. 아니면 무시한다 |
+| `--driver` | 실행 계획의 `roles.<역할>.driver` 로 띄운다. 러너가 `inproc` 인 역할도 실행한다. 그 항목이 없으면 2 |
+| `--driver-prompt <권한>` | 역할 없이 실행 계획의 `prompt.<권한>` 으로 띄운다. 그 항목이 없으면 2 |
+| `--schema <파일>` | 그 항목의 `structured` 가 비어 있지 않으면 그 인자를 붙인다. 비어 있으면 무시한다 |
 
 - 기존 호출(`<역할> [--out <파일>] [--prompt <지시>] [<입력> ...]` · `--check`)은 그대로다. 서브에이전트 역할을 `--driver` 없이 부르면 지금처럼 2 다
 - 드라이버는 실행기의 표준 입력을 비우고, `--out` 파일을 자기가 만든 0700 임시 디렉터리에 두며, 블록이 끝나면 그 디렉터리를 지운다
+- #213 이 역할 실행기를 하위 명령 `harness run-agent` 로 옮기면 위 세 인자(`--driver` · `--driver-prompt` · `--schema`)를 그 명령이 같은 뜻으로 받고,
+  드라이버는 shim 을 거치지 않고 패키지의 역할 실행기를 부른다
 
-실행 시점 역할 계획(#207 — `run-agent.py` 가 실행할 때 CLI 에서 받는 실효 계획. 받는 수단은 #207 이 정한다)에 두 항목을 더한다.
+실행 계획(#207 의 `run_plan()` — `harness run-plan` 이 내는 JSON. 드라이버는 같은 프로세스에서 그 함수를 부른다)에 두 자리를 더한다.
+기존 필드는 그대로다. 아래에서 `…` 는 권한 · 모델 인자와 줄인 값이다.
 
-| 값 | 역할마다의 `driver` | `prompt` (`read-only` · `write`) |
+```json
+{
+  "roles": {
+    "developer": {"via": "subagent", "vendor": "claude", "label": "Claude", "model": "",
+                  "driver": {"vendor": "claude", "exe": "claude",
+                             "argv": ["claude", "-p", "--agent", "developer", "--no-session-persistence", "…"],
+                             "output": "stdout", "usage_format": ["--output-format", "json"],
+                             "usage_parser": "claude-json", "structured": []}}
+  },
+  "prompt": {
+    "read-only": {"vendor": "claude", "exe": "claude", "argv": ["claude", "-p", "--no-session-persistence"],
+                  "output": "stdout", "usage_format": ["--output-format", "json"], "usage_parser": "claude-json"},
+    "write": {"vendor": "claude", "exe": "claude", "argv": ["claude", "-p", "--no-session-persistence", "…"],
+              "output": "stdout", "usage_format": ["--output-format", "json"], "usage_parser": "claude-json"}
+  },
+  "metrics": {"…": "…"}
+}
+```
+
+| 자리 | 있는 때 | 키 |
 |---|---|---|
-| `vendor` | 역할의 실효 러너. `inproc` 이면 `harness.orchestrator` | `harness.orchestrator` |
-| `argv` | 그 벤더의 `headless` 를 푼 것. `{agent}` = `agent` 표(`{role}` 은 역할), `{access}` = 역할이 `write` 면 `driver_write`(없으면 `access.write`), `read-only` 면 `access.read-only`, `{model}` = 지금의 역할 모델 규칙 | `{agent}` 는 빈 목록, `{access}` 는 왼쪽과 같은 규칙을 그 권한에, `{model}` = `harness.model` |
-| `exe` · `output` · `usage_format` · `usage_parser` | 그 벤더의 선언 | 같다 |
-| `structured` | 그 벤더의 `structured` 선언(없으면 빈 목록) | — |
+| `roles.<역할>.driver` | 켜진 역할이고 `entry` 가 없으며, 그 역할의 실제 벤더에 `headless` 가 있을 때 | `vendor` · `exe` · `argv` · `output` · `usage_format` · `usage_parser` · `structured` |
+| `prompt` (최상위) | 늘. 값은 `"read-only"` · `"write"` 두 키의 객체다 | 권한마다 실효 오케스트레이터 벤더에 `headless` 가 있으면 `vendor` · `exe` · `argv` · `output` · `usage_format` · `usage_parser` 의 객체, 없으면 그 권한 키가 없다 |
+
+| 키 | `roles.<역할>.driver` | `prompt.<권한>` |
+|---|---|---|
+| `vendor` | 역할의 실효 러너. `inproc` 이면 실효 `harness.orchestrator` | 실효 `harness.orchestrator` |
+| `argv` | 그 벤더의 `headless` 를 푼 것. `{agent}` = `agent` 표(`{role}` 은 역할), `{access}` = 역할이 `write` 면 `driver_write`(없으면 `access.write`), `read-only` 면 `access.read-only`, `{model}` = 지금의 역할 모델 규칙 | `{agent}` 는 빈 목록, `{access}` 는 왼쪽과 같은 규칙을 그 권한에, `{model}` = 실효 `harness.model` |
+| `exe` · `output` · `usage_format` · `usage_parser` | 그 벤더의 선언. 뜻은 기존 필드와 같다 | 같다 |
+| `structured` | 그 벤더의 `structured` 선언(없으면 빈 목록) | 없다 |
+
+- 두 자리는 다른 필드처럼 실효 설정(개인 레이어 포함)으로 계산한다
 
 벤더 선언(`vendors.toml`)의 새 키:
 
@@ -438,9 +493,19 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
 
 - claude 의 `headless` 는 `["claude", "-p", "{agent}", "--no-session-persistence", "{access}", "{model}"]`, `agent = ["--agent", "{role}"]` 이다.
   렌더되는 역할 argv 는 지금과 같다
-- `driver_write` 는 쓰기 역할이 승인 없이 `git add` · 보호되지 않은 브랜치 push · forge CLI 의 리뷰 요청 생성과 댓글을 할 수 있게 하는
-  인자다. 범위는 그 driver 실행 하나다 — `[permissions].allow_push` 는 대화형 세션의 설정으로 남는다
-- 보호 브랜치 push 와 force push 는 deny 규칙 · 명령 가드 · pre-push 훅이 그대로 막는다
+- `driver_write` 는 쓰기 역할이 그 driver 실행 하나에서 아래 조작을 승인 없이 할 수 있게 하는 인자다. 이 표가 기본 절차 `work` 의
+  구현자 단계가 쓰는 조작이다(#212 7절의 헤드리스 구현자 권한 표와 같다). `[permissions].allow_push` 는 대화형 세션의 설정으로 남고
+  이 범위를 정하지 않는다
+
+  | 조작 | 예 |
+  |---|---|
+  | 파일 읽기 · 쓰기 | 역할의 `access = "write"` |
+  | git | `git switch` · `git switch -c` · `git add` · `git commit` · `git push`(보호되지 않은 작업 브랜치, 강제 없이) |
+  | 검증 | `script/run-lint-test.sh --commit` |
+  | forge | `.ai/forge.md` 의 리뷰 요청 생성 · 조회, `review_mr_threads` · `review_mr_thread_reply` · `review_mr_note_summary` |
+  | 하네스 스크립트 | `script/create-carryover-issue.sh`(이월 이슈 생성), `script/sync-task-issues.sh <이슈> --dry-run` |
+
+- 보호 브랜치 push 와 force push 는 deny 규칙 · 명령 가드 · pre-push 훅이, `--no-verify` 는 deny 규칙 · 명령 가드가 그대로 막는다
 - **헤드리스 실행에 `--bare` 를 쓰지 않는다** — 설정에 정의된 훅(명령 가드)을 건너뛴다. 벤더 선언의 어느 argv 에도 `--bare` 가 없다.
   헤드리스 `claude -p` 가 `.claude/settings.json` 의 PreToolUse 훅을 거는지 <!-- TBD: 확인 필요 -->
 - claude · codex 의 `driver_write` 와 `structured` 는 그 CLI 로 직접 확인한 인자만 적는다(등록부 머리의 규칙). 확인하지 않은 키는 선언하지 않고,
@@ -516,6 +581,7 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
   outcome 이 `failed` 면 `error`, 아니면 `ok` 다. gate · workflow 는 `ok` 다
 - 자식(script 블록의 명령 · 역할 실행기)에 `HARNESS_TRACE_ID` · `HARNESS_PARENT_SPAN`(그 블록 스팬) · `HARNESS_WORKFLOW` · `HARNESS_STEP` 을 넘긴다
 - 스팬에 출력 · 변수 값 · 프롬프트 · 명령줄을 남기지 않는다
+- `issue` 속성은 지표 기록기의 이슈 검사식(`^[0-9]{1,10}$`)에 맞을 때만 남는다 — Jira 키 이슈의 스팬에는 `issue` 가 없다 (15절)
 - driver 절차 문서에는 단계 시작 표지 줄이 없다 — 드라이버가 블록 스팬을 남긴다. agent 절차 문서의 표지 줄은 그대로다
 - 집계 `by_step`: 트레이스마다, kind `step` 스팬이 있는 단계는 횟수 · 시간 · 오류를 그 스팬으로만 세고 토큰은 같은 `workflow` · `step`
   속성을 가진 스팬 전부에서 더한다. kind `step` 스팬이 없는 단계는 지금과 같다
@@ -533,6 +599,8 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
   같은 클론의 worktree 는 같은 자리를 쓴다
 - 디렉터리는 0700, 파일은 0600 이다. 상태는 같은 디렉터리의 임시 파일에 쓰고 rename 으로 바꾼다
 - 위치를 바꾸는 설정 키는 없다
+- 파일 이름의 `<절차>-<이슈>` 는 한 가지로만 갈린다 — 절차 이름(`[a-z][a-z0-9-]{1,30}`)에는 대문자가 없고, 이슈는 숫자이거나 대문자로
+  시작하는 Jira 키(7-1)다. 이름에서 읽을 때는 끝에서 Jira 키, 그다음 숫자 순으로 이슈를 맞추고 앞부분이 절차 이름 형식인지 본다
 
 ### 8-2. 형식
 
@@ -543,6 +611,7 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
   "issue": "12",
   "digest": "sha256:…",
   "worktree": false,
+  "preset": null,
   "started": "2026-10-09T07:00:00Z",
   "updated": "2026-10-09T07:12:00Z",
   "steps_run": 7,
@@ -560,11 +629,15 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
 | `workflow` · `issue` | 시작한 절차와 이슈. 파일 이름과 같다 |
 | `digest` | 정의 digest (8-4) |
 | `worktree` | `--worktree` 로 시작했는가 |
+| `preset` | 선택. 문자열 또는 null — 시작할 때의 preset 체인 digest 자리다. 필드가 없으면 null 로 본다. 이 명세의 드라이버는 null 을 쓴다. 값을 채우고 재개 때 대조하는 규칙은 preset 을 들이는 변경(#216)이 정한다 |
 | `started` · `updated` | UTC 시각 |
 | `steps_run` · `visits` | 상한의 계수 (7-6). `visits` 의 키는 `<절차>/<id>` |
 | `frames` | 바깥에서 안쪽으로, 절차 실행 하나에 하나. `at` 은 그 절차의 현재 단계(바깥 프레임은 실행 중인 workflow 블록), `vars` 는 그 실행의 절차 변수, `outputs` 는 단계 id → 가장 최근 출력 |
 | `frames[-1].status` | `ready`(아직 시작하지 않았다) · `running`(시작했다) · `waiting`(게이트가 답을 기다린다) |
 
+- 최상위 필드는 `preset` 을 빼고 모두 필수다. 프레임은 `workflow` · `at` · `vars` · `outputs` 를 갖고, 안쪽 프레임만 `status` 를 갖는다
+- 최상위나 프레임에 표에 없는 필드가 있으면 읽지 못한 상태로 본다 (8-3) — 그 필드를 아는 버전이 쓴 상태를 모르는 버전이 무시하고
+  잇지 않게 한다. 필드를 더하는 변경은 이 표에 그 필드를 더한다
 - 에이전트 결과 본문 원문과 프롬프트는 담지 않는다. 출력은 5-3 을 통과한 객체와 script 의 JSON 출력뿐이다
 - 쓰는 때: 새 실행을 만들 때, 블록을 시작할 때(`running`), outcome 을 따라 다음 단계로 옮길 때(`ready`), 게이트가 멈출 때(`waiting`)
 
@@ -577,7 +650,7 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
   `help:` · `harness run <절차> <이슈> --resume` · `harness run <절차> <이슈> --discard`
 - `--discard` 는 잠금을 잡고 상태 파일을 지운다. 잠금 파일은 남아도 된다 — `flock` 은 프로세스가 끝나면 풀린다. 지웠으면 `discarded: run state of <절차> for issue <이슈>`, 없었으면
   `discard: no run state of <절차> for issue <이슈>`. 둘 다 0 이다. 잠금을 잡지 못하면 2
-- 상태 파일은 기기 로컬이지만 들어오는 입력으로 검증한다. JSON 이 아니다 · `format` 이 다르다 · 필드가 형식과 다르다 ·
+- 상태 파일은 기기 로컬이지만 들어오는 입력으로 검증한다. JSON 이 아니다 · `format` 이 다르다 · 필드가 형식과 다르다 · 표에 없는 필드가 있다 ·
   `workflow` · `issue` 가 파일 이름과 다르다 · `frames` 의 절차나 단계가 지금 정의에 없다 — 이면 새 실행과 재개 모두 2:
   `error: the run state of <절차> for issue <이슈> cannot be read` 와 `--discard` 안내
 
@@ -638,7 +711,7 @@ driver 절차 문서는 사람이 읽는 설명이다. 에이전트가 따라 �
 
    ## 입력
 
-   이슈 번호 하나. 단계 값에서 `{issue}` 로 쓴다.
+   이슈 번호(또는 Jira 키) 하나. 단계 값에서 `{issue}` 로 쓴다.
 
    ## 절차
 
@@ -712,6 +785,7 @@ driver 절차 문서는 사람이 읽는 설명이다. 에이전트가 따라 �
 
 - 단계마다 받은 키를 전부 쓴다. 순서는 `id` · `type` · `title` · `role` · `run` · `workflow` · `schema` · `on` · `access` · `options` · `text` · `next` · `set`,
   그 밖의 키는 이름 순이다. 값이 빈 문자열인 키는 지금처럼 쓰지 않는다
+- 빈 표 · 빈 배열인 키는 빼지 않고 쓴다(`next = {}`). 빈 `next` 는 명시 배선의 표시다 (2-3) — 빼면 절차가 암묵 배선으로 바뀐다
 - 값의 표기: 문자열은 JSON 인용, 정수 · 실수 · 불리언은 TOML 표기, 배열은 `[…]`, 표는 키를 JSON 인용한 인라인 표(`{ "0" = "done", "*" = "stop" }`)다.
   값이 null 이면 거부한다: `error: steps[<번호>].<키> is null`
 - 절차 키(`title` · `execute` · `max_steps` · `max_visits`)
@@ -725,8 +799,17 @@ driver 절차 문서는 사람이 읽는 설명이다. 에이전트가 따라 �
 
 ### 11-2. `harness schema`
 
-- `workflows.<절차>` 에 `execute` 를 더한다
-- 새 키 `schemas`: `{"<이름>": {"source": "harness" | "project", "path": "<하네스 루트 기준 경로>"}}`
+이 명세가 더하는 키는 둘이다.
+
+| 키 | 값 |
+|---|---|
+| `workflows.<절차>.execute` | 그 절차의 실행 방식. 기본값을 채운 값이다 — `execute` 를 적지 않은 절차는 `"agent"` |
+| `output_schemas` | `{"<이름>": {"source": "harness" \| "project", "path": "<하네스 루트 기준 경로>", "fields": {"<필드>": ["<값>", ...]}}}` |
+
+- `output_schemas` 는 agent 블록이 고를 수 있는 구조화 출력 스키마다. 동봉과 프로젝트 두 자리(5-1)를 모두 든다
+- `fields` 는 `on` 이 가리킬 수 있는 필드(5-2 의 `on` 조건을 만족하는 최상위 필드)와 그 열거값이다. 그런 필드가 없으면 빈 객체다
+- 읽지 못하거나 5-2 를 어긴 스키마 파일은 목록에서 빠진다. 그 이름을 쓰는 단계는 render · `harness steps --dry-run` 이 거부한다 (6절)
+- 같은 출력의 블록 편집 키(`blocks` · `ends` · `wildcard` · 최상위 `execute` · `workflows.<절차>.command`)는 #214 가 더한다. 값은 이 명세의 정의에서 만든다
 
 ## 12. 사람용 문서
 
@@ -734,7 +817,8 @@ driver 절차 문서는 사람이 읽는 설명이다. 에이전트가 따라 �
 |---|---|
 | `README.md` 명령 표 | `harness run <절차> <이슈> [--worktree] [--resume] [--discard]` — agent 절차는 오케스트레이터로, driver 절차는 하네스가 직접 실행한다 |
 | `README.md` "`harness.toml` 이 정하는 것" | `workflows.<절차>.execute` · `max_steps` · `max_visits`, 단계의 `next` · `on` · `schema` · `set` · `options` · `access` · `workflow` — driver 절차의 문서는 그래프와 다음 표를 담고 커맨드가 없다 |
-| `src/templates/harness.toml` "절차" 머리 주석 | 실행 방식, 블록 다섯, 배선과 끝 상태, 자리표시, 스키마 자리. 기본 절차의 값은 바꾸지 않는다 |
+| `README.md` 실행 계획 문단 (#207 이 둔 것) | `roles.<역할>.driver` · `prompt` 자리 — driver 절차의 agent · prompt 블록이 쓴다 |
+| `src/templates/defaults.toml` "절차" 머리 주석 | 실행 방식, 블록 다섯, 배선과 끝 상태, 자리표시, 스키마 자리. 기본 절차의 값은 바꾸지 않는다 |
 | `src/templates/managed/docs/workflow/changing.md` "절차의 단계를 바꾼다" | 단계 종류 표의 workflow 블록, 실행 방식과 배선, 자리표시, 스키마 자리와 문법, 확장 지점 |
 | `src/templates/managed/docs/workflow/flow.md` | driver 절차가 도는 방식 — 드라이버 · 게이트 · 재개 · 실행 상태 · 종료 코드 |
 | `src/templates/managed/script/README.md` | `run-agent.py` 의 `--driver` · `--driver-prompt` · `--schema` |
@@ -752,7 +836,8 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 
 | 블록 | 케이스 | 확인하는 것 |
 |---|---|---|
-| 블록 그래프 검증 | 거부 | 6절 표의 행마다 그 조건을 하나만 어긴 설정을 render 가 종료 코드 2 와 그 위치(`workflows.<절차>.steps[<번호>]…`)로 거부한다 |
+| 블록 그래프 검증 | 거부 | 6절 표의 행마다 그 조건을 하나만 어긴 설정을 render 가 종료 코드 2 와 6절의 위치 표기로 거부한다 — 배선 칸은 `next["<outcome>"]`(`.` 이 든 outcome 이름 포함), 배선 섞임 · 도달 · 끝은 단계 위치 |
+| | 빈 `next` | 한 단계의 `next` 가 빈 표인 절차가 명시 배선으로 판정되어 완전성(script 가 아닌 블록) · 끝(script) 검사로 거부된다. 암묵 배선으로 읽히지 않는다 |
 | | 받아들임 | 명시 배선 · 암묵 배선 · 하위 절차 · 빈 하위 절차 · 프로젝트 스키마를 쓰는 최소 driver 절차가 render 된다 |
 | agent 절차 불변 | 생성물 | 소스 트리 복제에서 render 한 뒤 `.ai/workflows/*.md` · `.claude/commands/*.md` 가 바뀌지 않고 `harness check` 가 통과한다 |
 | | driver 전용 키 | agent 절차의 † 키 · 상한 키 · `{steps.…}` 를 render 가 거부한다 |
@@ -765,12 +850,16 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 | `harness steps` 보존 | 왕복 | 모든 단계 키(`next` · `set` · `options` · 모르는 키 포함)와 절차 키를 담은 JSON 으로 저장한 뒤 읽은 결과가 같다 |
 | | 배열 입력 | 배열로 저장해도 `execute` · `max_steps` 가 남는다 |
 | | `--dry-run` | 새 키가 든 정의를 검사하고 설정을 바꾸지 않는다 |
-| `harness schema` | 출력 | `workflows.<절차>.execute` 와 `schemas` 의 두 자리 항목 |
+| | 빈 표 | `next = {}` 인 단계를 담은 JSON 으로 저장한 뒤 다시 읽으면 `next` 가 빈 표로 남는다 |
+| `harness schema` | 출력 | `workflows.<절차>.execute`(적지 않은 절차는 `agent`)와 `output_schemas` 의 두 자리 항목 · `source` · `path` · `fields`(`on` 이 가리킬 수 있는 필드와 열거값). 문법을 어긴 프로젝트 스키마는 빠진다 |
+| 실행 계획 | `driver` · `prompt` | `harness run-plan` 출력에서 `entry` 없는 켜진 역할마다 `driver` 가, 최상위 `prompt` 에 두 권한이 있고 7-4 의 키를 갖는다. `code-reviewer` 에는 `driver` 가 없다. 개인 레이어의 러너 · 오케스트레이터가 `vendor` 에 반영된다 |
 | driver 실행 | 암묵 직선 | script 셋이 차례로 돌고 `done`, 종료 코드 0, 상태 파일이 없다 |
 | | 종료 코드 배선 | 종료 코드마다 배선된 단계로 가고, 표에 없는 코드는 `"*"` 로, `"*"` 도 없으면 `stop` 과 이유 |
 | | 표준 출력 토큰 | `on = "stdout"` 의 첫 토큰으로 가고, 종료 코드가 0 이 아니면 `"*"` 로 간다 |
-| | 출력과 변수 | script 의 JSON 출력을 `set` 으로 올리고 다음 script 의 인자에 푼 값이 공백 · `;` 를 담아도 인자 하나로 들어간다(받은 argv 기록) |
-| | 값 없음 | 비어 있는 변수를 쓰면 그 블록이 돌지 않고 `stop` 1, 이유 `has no value` |
+| | 출력과 변수 | script 의 JSON 출력을 `set` 으로 올리고 다음 script 의 인자에 푼 값이 공백 · `;` 를 담아도 인자 하나로 들어간다(받은 argv 기록). 배열 · 객체 값은 압축 JSON 인자 하나로 들어간다 |
+| | 값 없음 | 없는 변수나 null 값을 쓰면 그 블록이 돌지 않고 `stop` 1, 이유 `has no value`. 빈 문자열 값은 빈 인자 하나로 들어가고 블록이 돈다 |
+| | 이슈 형식 | Jira 키 이슈로 driver 절차가 돌고 상태 파일 이름이 `<절차>-<키>.json` 이며 doctor 가 그 실행을 읽는다. 숫자도 Jira 키도 아닌 이슈는 2. Jira 키에 `--worktree` 를 주면 2 와 71 명세의 문구 |
+| | 하위 절차 직접 시작 | 부르는 절차가 올리는 변수를 쓰는 driver 하위 절차를 `harness run` 으로 시작하면 2 이고 상태가 생기지 않는다. 자기 `set` 변수만 쓰는 driver 하위 절차는 직접 돈다 |
 | | agent 와 스키마 | claude 스텁과 codex 스텁 각각에서 결과 블록의 필드 값으로 가고, 프롬프트에 스키마 원문과 푼 `text` 가 있다 |
 | | 검증 위반 | 스키마를 어긴 결과와 블록 둘인 결과가 `failed` 로 가고, `warn:` 줄에 결과 본문의 문자열이 없다 |
 | | inproc 역할 | 러너가 `inproc` 인 역할이 오케스트레이터 벤더의 스텁으로 불리고 claude 면 `--agent <역할>` 이 있다 |
@@ -782,7 +871,7 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 | | digest | 멈춘 뒤 설정을 바꾸고 재개하면 2 |
 | | 상태가 있을 때 | 새 실행이 2, `--discard` 가 0 으로 지우고, 다시 `--discard` 해도 0 |
 | | 잠금 | 다른 프로세스가 잠금을 쥐고 있으면 2 |
-| | 읽지 못하는 상태 | 깨진 상태 파일에서 새 실행 · 재개가 2 이고 doctor 에 `unreadable run state` |
+| | 읽지 못하는 상태 | 깨진 상태 파일과 표에 없는 필드가 든 상태 파일에서 새 실행 · 재개가 2 이고 doctor 에 `unreadable run state`. `preset` 이 없거나 null 인 상태는 읽힌다 |
 | | 상한 | 순환 배선에서 `max_visits` · `max_steps` 에 닿으면 `stop` 1 과 이유 |
 | | handoff | 3 |
 | | 하위 절차 | 바깥 변수를 읽고, 끝 상태가 바깥 outcome 이 되고, 빈 하위 절차는 곧바로 `done`. 하위 절차의 `set` 변수를 바깥에서 쓰면 render 가 거부한다 |
@@ -790,11 +879,11 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 | | 러너 없음 | 러너 실행 파일이 없으면 2 이고 상태가 생기지 않는다 |
 | | agent 절차 | `--resume` · `--discard` 가 2, `--dry-run` 명령줄은 이 변경 전과 같다 |
 | | worktree | 게이트에서 멈춘 `--worktree` 실행의 worktree 가 남고, `--resume --worktree` 가 같은 worktree 에서 잇고, `--resume` 만 주면 2, worktree 를 지운 뒤 `--resume --worktree` 는 2 |
-| | 지표 | run 스팬과 블록 스팬(`workflow` · `step`), 역할 실행기 스팬의 부모가 블록 스팬이다. 스팬 파일에 출력의 표지 문자열이 없다. `by_step` 이 블록마다 한 번 세고 토큰을 더한다 |
+| | 지표 | run 스팬과 블록 스팬(`workflow` · `step`), 역할 실행기 스팬의 부모가 블록 스팬이다. 스팬 파일에 출력의 표지 문자열이 없다. `by_step` 이 블록마다 한 번 세고 토큰을 더한다. Jira 키 이슈의 스팬에는 `issue` 속성이 없다 |
 | | `--bare` | 벤더 선언의 어느 argv 에도 `--bare` 가 없다 |
 | | doctor | 멈춘 실행이 `runs` 절에 `warn`, 없으면 `no unfinished runs` |
-| 역할 실행기 | `--driver` | 서브에이전트 역할을 실행하고 `driver` 항목의 argv 로 띄운다. `--schema` 는 `structured` 를 선언한 벤더에만 인자를 붙인다 |
-| | `--driver-prompt` | 역할 인자 없이 그 권한의 argv 로 띄운다 |
+| 역할 실행기 | `--driver` | 서브에이전트 역할을 실행하고 `roles.<역할>.driver` 의 argv 로 띄운다. `--schema` 는 `structured` 가 비지 않은 항목에만 인자를 붙인다. 항목이 없는 역할(`entry` 역할)은 2 |
+| | `--driver-prompt` | 역할 인자 없이 `prompt.<권한>` 의 argv 로 띄운다 |
 | | 기존 호출 | `--driver` 없이 서브에이전트 역할을 부르면 지금처럼 2 |
 
 ### 13-2. Python 단위 테스트 — `src/test/unit/`
@@ -802,9 +891,10 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 | 대상 | 확인하는 것 |
 |---|---|
 | 배선 | 명시 · 암묵 배선 해석, 도달 · 끝 판정, outcome 집합과 완전성 |
-| 자리표시 | 이름 파싱(중괄호 경계 포함), 풀기, 값 형식, 값 없음 |
-| 스키마 | 5-2 문법 검사, 검증기(type · required · additionalProperties · enum · items), 5-3 꺼내기 |
-| 상태 | 직렬화와 검증, 원자적 쓰기, digest 가 키 순서에 무관하고 정의 변경에 바뀜 |
+| 자리표시 | 이름 파싱(중괄호 경계 포함), 풀기, 값 형식(문자열 · 빈 문자열 · 정수 · 배열과 객체의 압축 JSON, 불리언 · 실수 거부), 값 없음(키 없음 · null) |
+| 스키마 | 5-2 문법 검사, 검증기(type · required · additionalProperties · enum · minLength · items), 5-3 꺼내기 |
+| 위치 표기 | 6절의 세 표기, `.` · `"` 가 든 outcome 이름의 JSON 문자열 표기 |
+| 상태 | 직렬화와 검증(표에 없는 필드 거부, `preset` 필드 없음 · null · 문자열), 원자적 쓰기, digest 가 키 순서에 무관하고 정의 변경에 바뀜, 파일 이름에서 절차와 Jira 키 · 숫자 이슈 가르기 |
 | 문서 | Mermaid 노드 · 간선 · 따옴표 처리, 다음 표 |
 | 집계 | `by_step` 의 kind `step` 우선 규칙 |
 
@@ -818,25 +908,31 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 
 ## 14. 보호 문서 개정 범위
 
-사람이 지시한 턴에 분해의 task 하나가 반영한다.
+사람이 지시한 턴에 분해의 task 하나가 반영한다. 적용 순서는 #206 → #207 → 이 명세다. 아래 문안은 #206 · #207 이 고친 문장 위에
+더하는 것이고, 그 두 명세가 고친 문장을 지우거나 되돌리지 않는다. 같은 위치를 뒤 명세(#211 · #212 · #213 · #215)가 이 문안 위에 이어 고친다.
 
 ### 14-1. `.ai/project/scope.md`
 
-| 위치 | 반영할 문안 |
-|---|---|
-| "할 수 있는 일" 의 `run` 항목 | 절차를 시작한다 (`run`). 절차마다 실행 방식을 고른다 — agent 절차는 설정된 오케스트레이터가 절차 문서를 따라 돌고, driver 절차는 하네스가 블록 그래프(script · agent · prompt · gate · workflow 블록과 outcome 배선)를 결정론으로 실행한다. driver 실행은 게이트에서 멈추고 `--resume` 으로 잇는다. 절차는 `/prework` · `/work` · `/retro` 셋이 기본이고 프로젝트가 더할 수 있다. 이슈별 worktree 에서 절차를 돌려 같은 리포의 여러 이슈를 동시에 진행할 수 있다 |
+"할 수 있는 일" 의 `run` 항목에서 첫 문장만 바꾼다.
+
+| 위치 | 지금 (#207 개정 뒤) | 고친 문안 |
+|---|---|---|
+| `run` 항목의 첫 문장 | 설정된 오케스트레이터로 절차를 시작한다 (`run`). | 절차를 시작한다 (`run`). 절차마다 실행 방식을 고른다 — agent 절차는 설정된 오케스트레이터가 절차 문서를 따라 돌고, driver 절차는 하네스가 블록 그래프(script · agent · prompt · gate · workflow 블록과 outcome 배선)를 결정론으로 실행한다. driver 실행은 게이트에서 멈추고 `--resume` 으로 잇는다. |
+
+- 같은 항목의 나머지 문장 — 기본 절차 셋, 이슈별 worktree, #207 이 끝에 더한 `run-plan` 문장 — 은 그대로 둔다. 기본 절차 문장은 #212 가 고친다
 
 ### 14-2. `.ai/project/architecture.md`
 
-| 위치 | 반영할 문안 |
-|---|---|
-| "구성 요소" | `src/harness/workflow/` — 절차 정의(블록 · 배선 · 자리표시)를 검증하고 driver 절차를 실행한다(드라이버 · 실행 상태 · 구조화 출력 검증). `src/harness/schemas/` — 동봉 구조화 출력 스키마 |
-| "구성 요소" 의 기기 단위 상태 | `<클론 키>/runs/` — 끝나지 않은 driver 실행의 상태와 잠금(디렉터리 0700 · 파일 0600). 끝 상태에 닿으면 지운다 |
-| "데이터 흐름" 의 절차 실행 | `harness run` 은 절차의 실행 방식으로 가른다. agent 절차는 오케스트레이터 CLI 가 절차 문서를 따른다. driver 절차는 드라이버가 첫 단계부터 블록을 돌려 outcome 을 얻고 배선을 따라간다 — script 블록은 셸 없이 직접, agent · prompt 블록은 역할 실행기(`script/run-agent.py --driver`)로 헤드리스 한 번, gate 는 터미널 입력, workflow 블록은 하위 절차. 블록마다 실행 상태를 쓰고 끝 상태에서 지운다 |
-| "신뢰 경계" 의 들어오는 입력 | agent 블록의 결과 본문 — 구조화 출력은 스키마로 엄격히 검증하고 어기면 outcome 이 `failed` 다. script 블록의 표준 출력. 실행 상태 파일 — 기기 로컬이지만 형식과 정의 digest 를 검증하고 어긋나면 재개하지 않는다 |
-| "신뢰 경계" | 블록 출력과 절차 변수는 셸을 거치지 않고 argv 원소 하나로만 들어간다. script 블록은 드라이버가 셸 없이 실행하므로 에이전트 명령 가드가 걸리지 않는다 — 명령은 커밋된 설정에서 오고 git 훅은 그대로 걸린다. driver 의 쓰기 역할은 그 실행 하나에 한해 벤더 선언의 `driver_write` 인자로 push · 리뷰 요청 생성 권한을 받는다. 보호 브랜치 push 와 force push 는 deny · 가드 · pre-push 가 그대로 막고, 헤드리스 실행에 `--bare` 를 쓰지 않는다. 실행 상태는 구조화 출력을 담으므로 끝 상태에서 지운다 |
-| "새 코드를 둘 곳" | 새 블록 종류 → `src/harness/workflow/` 의 블록 표(키 · outcome · 출력 · 암묵 배선 · 문서 표기)와 render 검증. 동봉 스키마 → `src/harness/schemas/<이름>.json` 과 그것을 쓰는 역할 계약의 출력 절. 프로젝트 스키마 → 대상 리포의 `.ai/project/schemas/<이름>.json` |
-| "계층과 의존 방향" | 드라이버는 역할을 공용 역할 실행기로만 띄운다. 역할 계약은 자기 출력 스키마의 이름과 필드 뜻만 알고 배선을 모른다 |
+| 위치 | 고치는 방법 | 문안 |
+|---|---|---|
+| "구성 요소" — #206 이 둔 `src/harness/` 항목 뒤 | 새 항목 | `src/harness/workflow/` — 절차 정의(블록 · 배선 · 자리표시)를 검증하고 driver 절차를 실행한다(드라이버 · 실행 상태 · 구조화 출력 검증). `src/harness/schemas/` — 동봉 구조화 출력 스키마 |
+| "구성 요소" 의 기기 단위 상태 항목 | 끝(#206 이 더한 `.cache/pycache/` 뒤)에 더한다 | `<클론 키>/runs/` — 끝나지 않은 driver 실행의 상태와 잠금(디렉터리 0700 · 파일 0600). 끝 상태에 닿으면 지운다 |
+| "데이터 흐름" 의 절차 실행 — 첫 문장 | 항목 머리 `절차 실행:` 바로 뒤, 첫 문장(`harness run` → 오케스트레이터 CLI → …) 앞에 붙인다. 첫 문장 자체(#207 이 고친 괄호 포함)는 그대로다 | `harness run` 은 절차의 실행 방식으로 가른다. agent 절차: |
+| "데이터 흐름" 의 절차 실행 — 첫 문장 뒤 | 새 문장 | driver 절차: 드라이버가 첫 단계부터 블록을 돌려 outcome 을 얻고 배선을 따라간다 — script 블록은 셸 없이 직접, agent · prompt 블록은 역할 실행기가 실행 계획의 `driver` · `prompt` 항목으로 헤드리스 한 번, gate 는 터미널 입력, workflow 블록은 하위 절차. 블록마다 실행 상태를 쓰고 끝 상태에서 지운다 |
+| "신뢰 경계" 의 들어오는 입력 | 끝(#207 이 더한 `harness.local.toml` 뒤)에 더한다 | agent 블록의 결과 본문 — 구조화 출력은 스키마로 엄격히 검증하고 어기면 outcome 이 `failed` 다. script 블록의 표준 출력. 실행 상태 파일 — 기기 로컬이지만 형식(모르는 필드 포함)과 정의 digest 를 검증하고 어긋나면 재개하지 않는다 |
+| "신뢰 경계" | 새 항목 | 블록 출력과 절차 변수는 셸을 거치지 않고 argv 원소 하나로만 들어간다(배열 · 객체는 압축 JSON 한 원소). script 블록은 드라이버가 셸 없이 실행하므로 에이전트 명령 가드가 걸리지 않는다 — 명령은 커밋된 설정에서 오고 git 훅은 그대로 걸린다. driver 의 쓰기 역할은 그 실행 하나에 한해 벤더 선언의 `driver_write` 인자로 커밋 · 작업 브랜치 push · 리뷰 요청 생성과 댓글 · 이월 이슈 생성을 승인 없이 한다. 보호 브랜치 push 와 force push 는 deny · 가드 · pre-push 가 그대로 막고, 헤드리스 실행에 `--bare` 를 쓰지 않는다. 실행 상태는 구조화 출력을 담으므로 끝 상태에서 지운다 |
+| "새 코드를 둘 곳" | 새 항목 셋 | 새 블록 종류 → `src/harness/workflow/` 의 블록 표(키 · outcome · 출력 · 암묵 배선 · 문서 표기)와 render 검증. 동봉 스키마 → `src/harness/schemas/<이름>.json` 과 그것을 쓰는 역할 계약의 출력 절. 프로젝트 스키마 → 대상 리포의 `.ai/project/schemas/<이름>.json` |
+| "계층과 의존 방향" | 새 항목 | 드라이버는 역할을 공용 역할 실행기로만 띄운다. 역할 계약은 자기 출력 스키마의 이름과 필드 뜻만 알고 배선을 모른다 |
 
 ### 14-3. `.ai/project/glossary.md`
 
@@ -852,21 +948,25 @@ codex 스텁은 `--json` 이벤트 줄을 흉내 내고, 받은 인자와 프롬
 | "용어" — 새 행 `절차 변수` | `set` 이 단계 출력에서 올린 값. 단계 값에서 `{이름}` 으로 쓴다 |
 | "용어" — 새 행 `구조화 출력 스키마` | agent 블록 출력의 계약(JSON Schema 부분 집합). 동봉(`src/harness/schemas/`)과 프로젝트(`.ai/project/schemas/`) 두 자리 |
 | "용어" — 새 행 `실행 상태` | 끝나지 않은 driver 실행의 기기 로컬 스냅숏(`<클론 키>/runs/<절차>-<이슈>.json`). `--resume` 이 읽는다 |
-| "용어" 의 `절차(워크플로)` | 단계(블록)와 배선으로 엮은 것. `.ai/workflows/<절차>.md` 로 생성된다 |
-| "용어" 의 `게이트` | 사람의 결정 · 승인을 기다리는 절차 단계. driver 절차에서는 드라이버가 터미널에서 묻는다 |
+| "용어" 의 `절차(워크플로)` — 고친 뜻 | 단계(블록)와 배선으로 엮은 것. `.ai/workflows/<절차>.md` 로 생성된다 |
+| "용어" 의 `게이트` — 고친 뜻 | 사람의 결정 · 승인을 기다리는 절차 단계. driver 절차에서는 드라이버가 터미널에서 묻는다 |
+
+- `실행 방식` 행은 이 명세의 것 하나다. 역할이 서브에이전트로 도는지 CLI 러너로 도는지는 #207 의 `러너 방식` 행이 갖는다
+- `확장 지점` 의 preset 쪽 문장은 #216 이 이 행 끝에 더한다
 
 ### 14-4. `.ai/project/testing.md`
 
-| 위치 | 반영할 문안 |
-|---|---|
-| "외부 의존을 어떻게 다루나" 의 에이전트 CLI 항목 | 에이전트 CLI 는 부르지 않는다. 리뷰어 · 오케스트레이터 · driver 의 역할 러너는 스텁 실행 파일을 PATH 앞에 두어 두 벤더의 출력 형식만 흉내 낸다. agent 절차의 `harness run` 은 `--dry-run` 으로 명령줄만 보고, driver 절차는 스텁과 표준 입력으로 준 게이트 답으로 끝까지 돌린다 |
+| 위치 | 지금 | 고친 문안 |
+|---|---|---|
+| "외부 의존을 어떻게 다루나" 의 에이전트 CLI 항목 | 에이전트 CLI 는 부르지 않는다. 리뷰어·오케스트레이터는 스텁 실행 파일을 PATH 앞에 두어 두 벤더의 출력 형식만 흉내 낸다. `harness run` 은 `--dry-run` 으로 명령줄만 본다 | 에이전트 CLI 는 부르지 않는다. 리뷰어 · 오케스트레이터 · driver 의 역할 러너는 스텁 실행 파일을 PATH 앞에 두어 두 벤더의 출력 형식만 흉내 낸다. agent 절차의 `harness run` 은 `--dry-run` 으로 명령줄만 보고, driver 절차는 스텁과 표준 입력으로 준 게이트 답으로 끝까지 돌린다 |
 
 ## 15. 한계
 
 - 실행 상태는 클론 하나에 있다. 다른 클론 · 다른 기기에서, 또는 상태를 지운 뒤에는 이어 돌 수 없다
 - 재개는 진행 중이던 단계를 처음부터 다시 돈다. 그 단계가 이미 남긴 부수 효과(커밋 · 댓글 · 회차 라벨)는 되돌리지 않는다
 - 블록에 시간 제한이 없다. 멈춘 블록은 중단 신호로 끊고 재개한다
-- driver 절차의 이슈는 숫자다. 숫자가 아닌 키를 쓰는 트래커의 이슈는 driver 절차로 돌릴 수 없다
+- driver 절차의 이슈는 숫자이거나 Jira 키다(7-1). Jira 키 이슈는 `--worktree` 로 돌릴 수 없고(71 명세의 숫자 규칙), 스팬에 `issue` 속성이 남지 않아
+  지표를 이슈로 묶어 볼 수 없다 — 지표 기록기의 이슈 검사식이 숫자만 받는다
 - 같은 이슈의 같은 절차를 다른 클론에서 동시에 도는 것은 막지 않는다
 - 하위 절차의 변수 참조는 render 가 이름만 본다 — 어느 경로에서 값이 채워지는지는 실행 때 4-3 이 판정한다
 - 기본 절차 `work` 를 driver 로 두면 생성되는 `CLAUDE.md` 의 커맨드 흐름 서술과 맞지 않는다. 그 서술은 기본 절차를 driver 로 바꾸는 변경이 함께 고친다
