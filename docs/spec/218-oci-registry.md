@@ -10,10 +10,12 @@ preset 을 OCI 아티팩트로 만들어(`preset build`) 레지스트리에 올�
 
 | 기대는 것 | 정하는 곳 |
 |---|---|
-| `src/harness/` 패키지, 명령 하나에 모듈 하나(`src/harness/commands/<명령>.py`), 명령 표, git 호출 보조 | #206 |
-| `extends`(부모 하나, 커밋되는 파일에는 전체 참조만), preset 트리 형식 — 어떤 파일이 드는가와 그 검증, lock(`.harness/preset.lock`)의 필드와 내용 해시 알고리즘, 체인 해석, `harness pull` · `install --preset` 의 준비·반영 흐름과 멈춤 조건, 참조의 스킴으로 백엔드를 고르는 자리 | #216 |
-| preset 트리에 더해지는 CI 템플릿, 허용 출처 · 최소 버전 검사 | #217 |
-| Python 단위 테스트 자리(`src/test/unit/`, `python3 -m unittest`)와 그것을 도는 `[verify]` 단계 | 선행 이슈가 둔 것을 쓴다 |
+| `src/harness/` 패키지, 명령 하나에 모듈 하나(`src/harness/commands/<명령>.py`), 명령 표와 통과 명령(3-3), git 호출 보조, Python 단위 테스트 자리 `src/test/unit/` 와 실행 `cd src && python3 -B -m unittest discover -s test/unit`, 그것을 도는 `[verify]` 단계 "Python 단위 테스트"(7-5) | #206 |
+| `extends`(부모 하나, 커밋되는 파일에는 전체 참조만), preset 트리 형식 — 받는 파일 표와 트리 멤버 판정 함수(3-1 · 3-2), lock(`.harness/preset.lock`)의 키 · 스킴별 판정 · 내용 해시 알고리즘(4-3 · 4-4), 체인 해석, `harness pull` · `install --preset` 의 준비·반영 흐름과 멈춤 조건, 참조의 스킴으로 백엔드를 고르는 자리 | #216 |
+| preset 트리에 더해지는 CI 템플릿, 허용 출처 · 최소 버전 검사 | #217 (있으면) |
+
+#206 · #216 은 선행이다. #217 은 선행이 아니다 — 통합 브랜치에 있으면 그 CI 템플릿 경로가 #216 의 받는 파일 표에 들어 레이어에도
+들고(3-3), 허용 출처 검사가 OCI 출처로 2-2 의 값을 쓴다.
 
 정본 위치:
 
@@ -36,7 +38,7 @@ preset 을 OCI 아티팩트로 만들어(`preset build`) 레지스트리에 올�
 
 - 명령 둘이 생긴다 — `harness preset build|inspect|push`, `harness registry login|logout|use|check` (8절).
   둘 다 하네스 루트 밖(preset 리포 · 기기)에서 돌므로 고정 사본으로 넘기지 않는다
-- `extends` 와 lock 의 출처에 `oci://` 형식이 생긴다 (2절 · 8-8)
+- `extends` 에 `oci://` 전체 참조가, lock 의 `source` 에 태그를 뺀 `oci://` 출처가 생긴다 (2절 · 8-8)
 - 기기 단위 상태에 파일 하나가 생긴다 — 등록부 최상위의 `oci.json` (2-3)
 - 설정 키와 생성 파일은 늘지 않는다 — `plan()` 에 등록할 것이 없다
 - 네트워크를 쓰는 것은 두 명령과 `pull` · `install --preset` 의 OCI 받기뿐이다. render · check · doctor · status 는
@@ -62,15 +64,45 @@ oci://<레지스트리>/<저장소>:<태그>
 | `<저장소>` | `[a-z0-9]+((\.\|_\|__\|-+)[a-z0-9]+)*(/[a-z0-9]+((\.\|_\|__\|-+)[a-z0-9]+)*)*` |
 | `<태그>` | `[A-Za-z0-9_][A-Za-z0-9._-]{0,127}` |
 
-- 커밋되는 파일(`harness.toml` 과 preset 트리의 `extends`, lock)에는 이 형식만 쓴다. `extends` 검증(#216)은 `oci://` 로
-  시작하는 값을 이 규칙으로 판정하고, 어긋나면 `extends: not a full OCI reference (oci://<registry>/<repository>:<tag>)` 로
-  멈춘다. 짧은 이름 · 태그 없는 참조 · digest 참조도 여기서 멈춘다
+- 커밋되는 파일의 `extends`(`harness.toml` · preset 트리의 `preset.toml`)에는 이 형식만 쓴다. lock 은 이것을 출처(2-2)와
+  태그로 나눠 담는다 (8-8)
 - 태그는 정확한 버전이다(#216). 고정은 lock 의 해석된 식별자(manifest digest)가 한다
 - `oci://<레지스트리>/<저장소>@sha256:<64자리 16진>` 형식의 digest 참조는 `preset inspect` 의 입력에서만 받는다
 
+`extends` 판정 — `oci://` 로 시작하는 `extends` 는 이 규칙으로 판정한다. 그 밖의 값은 #216 2-1 이 판정한다(11-2).
+어긋남과 사유는 위에서부터 처음 맞는 하나다.
+
+| 어긋남 | 사유 |
+|---|---|
+| `oci://` 뒤 첫 `/` 앞에 `@` 가 있다(자격증명) | `it carries credentials` |
+| `oci://` 뒤 첫 `/` 다음에 `@` 가 있다(digest 참조) | `it is a digest reference` |
+| `oci://` 뒤 첫 `/` 다음에 `:` 가 없다(태그 없음) | `it has no :<tag>` |
+| 그 밖의 형식 어긋남(대문자 호스트, 규칙 밖 문자, 포트 범위, 저장소 · 태그 규칙) | `not a full OCI reference` |
+
+거부 안내는 **값을 옮기지 않는다.** 종료 코드 2.
+
+```
+error: extends is not a full OCI reference (it has no :<tag>)
+  --> harness.toml
+
+help: extends takes oci://<registry>/<repository>:<tag> — the harness reads registry credentials from the docker config
+```
+
+- `-->` 는 그 `extends` 를 담은 파일이다. preset 의 `extends` 면 `preset.toml of <그 preset 의 참조>` 다 — #216 2-1 과 같다
+- 사유가 `it carries credentials` 일 때만 둘째 help 줄 `      if that credential was ever committed, revoke it and issue a new one` 을
+  낸다 — #216 2-1 과 같다
+
 ### 2-2. 태그를 뺀 출처
 
-`oci://<레지스트리>/<저장소>` 다. #216 의 순환 판정과 #217 의 허용 출처 검사가 OCI 출처를 비교할 때 이 값을 쓴다.
+`oci://<레지스트리>/<저장소>` 다. 전체 참조에서 마지막 `:` 와 그 뒤(태그)를 뗀 문자열 그대로이고, 정규화하지 않는다.
+레지스트리의 포트는 첫 `/` 앞에 있고 저장소 · 태그에는 `:` 가 없으므로 마지막 `:` 가 태그의 구분자다.
+
+- lock 의 `source` 가 이 값이다 (8-8)
+- #216 이 OCI 출처를 비교하는 곳 — 순환 판정(2-3), 체인 연결 · 프로젝트 참조 대조(5-1) — 은 참조를 이 값과 태그로 나눠
+  비교한다. 메모 절 제목(6-2)의 `<출처>` 도 이 값이다
+- #217 이 있으면 그 허용 출처 검사가 OCI 출처로 이 값을 쓴다
+- 출처와 태그를 다시 이으면 `<출처>:<태그>` 로 전체 참조가 된다. #216 의 안내문 · 출력 · schema 가 preset 을 그 스킴의 참조
+  형식으로 적는 자리(#216 4-3)에는 OCI preset 의 이 전체 참조가 든다
 
 ### 2-3. 짧은 이름과 기기 기본 레지스트리
 
@@ -166,20 +198,23 @@ git `extends` 형식(`https://<host>/<path>`)과 같은 꼴이다.
 
 ### 3-3. 레이어
 
-레이어는 preset 트리의 파일을 담은 tar 를 gzip 으로 압축한 것이다. 어떤 파일이 preset 트리에 드는지는 #216 이 정한다
-(#217 이 더하는 파일 포함). 이 절은 그 파일들을 바이트로 묶는 규칙만 정한다.
+레이어는 preset 트리의 파일을 담은 tar 를 gzip 으로 압축한 것이다. 어떤 파일이 preset 트리에 드는지는 #216 의 받는 파일
+표(3-1)와 트리 멤버 판정 함수(3-2)가 정한다 — #217 이 있으면 그것이 더하는 행도 든다. 이 절은 그 파일들을 바이트로 묶는
+규칙만 정한다.
 
 이름 규칙 — 빌드(8-1)와 받기(4-2)가 같이 쓴다.
 
 - ADR 0017 의 경로 규칙(성분이 `[\w.-]+`, 절대 경로 · 빈 성분 · 끝의 `/` · `.` · `..` 성분 없음)에 더해, 성분은 ASCII
   `[A-Za-z0-9_.-]+` 이고 경로 전체는 100바이트 이하다
+- #216 의 받는 파일 표의 경로는 이 규칙 안에 있다 — `<이름>` 이 `[a-z][a-z0-9-]{1,30}` 이라 가장 긴 경로도 100바이트에 못
+  미친다. 표에 행을 더할 때도 이 규칙 안의 경로여야 레이어에 담긴다
 
 tar:
 
 | 항목 | 값 |
 |---|---|
 | 형식 | USTAR (`tarfile.USTAR_FORMAT`) |
-| 멤버 | preset 트리의 일반 파일만. 디렉터리 항목을 넣지 않는다 |
+| 멤버 | #216 의 함수가 받을 파일로 고른 일반 파일만. 디렉터리 항목을 넣지 않는다 |
 | 순서 | 경로의 바이트 순 |
 | 이름 | 트리 루트 기준 상대 경로. `./` 를 붙이지 않는다 |
 | 모드 | `0644` |
@@ -251,6 +286,11 @@ error: not a harness preset artifact (<사유>)
 
 ### 4-2. 레이어와 멤버
 
+판정은 두 단계다 — tar 전용 검사를 먼저 하고, 통과한 멤버를 #216 3-2 의 트리 멤버 판정 함수에 넘긴다. 어떤 항목이 preset
+트리에 드는지는 git 백엔드와 같은 그 함수가 정하고, tar 전용 검사는 tar 의 바이트 · 멤버 종류 · 이름만 본다.
+
+tar 전용 검사:
+
 - blob 은 설명자의 `size` 만큼만 읽는다. 더 오면 거부한다. sha256 이 설명자의 digest 와 다르면 거부한다
 - 풀어낸 tar 가 64 MiB 를 넘으면 그 자리에서 멈추고 거부한다. 멤버는 2,048 개 이하다
 - 멤버마다 판정한다
@@ -260,22 +300,33 @@ error: not a harness preset artifact (<사유>)
 | 일반 파일(`REGTYPE` · `AREGTYPE`)이나 디렉터리(`DIRTYPE`)다. 심볼릭 링크와 하드 링크는 따로 사유를 붙인다 | `a symbolic link` · `a hard link` · `not a regular file or directory` |
 | 이름이 3-3 의 이름 규칙에 맞는다. 디렉터리 멤버는 끝의 `/` 를 떼고 본다 | `not a safe path` |
 | 같은 이름이 두 번 나오지 않고, 파일 이름이 다른 멤버의 부모 경로가 되지 않는다 | `a duplicate name` |
-| 일반 파일의 경로가 #216 의 preset 트리 파일 집합에 든다 | `outside the preset tree` |
 
 - 표준 라이브러리에 `tarfile.data_filter` 가 있으면 위 판정을 통과한 멤버에 그 필터도 적용하고, 필터가 거부하면 사유
   `rejected by the tar data filter` 로 거부한다. 판정의 기준은 위 표이고 필터는 보조다
 - 크기 · 개수 상한의 사유는 `too large` · `too many members` 다
+
+#216 의 함수:
+
+- 멤버 전부를 tar 의 순서대로 (경로, 종류) 목록으로 넘긴다. 일반 파일은 파일, 디렉터리는 끝의 `/` 를 뗀 경로의 디렉터리다.
+  tar 전용 검사를 모두 통과한 뒤라 목록의 순번이 멤버 번호와 같다
+- 함수가 거부하면 그 사유와 순번을 아래 문구로 낸다. `preset.toml` 이 없어 거부하면 첫 줄이
+  `error: the preset layer has no preset.toml at its root` 다
+- 함수가 받지 않은 항목으로 돌려준 멤버(받는 디렉터리 밖이고 받는 파일 표에 없는 것)가 하나라도 있으면 거부한다. 사유는
+  `outside the preset tree`, 번호는 그 첫 멤버의 것이다. 하네스가 빌드한 레이어(8-1)에는 그런 멤버가 없다
+- 레이어에서 받는 파일은 함수가 받을 파일로 돌려준 멤버다 (4-3)
 
 ```
 error: the preset layer has a member the harness does not accept (<사유>, member <번호>)
   --> <참조>
 ```
 
-종료 코드 1. 멤버 이름은 출력하지 않는다. `<번호>` 는 tar 안에서 1 부터 센 순번이다.
+- 종료 코드 1. `pull` · `install --preset` 에서는 8-8 이다
+- 멤버 이름은 출력하지 않는다. #216 의 안내문이 받은 이름을 옮기지 않는 것과 같은 정책이다
+- `<번호>` 는 tar 안에서 1 부터 센 순번이다. `<참조>` 는 받은 참조이고, 레이아웃을 읽을 때는 레이아웃 디렉터리다
 
 ### 4-3. 풀기
 
-- 하네스 루트 밖의 임시 디렉터리(`tempfile.mkdtemp()`)에 푼다. `extractall` 을 쓰지 않고, 판정을 통과한 일반 파일의
+- 하네스 루트 밖의 임시 디렉터리(`tempfile.mkdtemp()`)에 푼다. `extractall` 을 쓰지 않고, 4-2 에서 받는 파일의
   내용만 읽어 직접 쓴다. 파일에 필요한 부모 디렉터리만 만든다 — 디렉터리 멤버로는 아무것도 만들지 않는다
 - tar 의 모드 · 소유자 · 시각은 버린다. 파일은 `0644`, 디렉터리는 `0755` 다
 - 멤버 하나라도 거부되면 임시 디렉터리를 지우고 아무것도 넘기지 않는다
@@ -433,6 +484,8 @@ help: log in through a docker credential helper, or let another tool write them 
 | 1 | 원격 실패, 받은 아티팩트 검사 실패, `registry check` 의 FAIL, 확인을 받지 않은 덮어쓰기 |
 | 2 | 입력 거부 — 참조 형식, 기본 레지스트리 없음, 헬퍼 없음, 터미널이 아님, 출력 · 소스 디렉터리, docker 설정 |
 
+이 표는 `preset` · `registry` 명령의 것이다. `pull` · `install --preset` 의 종료 코드는 #216 을 따른다 (8-8).
+
 ### 8-1. `harness preset build`
 
 ```
@@ -444,10 +497,21 @@ harness preset build --tag <태그> --output <디렉터리> [--source <디렉터
 - 내용은 HEAD 커밋에서 읽는다(`git ls-tree` · `git cat-file`). 작업 트리의 커밋하지 않은 변경은 들어가지 않는다. preset
   트리 경로에 그런 변경이 있으면 `note: uncommitted changes under the preset tree are not in the artifact (built from
   HEAD <짧은 id>)` 를 낸다
-- HEAD 트리에서 #216 의 preset 트리 파일 집합을 고른다. 그 경로에 심볼릭 링크(모드 `120000`)나 서브모듈(`160000`)이
-  있거나 이름이 3-3 의 이름 규칙에 어긋나면 `error: the preset tree has an entry the harness does not accept (<사유>)` 와
-  `-->` 경로, 종료 코드 2. 실행 비트는 버린다
-- 고른 트리를 #216 의 preset 트리 검증에 넘긴다. 거부되면 그 문구로 멈추고 종료 코드 2
+- `git ls-tree -r -t -z --full-tree HEAD` 의 항목을 #216 3-2 의 함수에 넘겨 받을 파일을 고른다. 목록과 종류는 #216 의 git
+  받기와 같고, 받지 않은 항목은 버린다(README · 테스트 등). 실행 비트는 버린다
+- 함수가 거부하면 아래를 내고 종료 코드 2. 괄호 안은 함수가 돌려준 사유와 순번이고, 경로는 옮기지 않는다. `preset.toml` 이
+  없으면 첫 줄이 `error: the preset tree has no preset.toml at its root` 다
+
+```
+error: the preset tree has an entry the harness does not accept (<사유>, entry <순번>)
+  --> <--source 디렉터리>
+
+help: the entry number counts the lines of `git ls-tree -r -t --full-tree HEAD` in that directory
+```
+
+- 고른 파일의 경로는 3-3 의 이름 규칙 안이다. 어긋나는 경로가 있으면 위 문구로 사유 `not a safe path` 와 그 순번을 낸다
+- 고른 트리를 #216 의 preset 트리 검증(`preset.toml` 판정 · UTF-8)에 넘긴다. 거부되면 그 문구로 멈추고 종료 코드 2. 문구의
+  `<참조>` 자리에는 `--source` 디렉터리가 든다
 - `--tag` 는 2-1 의 태그 규칙을 따른다
 - `--output` 은 없거나 빈 디렉터리여야 하고 `--source` 밖이어야 한다 — `error: the output directory is not empty` ·
   `error: the output directory must be outside the preset repository`, 종료 코드 2
@@ -637,38 +701,47 @@ note: the check artifact stays in the repository as tag harness-check-<…>
 
 1. 2-1 로 참조를 판정한다
 2. end-3 으로 태그의 manifest 를 받아 4-1 로 검사한다. 본문 sha256 이 해석된 식별자다
-3. end-2 로 레이어를 받아 4-2 로 검사하고, 4-3 대로 하네스 루트 밖 임시 디렉터리에 푼다
+3. end-2 로 레이어를 받아 4-2 로 검사하고(#216 의 트리 멤버 판정 함수 포함), 4-3 대로 하네스 루트 밖 임시 디렉터리에 푼다
 4. `io.github.willjsw.harness.requires` 가 있으면 풀어낸 preset 트리가 선언한 값과 같아야 한다. 다르면
-   `error: not a harness preset artifact (requires does not match the preset tree)`, 종료 코드 1
-5. 풀어낸 트리 · 해석된 식별자 · 태그 · 출처를 넘긴다. 체인 해석 · 병합 · 검증 · render 계산 · 사전 판정 · 반영은 #216 이 한다
+   `error: not a harness preset artifact (requires does not match the preset tree)`
+5. 풀어낸 트리 · 해석된 식별자 · 태그 · 출처(2-2)를 넘긴다. 체인 해석 · 병합 · 검증 · render 계산 · 사전 판정 · 반영은 #216 이 한다
 
-- 받기에 실패하면 준비 단계가 실패한 것이다. #216 대로 대상 리포는 바뀌지 않는다
-- lock 에 담는 값
+- 이 백엔드에서 멈추면 #216 의 준비 단계에서 멈춘 것이다. 대상 리포는 바뀌지 않는다. 4 · 5 · 6절과 위 4 의 안내문을 내고,
+  줄 목록 뒤 · help 앞에 `nothing was changed` 를 더하며, 종료 코드는 2 다(#216 7-4). 4 · 5 · 6절의 종료 코드 1 은 `preset` ·
+  `registry` 명령의 것이다
+- lock 에 담는 값 — #216 4-3 의 스킴별 판정에 `oci://` 를 더한다
 
-| lock 의 값(#216) | OCI |
+| lock 의 키(#216 4-3) | OCI |
 |---|---|
-| 출처 | `extends` 문자열 그대로 — `oci://<레지스트리>/<저장소>:<태그>` |
-| 태그 | `<태그>` |
-| 해석된 불변 식별자 | manifest digest `sha256:<64자리 16진>` — 받은 manifest 바이트로 계산한 값 |
-| 내용 해시 | 풀어낸 preset 트리를 #216 의 알고리즘으로 계산한 값 |
+| `source` | 2-2 의 출처 `oci://<레지스트리>/<저장소>` — `extends` 의 전체 참조에서 `:<태그>` 를 뗀 것 |
+| `tag` | `<태그>` — 2-1 의 태그 규칙 |
+| `resolved` | manifest digest `sha256:<소문자 16진 64자>` — 받은 manifest 바이트로 계산한 값 |
+| `content` | 풀어낸 preset 트리를 #216 의 알고리즘으로 계산한 값 |
 
-- 같은 출처의 lock 항목과 해석된 식별자가 다르면(같은 태그가 다른 manifest 를 가리킨다) #216 의 경고와 갱신 규칙을 따른다
+- 같은 출처 · 태그의 lock 항목과 `resolved` 가 다르면(같은 태그가 다른 manifest 를 가리킨다) #216 의 경고와 갱신 규칙을 따른다
+- #216 이 `resolved` 의 짧은 꼴을 쓰는 자리(pull 출력 · 경고 · doctor)는 `sha256:` 을 뗀 16진의 앞 7자다(#216 4-3)
 - `install --preset` 은 짧은 이름을 받으면 2-3 대로 펼친 전체 참조를 씨앗 설정의 `extends` 에 쓴다
 - `install` 은 전역 CLI 로 돌고 `pull` 은 고정 사본으로 넘긴다(#216). `oci://` 를 쓰는 리포의 고정 사본은 이 백엔드를 가진
   버전이어야 한다
 
 ### 8-9. 명령 표
 
-- 명령 표(`COMMANDS`)에 두 행을 더한다. 둘 다 설정이 필요 없고, 고정 사본으로 넘기는 목록(`DELEGATES`)에 넣지 않는다
+- 명령 표(`COMMANDS`)에 두 행을 더한다. 둘 다 #206 3-3 의 **통과 명령**(항목의 통과 값 `True`)이다 — 공용 파서는 명령
+  이름 뒤의 토큰을 해석하지 않고 순서 · 내용 그대로 명령 모듈에 넘기며, 하위 명령과 옵션은 명령 모듈이 해석한다.
+  공용 파서에 옵션을 더하지 않는다
+- 둘 다 설정이 필요 없고 대상을 해석하지 않는다 — #206 3-3 의 3단계에서 `tools` · `projects` 처럼 대상 해석 · 위임 앞에서
+  명령 모듈로 간다. 고정 사본으로 넘기는 목록(`DELEGATES`)에 넣지 않는다. 하네스 루트(이름 앞이나 이름 바로 뒤의
+  `--target`)는 쓰지 않는다
 
 | 이름 | 인수 | 설명 |
 |---|---|---|
 | `preset` | `build\|inspect\|push ...` | `build, inspect or push a preset as an OCI artifact` |
 | `registry` | `login\|logout\|use\|check ...` | `log in through a docker credential helper, set the default registry, or check a registry` |
 
-- 새 옵션: `--tag` · `--output` · `--source`(`preset build`), `--push`(`registry check`), `--username`(`registry login`),
-  `--unset`(`registry use`). `preset push` 는 기존 `--yes` 를 쓴다
-- 하위 명령이 없거나 모르는 것이면 사용법을 내고 종료 코드 2
+- 명령 모듈이 해석하는 옵션: `--tag` · `--output` · `--source`(`preset build`), `--yes`(`preset push`), `--push`(`registry check`),
+  `--username`(`registry login`), `--unset`(`registry use`)
+- 하위 명령이 없거나 모르는 것이면, 또는 하위 명령이 받지 않는 옵션 · 인자가 오면 사용법을 내고 종료 코드 2. `-h` · `--help`
+  면 사용법을 내고 종료 코드 0
 
 ## 9. 지원 목록
 
@@ -710,11 +783,13 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 
 ### 10-2. 단위 테스트 — `src/test/unit/`
 
+#206 7-5 의 자리와 `[verify]` 단계 "Python 단위 테스트" 가 돈다.
+
 | 파일 | 케이스 |
 |---|---|
-| `test_registry_reference.py` | 전체 참조 판정(받는 것, 대문자 호스트, 태그 없음, digest 참조는 inspect 입력에서만, 저장소 규칙), 짧은 이름 펼치기와 거부(기본 없음, 첫 성분이 호스트 꼴), `oci.json` 읽기(형식이 어긋나면 멈춤), 태그를 뺀 출처 |
-| `test_registry_artifact.py` | 같은 커밋을 두 번 빌드하면 레이아웃 바이트가 같다. 작업 트리의 mtime · umask · 소유자 · 실행 비트 · 커밋하지 않은 변경이 달라도 같다. `origin` 이 https 와 scp 형식으로 달라도 manifest 가 같고, userinfo 가 annotation 에 없다. 태그만 다르면 레이어는 같고 manifest 는 다르다. gzip 머리 10바이트가 고정값이다. 링크 · 서브모듈 · 이름 규칙 밖 · 100바이트를 넘는 경로를 거부한다 |
-| `test_registry_extract.py` | 심볼릭 링크 · 하드 링크 · 장치 · FIFO · 절대 경로 · `..` · `./` · 공백 · 비ASCII · 중복 · 파일 아래 파일 · preset 트리 밖 · 멤버 수 초과 · 압축 크기 초과 · 풀어낸 크기 초과를 각각 거부하고 임시 디렉터리를 남기지 않는다. 받는 파일은 tar 의 모드 · 소유자와 상관없이 `0644` 로 풀린다. 거부 문구에 멤버 이름이 없다 |
+| `test_registry_reference.py` | 전체 참조 판정(받는 것, 대문자 호스트, 태그 없음, digest 참조는 inspect 입력에서만, 저장소 규칙), `extends` 판정의 사유 넷과 그 순서, 짧은 이름 펼치기와 거부(기본 없음, 첫 성분이 호스트 꼴), `oci.json` 읽기(형식이 어긋나면 멈춤), 태그를 뺀 출처(포트가 있는 레지스트리 포함) |
+| `test_registry_artifact.py` | 같은 커밋을 두 번 빌드하면 레이아웃 바이트가 같다. 작업 트리의 mtime · umask · 소유자 · 실행 비트 · 커밋하지 않은 변경이 달라도 같다. `origin` 이 https 와 scp 형식으로 달라도 manifest 가 같고, userinfo 가 annotation 에 없다. 태그만 다르면 레이어는 같고 manifest 는 다르다. gzip 머리 10바이트가 고정값이다. 받는 디렉터리 아래의 링크 · 서브모듈 · 규칙 밖 이름을 #216 의 함수로 거부하고, 문구가 사유와 `git ls-tree` 줄 순번을 담으며 경로가 없다. 받는 디렉터리 밖의 링크(README 등)와 파일은 레이어에 들지 않고 빌드가 통과한다 |
+| `test_registry_extract.py` | 심볼릭 링크 · 하드 링크 · 장치 · FIFO · 절대 경로 · `..` · `./` · 공백 · 비ASCII · 100바이트를 넘는 이름 · 중복 · 파일 아래 파일 · 받는 디렉터리 아래의 규칙 밖 이름 · `preset.toml` 없음 · 받는 디렉터리 밖의 파일과 디렉터리 · 멤버 수 초과 · 압축 크기 초과 · 풀어낸 크기 초과를 각각 거부하고 임시 디렉터리를 남기지 않는다. #216 의 함수가 거부한 경우 문구에 그 사유와 순번이 그대로 든다. 받는 파일은 tar 의 모드 · 소유자와 상관없이 `0644` 로 풀린다. 거부 문구에 멤버 이름이 없다 |
 | `test_registry_manifest.py` | 4-1 의 어긋남을 각각 거부하고 사유가 표와 같다 |
 | `test_registry_transport.py` | 루프백 판정, 루프백이 아닌 HTTP 거부, HTTPS 에서 HTTP 로의 리다이렉트 거부, 다른 호스트로의 리다이렉트에 `Authorization` 없음, 본문 상한, 오류 출력에 메시지 · 본문 · 쿼리 없음 |
 | `test_registry_auth.py` | 찾는 순서(`credHelpers` > `credsStore` > `auths` > 익명), 헬퍼 실패 시 다음 순서, 헬퍼 이름 거부, `DOCKER_CONFIG`, challenge 파싱(Bearer · Basic · 따옴표 · 인자 순서), 토큰 요청의 scope, 익명 토큰, identity token 거부, login 의 확인 · 저장 경로(터미널 입력을 대신 넣어 부른다), 출력에 헬퍼 표지 · 토큰 · 비밀번호가 없다 |
@@ -730,12 +805,12 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 | 왕복 | 임시 git preset 리포에서 `preset build` → 가짜 레지스트리(`bearer`)에 `preset push` → `preset inspect` 의 `manifest` · `content` 가 build 출력과 같다 |
 | 다시 push | 같은 레이아웃은 `already pushed`, 종료 코드 0. 같은 태그에 다른 레이아웃은 `--yes` 없이 종료 코드 1 이고 레지스트리의 태그가 그대로다. `--yes` 면 바뀐다 |
 | 태그 불일치 | 참조의 태그가 레이아웃과 다르면 종료 코드 2 이고 레지스트리에 요청이 없다 |
-| `install --preset` | 빈 대상에 `install --preset oci://127.0.0.1:<포트>/<저장소>:<태그>` → vendoring 이 preset 트리와 같고, lock 의 해석된 식별자가 manifest digest, 내용 해시가 build 의 `content` 다 |
+| `install --preset` | 빈 대상에 `install --preset oci://127.0.0.1:<포트>/<저장소>:<태그>` → vendoring 이 preset 트리와 같고, lock 의 `source` 가 `oci://127.0.0.1:<포트>/<저장소>`, `tag` 가 `<태그>`, `resolved` 가 manifest digest, `content` 가 build 의 `content` 다. 다시 render · check 하면 lock 대조가 통과한다 |
 | 백엔드 사이 | 같은 preset 커밋을 git 태그(#216 의 테스트 방식)와 OCI 로 받은 두 대상의 vendoring 과 lock 내용 해시가 같다 |
-| 받기 거부 | 링크 멤버가 든 레이어(가짜 레지스트리에 직접 올림)를 pull 하면 종료 코드 1 이고, 대상 리포의 파일 · lock · 매니페스트가 그대로이며 임시 디렉터리가 남지 않는다 |
+| 받기 거부 | 링크 멤버가 든 레이어와 받는 디렉터리 밖 멤버가 든 레이어(가짜 레지스트리에 직접 올림)를 각각 pull 하면 종료 코드 2 와 `nothing was changed` 이고, 대상 리포의 파일 · lock · 매니페스트가 그대로이며 임시 디렉터리가 남지 않는다. 같은 레이어를 `preset inspect` 하면 종료 코드 1 이다 |
 | 오프라인 | 가짜 레지스트리를 멈춘 뒤 render · check 가 통과한다 |
 | 기본 레지스트리 | `registry use` 뒤 `oci.json` 이 등록부 최상위의 파일이고 `harness projects` 에 나오지 않는다. 짧은 이름 push 가 펼친 참조로 간다. `--unset` 뒤 짧은 이름은 종료 코드 2 와 `no default registry` |
-| `extends` 형식 | `extends` 에 짧은 이름이나 태그 없는 `oci://` 참조를 두면 render 가 멈춘다 |
+| `extends` 형식 | `oci://` 의 거부 사유 넷이 각각 2-1 의 문구로 나오고 종료 코드 2 다. 자격증명 사유일 때 심은 비밀 문자열이 표준 출력 · 표준 오류 어디에도 없다. 짧은 이름은 #216 2-1 의 첫 사유로 멈추고 help 에 `oci://` 형식이 있다(11-2) |
 | login | 표준 입력이 터미널이 아니면 종료 코드 2 이고 헬퍼에 `store` 가 오지 않는다. 헬퍼가 설정되지 않았으면 종료 코드 2 이고 docker 설정 파일이 바뀌지 않는다 |
 | logout | 스텁 헬퍼에 `erase` 와 레지스트리가 간다. `auths` 에만 항목이 있으면 종료 코드 1 이고 docker 설정 파일이 바뀌지 않는다 |
 | check | `--push` 로 가짜 레지스트리(referrers `absent`)에 돌리면 모든 항목이 `ok`, `referrers` 가 `fallback`, 종료 코드 0 이고 출력에 `127.0.0.1` · 포트 · 저장소 이름이 없다. `--push` 없이는 뒤 넷이 `skip`. 두 번 돌리면 태그가 다르다 |
@@ -750,16 +825,17 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
   <!-- TBD: 확인 필요 — 고정할 이미지 digest 전체 값. 실측 기록에는 앞부분(`sha256:ddf754342cfc…`)만 있다 -->
   러너 호스트의 루프백 포트로 붙으므로 루프백 HTTP 규칙(5-2) 안이다
 - 경로 필터: `src/harness/registry/**`, 두 명령 모듈, OCI 백엔드 파일, `src/test/integration/**`, 이 워크플로 파일
-- `python3 -m unittest src/test/integration/test_registry.py` 를 레지스트리 주소(`HARNESS_TEST_REGISTRY`)와 함께 돈다.
-  주소가 없으면 실패한다 — 건너뛰지 않는다. `[verify]` · pre-push · `render-test.sh` 에는 넣지 않아 로컬에 docker 를 요구하지
-  않는다
+- `cd src && python3 -B -m unittest discover -s test/integration` 를 레지스트리 주소(`HARNESS_TEST_REGISTRY`)와 함께 돈다.
+  #206 의 단위 테스트 실행과 같은 꼴이다. 주소가 없으면 실패한다 — 건너뛰지 않는다
+- `[verify]` · pre-push · `render-test.sh` 에는 넣지 않아 로컬에 docker 를 요구하지 않는다. `[verify]` 의 "Python 단위 테스트"
+  단계는 `test/unit` 만 찾으므로 이 테스트를 돌지 않는다
 - 케이스
 
 | 케이스 | 확인하는 것 |
 |---|---|
 | check | `registry check --push` 의 항목이 전부 `ok` 이고 `referrers` 가 `fallback` 이다 |
 | 왕복 | build → push → inspect 의 manifest digest 가 같고, 같은 레이아웃을 다시 push 하면 `already pushed` 다 |
-| 받기 | `install --preset` 으로 받은 lock 의 해석된 식별자 · 내용 해시가 build 출력과 같다 |
+| 받기 | `install --preset` 으로 받은 lock 의 `source` 가 태그를 뺀 출처이고, `resolved` · `content` 가 build 출력의 manifest · content 와 같다 |
 | referrers fallback 읽기 | 테스트가 직접 올린 연결 아티팩트(`subject` 가 달린 manifest 와 태그 `sha256-<hex>` 의 index)를 `preset inspect` 가 `fallback` 경로로 보인다 <!-- TBD: 확인 필요 — Distribution 3.1.2 가 태그 규칙 index 의 push 를 받는지 실측하지 않았다 --> |
 
 - 이 잡은 인증 흐름(토큰 교환)을 덮지 않는다 — 컨테이너에 인증이 없다. 인증은 가짜 레지스트리(10-1)가 덮는다.
@@ -769,6 +845,8 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 
 보호 문서가 아닌 것이다.
 
+### 11-1. 현재형 문서와 원형
+
 | 문서 · 위치 | 반영할 것 |
 |---|---|
 | `README.md` "명령" 표 | `harness preset build\|inspect\|push` — preset 리포의 HEAD 에서 재현 가능한 OCI 아티팩트를 만들고(`build`), annotation · 파일 · 내용 해시 · 연결된 아티팩트를 보고(`inspect`), 올린다(`push`, 같은 태그가 다른 manifest 를 가리키면 `--yes` 로만 덮는다). `harness registry login\|logout\|use\|check` — 레지스트리 자격증명을 docker credential helper 로 저장 · 삭제하고(헬퍼가 없으면 거부, 비밀번호는 터미널에서만), 짧은 이름을 펼칠 기기 기본 레지스트리를 정하며, 프로토콜 왕복을 점검한다(`--push`) |
@@ -776,7 +854,21 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 | `.ai/project/environment.md` "필요한 도구" | `docker-credential-<이름>`(선택) — 레지스트리 자격증명. `registry login` 은 이것이 있어야 한다. `docker`(선택) — 레지스트리 통합 테스트를 로컬에서 돌릴 때만 |
 | `.ai/project/environment.md` "환경 변수" | `DOCKER_CONFIG` — docker 설정 파일 위치. `SSL_CERT_FILE` · `SSL_CERT_DIR` — 사설 CA. `HTTPS_PROXY` · `NO_PROXY` — 루프백이 아닌 레지스트리의 프록시. `HARNESS_HOME` 의 용도에 기기 기본 레지스트리(`oci.json`) |
 | `.ai/project/environment.md` "외부 시스템" | 레지스트리 — preset 아티팩트를 올리고 받는 곳. 자격증명은 credential helper 나 docker 설정이 갖는다 |
-| `src/templates/harness.toml` 의 `extends` 주석(#216 이 둔다) | `oci://<registry>/<repository>:<tag>` 형식 한 줄 |
+| `src/templates/harness.toml` 의 `extends` 주석(#216 14-4 가 둔다) | 받는 형식 줄을 `#   https://<호스트>/<경로>@<태그> 또는 oci://<레지스트리>/<저장소>:<태그> 형식의 전체 참조만 받는다` 로 |
+
+### 11-2. `docs/spec/216-org-presets.md`
+
+이 명세가 들어간 뒤 #216 명세의 아래 서술은 오른쪽 사실로 읽는다. 분해의 task 하나가 그 명세를 고친다.
+
+| 위치 | 이 명세 이후의 사실 |
+|---|---|
+| 1절 "이 단계의 preset 백엔드는 git 태그 하나다" | preset 백엔드는 git 태그와 OCI(이 명세) 둘이다 |
+| 2-1 머리의 "다른 스킴은 받지 않는다" 와 표의 `스킴` 행 | `oci://` 로 시작하는 값은 이 명세 2-1 이 판정한다. 그 밖의 값은 2-1 의 표대로 판정한다 |
+| 2-1 의 첫 사유 `not an https:// reference` | `https://` 와 `oci://` 어느 쪽으로도 시작하지 않을 때의 사유이고 문구는 `not an https:// or oci:// reference` 다. 이 사유일 때 help 첫 줄은 `help: extends takes https://<host>/<path>@<tag> or oci://<registry>/<repository>:<tag>` 다 |
+| 4-3 의 스킴별 `source` · `tag` · `resolved` 판정 | `oci://` 의 값과 판정은 이 명세 2-1 · 2-2 · 8-8 이다 |
+| 8-1 의 `<참조>` 판정과 `--preset` 도움말 | `<참조>` 는 git 전체 참조, OCI 전체 참조, 짧은 이름(이 명세 2-3 으로 펼친다)을 받는다. 도움말은 `install: start the project from a preset (https://<host>/<path>@<tag>, oci://<registry>/<repository>:<tag>, or <repository>:<tag> on the default registry)` 다 |
+| 14-4 의 씨앗 설정 주석 | 11-1 의 마지막 행 |
+| 17-3 의 `전체 참조` 행 | 12-3 의 `전체 참조` 행 |
 
 ## 12. 보호 문서 개정 범위
 
@@ -796,7 +888,7 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 | "구성 요소" | `src/harness/registry/` — 표준 라이브러리 OCI Distribution 클라이언트. 참조 판정 · 연결 · 인증(docker 설정 · credential helper · 토큰 교환) · 엔드포인트 7개와 referrers 태그 fallback · 재현 가능한 아티팩트 쓰기와 받은 아티팩트 검사. 명령은 `commands/preset.py` · `commands/registry.py` |
 | "구성 요소" 의 기기 단위 상태 | 등록부 최상위의 `oci.json` — 기기 기본 레지스트리 |
 | "데이터 흐름" | preset 배포: preset 리포의 HEAD → `preset build`(재현 가능한 OCI Image Layout) → `preset push` → 레지스트리 → `pull` · `install --preset` 의 OCI 백엔드(manifest · 레이어 받기 → digest 대조 → 멤버 검사 → 하네스 루트 밖 임시 디렉터리에 풀기) → preset 의 준비 · 반영 단계 |
-| "신뢰 경계" 의 들어오는 입력 | 레지스트리의 응답(manifest · blob · index · 토큰 응답 · 오류 본문 · 헤더)과 받은 tar — 신뢰하지 않는다. digest 를 직접 계산해 대조하고, 크기 상한을 두며, tar 멤버는 일반 파일 · 디렉터리만 ADR 0017 의 경로 규칙(ASCII 로 좁힘)으로 받아 리포 밖에 푼다. HTTP 는 루프백에만 쓰고 TLS 검증을 끄는 경로가 없다 |
+| "신뢰 경계" 의 들어오는 입력 | 레지스트리의 응답(manifest · blob · index · 토큰 응답 · 오류 본문 · 헤더)과 받은 tar — 신뢰하지 않는다. digest 를 직접 계산해 대조하고, 크기 상한을 두며, tar 멤버는 일반 파일 · 디렉터리만 ADR 0017 의 경로 규칙(ASCII 로 좁힘)으로 거른 뒤 git 백엔드와 같은 preset 트리 멤버 판정 함수에 넘기고, 리포 밖에 푼다. 거부 안내에 멤버 이름을 옮기지 않는다. HTTP 는 루프백에만 쓰고 TLS 검증을 끄는 경로가 없다 |
 | "신뢰 경계" 의 민감 정보 | 레지스트리 자격증명은 docker credential helper 와 docker 설정에서 읽기만 하고, 쓰는 것은 헬퍼의 `store` · `erase` 뿐이다. 비밀번호는 터미널에서만 받는다. 토큰은 프로세스 메모리에만 둔다. 출력 · 지표 · 오류에 자격증명 · 토큰 · 헬퍼 입출력 · URL 쿼리를 옮기지 않는다 |
 | "새 코드를 둘 곳" | 레지스트리 프로토콜 · 인증 · 아티팩트 형식 → `src/harness/registry/`. 벤더 이름으로 분기하지 않는다 |
 | "계층과 의존 방향" | `registry/` 는 설정 · render 를 import 하지 않는다. 명령 모듈과 preset 의 OCI 백엔드가 부른다. 레지스트리에 붙는 것은 `preset` · `registry` 명령과 `pull` · `install --preset` 뿐이고, render · check · doctor · status 는 붙지 않는다 |
@@ -808,7 +900,7 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 |---|---|
 | "용어" 표 | `레지스트리` — OCI Distribution 규격의 아티팩트 저장소. preset 아티팩트를 올리고 받는 곳. 명령 `harness registry` 와 코드 `src/harness/registry/` 의 registry 는 이것이고, `harness doctor` 의 `registry` 절은 등록부다 |
 | "용어" 표 | `preset 아티팩트` — preset 트리를 레이어 하나로 묶은 OCI 아티팩트(`artifactType` `application/vnd.willjsw.harness.preset.v1`) |
-| "용어" 표 | `전체 참조` — `oci://<레지스트리>/<저장소>:<태그>`. 커밋되는 파일에는 이것만 쓴다 |
+| "용어" 표의 `전체 참조` 행(#216 이 둔다) | 두 스킴으로 고친 행: `전체 참조` — 커밋되는 파일이 preset 을 가리키는 유일한 형식. git 은 `https://<호스트>/<경로>@<태그>`, OCI 는 `oci://<레지스트리>/<저장소>:<태그>` |
 | "용어" 표 | `짧은 이름` — 레지스트리를 뺀 `<저장소>[:<태그>]`. CLI 입력에서만 받고 기기 기본 레지스트리로 펼친다 |
 | "용어" 표 | `기기 기본 레지스트리` — 짧은 이름을 펼칠 레지스트리. 등록부 최상위의 `oci.json` 이고 `harness registry use` 가 쓴다 |
 | "용어" 표 | `credential helper` — docker 의 자격증명 헬퍼(`docker-credential-<이름>`). 하네스는 레지스트리 자격증명을 이것과 docker 설정에서 읽고, 저장도 이것으로만 한다 |
@@ -839,5 +931,6 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 - referrers 는 첫 쪽만 보인다. referrers API 나 referrers 태그 규칙으로 연결하지 않은 아티팩트(도구 고유의 태그 규칙으로
   올린 서명 등)는 목록에 없다
 - 하네스는 서명을 확인하지 않는다. 서명 없는 아티팩트도 받는다
-- preset 트리의 이름을 ASCII 로 한정한다 (3-3). ADR 0017 이 허용하는 비ASCII 이름의 파일은 OCI 아티팩트로 낼 수 없다
+- 레이어 멤버의 이름을 ASCII 100바이트 이하로 한정한다 (3-3). ADR 0017 이 허용하는 비ASCII 이름은 레이어에 담지 않는다 —
+  지금의 받는 파일 표(#216 3-1)는 이 안에 있다
 - 고정 사본이 이 기능보다 오래된 리포는 `oci://` 참조를 렌더 · pull 하지 못한다. `harness install` 로 고정 사본을 올린다
