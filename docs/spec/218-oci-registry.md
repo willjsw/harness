@@ -816,6 +816,10 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 | check | `--push` 로 가짜 레지스트리(referrers `absent`)에 돌리면 모든 항목이 `ok`, `referrers` 가 `fallback`, 종료 코드 0 이고 출력에 `127.0.0.1` · 포트 · 저장소 이름이 없다. `--push` 없이는 뒤 넷이 `skip`. 두 번 돌리면 태그가 다르다 |
 | 새지 않음 | 위 케이스 전부의 출력에 스텁 헬퍼의 표지 · 비밀번호 · 토큰 문자열이 없다 |
 
+#216 의 블록(#216 16-1)에서 "참조 형식" 케이스의 기대값을 11-2 의 문구로 바꾼다 — 첫 사유는
+`not an https:// or oci:// reference` 이고, 그 사유일 때 help 첫 줄은
+`help: extends takes https://<host>/<path>@<tag> or oci://<registry>/<repository>:<tag>` 다.
+
 터미널 출력의 한글 검사는 이 블록의 출력에도 적용한다.
 
 ### 10-4. CI 통합 잡
