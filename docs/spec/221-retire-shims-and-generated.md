@@ -274,8 +274,9 @@ render 가 `script/run-lint-test.sh` 를 생성하는 조건은 하나다 — **
 
 ### 5-1. 하위 명령 규칙
 
-- 허용 여부는 명령 쪽에 선언한다. `COMMANDS` 의 항목에 허용 표시를 더하고, `allow_rules()` 는 표시가 있는 명령마다
-  `Bash({{HARNESS_CLI}} <명령>:*)`(4-1 의 값으로 채운 것)를 명령 이름 오름차순으로 낸다
+- 허용 여부는 명령 쪽에 선언한다. `COMMANDS` 의 항목은 `(통과, 설정이 필요한가, 허용, 인수, 설명)` 다섯 원소다 — #206 3-3 의 네 원소
+  `(통과, 설정이 필요한가, 인수, 설명)` 의 셋째 자리에 허용 표시를 끼운다. 허용 표시는 통과 표시처럼 `True` 또는 `None` 이다
+- `allow_rules()` 는 허용 표시가 `True` 인 명령마다 `Bash({{HARNESS_CLI}} <명령>:*)`(4-1 의 값으로 채운 것)를 명령 이름 오름차순으로 낸다
 - 순서: 하위 명령 규칙 → forge 명령(`allow.toml`) → `git switch -c` · `git commit`(→ `allow_push` 면 `git push`). 지금 관리 스크립트 규칙이 있던 자리다
 - `Bash(script/<이름>:*)` 규칙은 하나도 나오지 않는다. `allowed_scripts()` · `ALLOW_EXCLUDED` 와 그 거부 문구(`permission exclusion names a script that is not shipped`),
   #213 이 둔 하위 명령 묶음 상수와 그 거부 문구(`permission list names a command that does not exist`)를 없앤다 — 표시가 명령 표 자신에 있어 어긋날 수 없다
@@ -358,9 +359,12 @@ help: change each value as shown, then rerun
 - 레이어 표시는 프로젝트면 `harness.toml`, preset 이면 #216 의 레이어 표시다
 - 걸린 값에 비고(4-5)가 있으면 `use` 줄 끝에 ` — <비고>` 를 붙인다
 
-### 6-3. 옛 agent 절
+### 6-3. 이전 기본값 절
 
-- 프로젝트 레이어의 `[workflows.work]` 가 이전 기본값 목록(#212 10-3, #215 4-5)의 한 항목과 같으면 6-2 의 `help:` 줄 뒤에 두 줄을 더 낸다
+- 이 명세가 내장 기본값 `work` 의 표기를 바꾸므로(4-4) 바뀌기 전 판을 이전 기본값 목록(#212 10-3)에 더한다 — #215 4-1 이 낸 driver 기본값
+  (#212 2-1 의 절차에 잠금 단계 넷과 해제 배선이 든 `[workflows.work]` 표 전체, `run` 이 `script/<이름>.sh` 표기)이다. #215 4-5 의 선례와 같다.
+  목록은 #212 10-1 의 agent 절, #215 4-5 가 더한 #212 2-1 의 driver 절, 이 판 셋이다. doctor 항목과 `harness fix legacy-work` 가 같은 목록을 쓴다
+- 프로젝트 레이어의 `[workflows.work]` 가 이전 기본값 목록의 한 항목과 같으면 6-2 의 `help:` 줄 뒤에 두 줄을 더 낸다
 
 ```
       or drop that workflows.work to run the built-in work workflow
@@ -392,13 +396,15 @@ help: change each value as shown, then rerun
   render 와 같은 설정 로더 · 레이어 해석이다(#207). 개인 레이어는 읽지 않는다
 - 판정 값(보호 브랜치 목록, 보호 문서 검사식, 커밋 제목 검사식 · 형식 · 예시 · 태그, 브랜치 형식, 통합 브랜치, push 전 검증 여부)은 설정 값 해석 모듈의
   함수 하나가 계산한다. `derive()` 도 같은 함수로 같은 값을 낸다 — 두 곳이 따로 계산하지 않는다
-- 설정을 읽지 못하면(파일이 없거나 · 해석 · 검증 실패) 지금처럼 막는다. 설정 로더의 오류 줄 뒤에 아래를 낸다
+- 설정을 읽지 못하면 지금처럼 막는다. 설정을 읽지 못한 것은 프로젝트 레이어 파일이 없거나, 어느 레이어든 해석 · 검증에 실패하거나,
+  preset 사본과 lock 의 대조(#216 5-1)가 어긋남이나 읽을 수 없음을 낸 경우다 — 가드가 설정을 읽지 못하면 통과가 아니라 차단이라는
+  신뢰 경계 원칙(`.ai/project/architecture.md`)을 따른다. 설정 로더 · 대조의 오류 줄 뒤에 아래를 낸다
 
 | 지점 | 표준 오류 | 종료 코드 |
 |---|---|---|
-| 명령 가드 | `blocked: cannot read the harness config under <루트>, so the guards cannot run` / `help: passing everything through without the lists is the same as having no guard — fix harness.toml, then retry` | 2 (차단) |
-| commit-msg | `error: cannot read the harness config under <루트>, so the commit message cannot be checked` / `help: fix harness.toml, then retry` | 1 |
-| pre-push | `blocked: cannot read the harness config under <루트>, so the push cannot be checked` / `help: fix harness.toml, then retry` | 1 |
+| 명령 가드 | `blocked: cannot read the harness config under <루트>, so the guards cannot run` / `help: passing everything through without the lists is the same as having no guard — fix the config (harness check shows what is wrong), then retry` | 2 (차단) |
+| commit-msg | `error: cannot read the harness config under <루트>, so the commit message cannot be checked` / `help: fix the config (harness check shows what is wrong), then retry` | 1 |
+| pre-push | `blocked: cannot read the harness config under <루트>, so the push cannot be checked` / `help: fix the config (harness check shows what is wrong), then retry` | 1 |
 
 - 6절의 판정은 가드 · 훅을 막지 않는다
 - `envfile`(셸 대입 파일 리더)은 읽을 파일이 없으므로 없앤다. 표지는 지금처럼 `src/harness/format.py` 가 갖는다
@@ -501,12 +507,12 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 | `src/templates/managed/docs/workflow/flow.md` | 흐름 그림 · 표의 스크립트 이름을 하위 명령으로. 검증 루프 그림의 `run-lint-test.sh` · `harness-verify.sh` → `{{HARNESS_CLI}} verify` · `verify --steps-only`. 검증 표의 `script_tests` 행을 지운다. 11-1 |
 | `src/templates/managed/docs/workflow/changing.md` | 하네스 자체를 바꾸는 표의 `script/…` 행(표지 · 가드 · 역할 실행기 · 검증)을 패키지 모듈로. 옛 agent 절 예시는 4-4. 11-1 |
 | `src/templates/forge/forge.md` · `src/templates/forge/github/review.md` | 4-2 |
-| `src/templates/defaults.toml` | 4-4, 8절, `[permissions]` 주석의 "관리 스크립트" → "하네스 명령", `[commands]` · `[verify]` 주석 예시의 `script/check-deps.sh` → `script/project/check-deps.sh`, `[commands]` 머리 주석의 "검증 스크립트(script/harness-verify.sh)가 여기서 생성된다" → "검증(`harness verify`)이 실행할 때 읽는다" |
-| 이 리포 `harness.toml` | 8절, `[commands]` 머리 주석(위와 같은 문장) |
-| `src/templates/vendors.toml` 주석 | `usage_format` · `usage_parser` 의 `run-agent.py` → 역할 실행기, `hooks` 의 `(bash-guard.sh)` → `(harness bash-guard)` |
+| `src/templates/defaults.toml` | 4-4, 8절, `[permissions]` 주석의 "관리 스크립트" → "하네스 명령", `[commands]` · `[verify]` 주석 예시의 `script/check-deps.sh` → `script/project/check-deps.sh`. `[commands]` 머리 주석(#213 9 가 고친 "검증(`script/run-lint-test.sh`)이 실행할 때 읽는다")의 괄호 → `harness verify` |
+| 이 리포 `harness.toml` | 8절, `[commands]` 머리 주석(위와 같은 괄호) |
+| `src/templates/vendors.toml` 주석 | `usage_format` 의 "`run-agent.py` 가 출력을 받아" → "역할 실행기(`harness run-agent`)가 출력을 받아". `usage_parser` 는 #213 9, `hooks` 는 #210 10-2 가 이미 고친 문장 그대로다 |
 | `src/test/fake-forge.sh` 머리글 | 끼우는 법은 `HARNESS_FORGE_FAKE` 하나다 |
 | `harness help` 의 명령 설명(`COMMANDS`) | 걷힌 shim 을 가리키는 말을 지운다 — `forge` 의 `script/forge.sh calls this` |
-| `README.md` "업데이트" | 4-5 의 대응표(옛 이름 → 새 표기), 이 갱신이 대상 리포에서 지우는 것(2-2), 걷힌 경로를 가리키는 설정 값에서 render 가 멈춘다는 것과 고치는 법(4-5 의 표, 옛 agent 절이면 `harness fix legacy-work`), CI 파일의 `script/run-lint-test.sh` 를 바꾸면 그 shim 이 걷힌다는 것, `verify.script_tests` 를 지워도 된다는 것, `script/forge.sh` · `script/harness.env` 를 쓰던 프로젝트 스크립트는 `harness forge` · `harness vars` 로 바꾼다는 것, 프로젝트 문서에 남은 옛 경로는 doctor 의 `references` 가 짚는다는 것 |
+| `README.md` "업데이트" | 4-5 의 대응표(옛 이름 → 새 표기), 이 갱신이 대상 리포에서 지우는 것(2-2), 걷힌 경로를 가리키는 설정 값에서 render 가 멈춘다는 것과 고치는 법(4-5 의 표, 이전 기본값 절이면 `harness fix legacy-work`), CI 파일의 `script/run-lint-test.sh` 를 바꾸면 그 shim 이 걷힌다는 것, `verify.script_tests` 를 지워도 된다는 것, `script/forge.sh` · `script/harness.env` 를 쓰던 프로젝트 스크립트는 `harness forge` · `harness vars` 로 바꾼다는 것, 프로젝트 문서에 남은 옛 경로는 doctor 의 `references` 가 짚는다는 것 |
 | `README.md` "명령" 표 | 하위 명령 행의 "절차는 `script/…` 로 부른다" 문장을 지운다. `harness fix verify` 의 설명 |
 | `README.md` "파일은 세 부류다" · "구조" | 11-1 과 같은 부류. 설치본 트리의 `script/` 가 `githooks/` · `project/` |
 | `README.md` "`harness.toml` 이 정하는 것" | `verify.*` 행 — 검증(`harness verify` · pre-push · CI)이 실행할 때 읽는다. `script_tests` 를 뺀다. `permissions.allow_push` 행의 "관리 스크립트" → "하네스 명령" |
@@ -517,6 +523,9 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 | `.ai/project/review-checks.md` | 표지 행 → "표지(`src/harness/format.py`)를 바꿨으면 그것을 쓰는 역할 계약도 같은 변경에 있는가". 관리 스크립트 행 → "하위 명령을 더했으면 `docs/workflow/README.md` 의 '하네스 명령' 표에 한 줄이 있는가" |
 | `docs/spec/70-generate-permission-allow-list.md` | 1절 · 3절 · 6절 · 7절을 현재형으로 — 첫 묶음은 5-1 의 하위 명령 규칙이고 허용 표시가 `COMMANDS` 에 있다, 제외 이유 표는 5-1 의 표, 가드레일 층위 표의 자리는 `docs/workflow/flow.md` |
 | `docs/spec/58` · `59` · `60` · `62` · `63` · `64` · `71` · `96` | 걷힌 `script/<이름>` 을 현재형으로 적은 문장을 4-5 의 새 표기로. 58 의 doctor 출력 예시는 예시라 그대로 둔다 |
+| `docs/spec/206-split-cli-into-package.md` 7-5 | "단위 테스트는 CLI 를 하위 프로세스로 띄우지 않는다" 뒤에 "하위 명령의 외부 계약 시험은 예외다 — 임시 하네스 루트에 설치한 CLI 를 하위 프로세스로 부른다(221 명세 12-1)". 스모크 테스트 행은 12-4 의 문장으로 |
+| `docs/spec/207-layered-config.md` 2-2 | "이 명세 뒤의 이슈가 더하는 명령" 표에서 `bash-guard` · `git-hook` 을 "레이어를 읽지 않는다" 행에서 "공유 설정" 행으로 옮긴다(`git-hook` 은 commit-msg · pre-push 가 읽고 pre-commit 은 `check` 로 본다) |
+| `docs/spec/216-org-presets.md` 5-2 | "설정을 읽지 않는 명령(`bash-guard` · `secret-scan` · `clone-key` 등)" 에서 `bash-guard` 를 뺀다. 명령별 동작 표에 행을 더한다 — `bash-guard` · `git-hook`: 어긋남 · 읽을 수 없음 모두 설정을 읽지 못했을 때처럼 막는다(221 명세 7-1 — 가드 2, commit-msg · pre-push 1) |
 | 선행 명세 `docs/spec/209-…` · `210-…` · `211-…` · `212-…` · `213-…` · `215-…` · `217-…` | shim · 셸 생성물 · `script/<이름>` 표기를 현재형으로 적은 절의 머리에 그 내용을 이 명세의 어느 절이 걷었는지 한 줄을 두고, 본문의 현재형 서술을 그 결과로 고친다 |
 | `docs/spec/README.md` | 이 명세의 행 |
 
@@ -532,7 +541,9 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 - 지운 sh 단언과 옮긴 단언의 줄 대응표는 리뷰 요청 본문에 둔다
 - 옮긴 뒤의 `src/test/unit/` 시험 모듈은 시험 대상마다 하나다 — 리뷰 루프 · 이월 이슈 · forge 라벨 준비 · forge-setup · 되감기 · 시크릿 스캔 · 명령 가드 ·
   task 동기화 · 사용 기록 · 착수 판정
-- "Python 단위 테스트" 검증 단계의 `paths` 에 `src/templates/**` · `src/bin/**` 를 더한다 — 옮긴 시험이 CLI 와 템플릿을 거친다
+- 옮긴 계약 시험은 임시 하네스 루트에 설치한 CLI 를 하위 프로세스로 부른다. #206 7-5 의 "단위 테스트는 CLI 를 하위 프로세스로 띄우지 않는다" 는
+  내부 로직 시험의 규칙이고, 계약 시험이 그 예외다
+- "Python 단위 테스트" 검증 단계의 `paths` 에 `src/bin/**` 를 더한다 — 계약 시험이 진입 스크립트를 거친다. `src/templates/**` · `src/test/**` 는 #206 이 둔다
 
 ### 12-2. `render-test.sh` — 바뀌는 것
 
@@ -562,9 +573,10 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 | driver 의 `run` | 내장 기본값 `work` 의 첫 단계 `lock` 이 로컬 bare 원격에 잠금 ref 를 만들고 0 으로 끝난다 — 설치한 리포와 소스 트리 복제 둘 다. `run` 값에 `{{HARNESS_CLI}}` 가 그대로 남은 argv 로 띄우지 않는다 |
 | 허용 목록 | 설치한 리포의 `permissions.allow` 에 `Bash(.harness/bin/harness <명령>:*)` 가 5-1 의 열 명령에 하나씩, 이름순으로 forge 규칙 앞에 있다. `Bash(script/` 로 시작하는 규칙이 없다. `carryover` · `rollback` · `forge` · `forge-selftest` · `forge-setup` · `bash-guard` · `git-hook` · `clone-key` 규칙이 없다. deny 의 `write-doc` 세 형태가 그대로다. 소스 트리 복제는 `Bash(src/bin/harness <명령>:*)` |
 | 설정 값 사전 판정 | 프로젝트 `[workflows.<절차>]` 의 `run` 에 `script/review-mr.sh {mr}` 를 두면 render 가 2 와 6-2 의 문구로 멈추고 아무 파일도 바뀌지 않는다. `text` 의 `` `script/forge.sh` `` 와 `./script/review-mr.sh` 도 걸린다. `src/script/review-mr.sh` 와 `script/review-mr.sh.orig` 는 걸리지 않는다. `verify.checks` 값의 `use` 줄은 채운 경로다. `harness set` 이 걸리는 값을 남기면 설정 파일이 바이트 그대로다. doctor 가 6-4 의 줄을 낸다 |
-| 옛 agent 절 | 이전 기본값 `[workflows.work]` 로 render 하면 6-3 의 `harness fix legacy-work` 줄이 나온다. `harness fix legacy-work` 가 0 으로 끝나고 driver 문서가 생긴다. `run` 만 새 표기로 바꾼 절은 옛 조각으로 렌더되고 `.claude/commands/work.md` 가 깔리며 그 안의 명령이 `.harness/bin/harness` 표기다 |
+| 이전 기본값 — #215 판 | #215 4-1 의 driver 기본값을 그대로 옮긴 `[workflows.work]` 로 render 하면 6-2 의 문구와 6-3 의 `harness fix legacy-work` 줄로 멈춘다. doctor 가 `workflows.work is a previous default` 를 낸다. `harness fix legacy-work` 가 그 절을 지우고 render 하며, 이어서 내장 기본값 `work` 가 새 표기로 렌더된다 |
+| 옛 agent 절 | #212 10-1 의 agent 절 `[workflows.work]` 로 render 하면 6-3 의 `harness fix legacy-work` 줄이 나온다. `harness fix legacy-work` 가 0 으로 끝나고 driver 문서가 생긴다. `run` 만 새 표기로 바꾼 절은 옛 조각으로 렌더되고 `.claude/commands/work.md` 가 깔리며 그 안의 명령이 `.harness/bin/harness` 표기다 |
 | `verify.script_tests` | 이 키가 든 설정의 render 결과가 키 없는 설정과 같다. render 가 8절의 note 를 내고 doctor 가 그 줄을 낸다. 문자열 값이어도 거부하지 않는다 |
-| 가드 · 훅의 설정 | `script/harness.env` 없이 가드가 보호 브랜치 push 를 막는다. `branches.protected` 를 바꾸면 render 없이도 가드 · pre-push 판정이 따른다. `harness.toml` 을 깨면 가드가 2 와 7-1 의 문구, commit-msg · pre-push 가 1 과 그 문구 |
+| 가드 · 훅의 설정 | `script/harness.env` 없이 가드가 보호 브랜치 push 를 막는다. `branches.protected` 를 바꾸면 render 없이도 가드 · pre-push 판정이 따른다. `harness.toml` 을 깨면 가드가 2 와 7-1 의 문구, commit-msg · pre-push 가 1 과 그 문구. preset 사본의 내용을 lock 과 다르게 고쳐도 같다 |
 | 훅의 루트 | 서브프로젝트의 `script/githooks/pre-commit` 이 그 서브프로젝트의 `harness.toml` 로 루트를 잡는다 |
 | pre-push · post-commit | `script/run-lint-test.sh` 가 없는 설치본에서 pre-push 가 검증을 돌고 실패하면 `block pre-push verify` 와 함께 막는다. post-commit 을 켜면 커밋 뒤 `verify` 가 돈다 |
 | doctor 검증 항목 | `verification steps` 가 `passes` · `not set up — no commands yet` · `fails at <이름>` 을 낸다. `harness fix verify` 가 단계를 돈다. schema 에 `verify_command` · `harness_cli` 가 있고 `verify_script` 가 없다 |
@@ -578,6 +590,7 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 | 6-1 의 판정 | 낱말 경계 표본(앞 · 뒤 문자), 키 셋, 레이어 표시, 절차 값과 검증 값의 `use` 차이, 내장 기본값에 걸리는 값이 없음 |
 | 4-5 의 상수 | 2-2 의 기대 목록 경로가 모두 있다 |
 | 허용 표시 | 표시가 있는 명령이 5-1 의 열 개와 같다 |
+| 명령 표 스모크(`test_commands.py`, #206 7-5) | "명령 표 항목은 네 원소이고 첫 원소(통과 표시)는 `True` 또는 `None` 이다" 를 "명령 표 항목은 다섯 원소이고 첫 원소(통과 표시)와 셋째 원소(허용 표시)는 `True` 또는 `None` 이다" 로 바꾼다 |
 | 판정 값 함수 | 같은 설정에서 `derive()` 의 값과 가드 · 훅이 쓰는 값이 같다 |
 | 12-1 의 이관 시험 | 옮긴 sh 검사 줄 전부 |
 
@@ -592,26 +605,35 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 ## 13. 보호 문서 개정 범위
 
 분해의 task 하나가 이 범위 안에서 고친다. 적용 순서는 #206 → #207 → #208 · #209 · #210 → #211 → #212 → #213 → #215 다음이 이 명세다.
-아래 문안은 앞 명세들이 고친 문장 위에서 shim · 셸 생성물 · 옛 표기를 걷는 것이다. 표에 없는 문장은 앞 명세가 고친 그대로 둔다.
+아래 문안은 #215 까지 반영된 문장 위에서 shim · 셸 생성물 · 옛 표기를 걷는다. 앞 명세가 더한 구절을 가리킬 때는 그 구절을 더한 명세를
+괄호로 적는다. 표에 없는 문장은 앞 명세가 고친 그대로 둔다. 걷힌 파일을 이름으로 적을 때는 11-2 머리의 규칙을 따른다.
 
 ### 13-1. `.ai/project/architecture.md`
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "구성 요소" 의 대상 리포 `script/` 항목 | 항목 전체를 바꾼다: 대상 리포의 `script/` — git 훅(`githooks/`, CLI 를 찾아 `git-hook <훅>` · `verify` 로 넘기는 생성 shim)과 프로젝트 소유 `script/project/`. 리포 루트의 CI 파일이 `script/run-lint-test.sh` 를 부르는 동안에는 그 shim(`verify` 로 넘긴다)도 생성된다. 하네스가 대상 리포에서 하는 일은 CLI 하위 명령이고, 에이전트 · 절차 · 설정은 하네스 루트 종류의 CLI 경로(`{{HARNESS_CLI}}` — 대상 리포 `.harness/bin/harness`, 소스 리포 `src/bin/harness`)로 부른다. 하네스는 `script/project/` 안의 `README.md` 만 없을 때 깐다 |
-| "구성 요소" 의 CLI 패키지 항목 | 앞 명세가 더한 하위 명령 나열의 "(shim `script/…`)" 괄호를 지운다. 덧붙인다: 표지 · 사용 기록 어휘의 정본은 패키지 모듈뿐이다(셸 표기 없음) |
-| "데이터 흐름" 의 렌더 | 생성 파일 목록에서 `script/harness.env` · `script/harness-verify.sh` · `script/forge.sh` 를 뺀다. `script/githooks/` 는 그대로, 리포 루트 CI 가 부를 때만 `script/run-lint-test.sh`. 관리 파일은 깔 때 `{{HARNESS_CLI}}` 만 하네스 루트의 값으로 채운다 |
-| "데이터 흐름" 의 절차 실행 | 단계의 "`script/<이름>.sh` shim 으로 부른다" 문장을 "단계는 하위 명령을 `{{HARNESS_CLI}} <명령>` 으로 부른다" 로. 역할 실행기를 `harness run-agent` 로. 착수 잠금 단계의 `script/work-lock.sh` 를 `harness work-lock` 으로 |
-| "데이터 흐름" 의 forge | "셸 스크립트 → `script/forge.sh`(shim) → `harness forge <함수>`" 를 "에이전트 · 사람 → `harness forge <함수>`, 하위 명령은 어댑터를 패키지 안에서 부른다" 로 |
-| "데이터 흐름" 의 실행 지표 | `script/metric.py` → `harness span` |
-| "데이터 흐름" 의 가드 · 훅 | "`script/harness.env` 의 값으로 판정" → "하네스 루트의 공유 설정으로 판정(render 와 같은 레이어 해석)" |
+| "구성 요소" 의 CLI 패키지 항목 | #210 이 더한 "`script/harness.env` 읽기는 `src/harness/envfile.py`" 를 "가드 · 훅의 판정 값은 공유 설정에서 설정 값 해석 모듈이 계산한다" 로 바꾼다. #213 이 바꾼 표지 문장의 "— `script/harness-format.sh` 는 같은 값을 셸에 둔 표기다" 를 지운다. #213 이 더한 공용 모듈 나열은 그대로 둔다 |
+| "구성 요소" 의 대상 리포 `script/` 항목 | 항목 전체를 바꾼다(#209 · #210 · #211 · #212 · #213 · #215 가 더한 shim 나열을 모두 대신한다): 대상 리포의 `script/` — git 훅(`githooks/`, CLI 를 찾아 `git-hook <훅>` · `verify` 로 넘기는 생성 shim)과 프로젝트 소유 `script/project/`. 리포 루트의 CI 파일이 `script/run-lint-test.sh` 를 부르는 동안에는 그 shim(`verify` 로 넘긴다)도 생성된다. 하네스가 대상 리포에서 하는 일은 CLI 하위 명령이고, 에이전트 · 절차 · 설정은 하네스 루트 종류의 CLI 경로(`{{HARNESS_CLI}}` — 대상 리포 `.harness/bin/harness`, 소스 리포 `src/bin/harness`)로 부른다. 하네스는 `script/project/` 안의 `README.md` 만 없을 때 깐다 |
+| "구성 요소" 의 `src/templates/` 항목 | "`managed/`(그대로 복사)" → "`managed/`(복사 — `{{HARNESS_CLI}}` 만 하네스 루트의 값으로 채운다)" |
+| "구성 요소" 의 `src/test/render-test.sh` 항목 | #209 가 더한 "셸 호출부에는 `script/forge.sh` 자리에 덮어 끼우고, CLI 에는 `HARNESS_FORGE_FAKE` 로 끼운다" → "`HARNESS_FORGE_FAKE` 로 끼운다". #206 이 더한 `src/test/unit/` 문장 끝에 더한다: 하위 명령의 외부 계약 시험도 여기 있고, 그 시험은 임시 하네스 루트에 설치한 CLI 를 하위 프로세스로 부른다 |
+| "데이터 흐름" 의 렌더 | 생성 파일 괄호에서 `script/harness.env` · `script/harness-verify.sh` 를 뺀다. `script/githooks/` 뒤에 "리포 루트 CI 가 부를 때만 `script/run-lint-test.sh`" 를 더한다. 항목 끝에 더한다: 관리 파일은 깔 때 `{{HARNESS_CLI}}` 만 하네스 루트의 값으로 채운다 |
+| "데이터 흐름" 의 절차 실행 | 셸 구절 셋을 고친다. ① #211 이 두고 #212 가 옮긴 괄호의 "shim `script/work-preflight.sh` — " · "shim `script/review-mr.sh` — " 를 지운다(괄호의 나머지는 그대로) ② #213 의 "절차 문서는 shim `script/run-agent.py` 로 부른다" → "절차 문서는 `{{HARNESS_CLI}} run-agent` 로 부른다" ③ #212 의 "단계는 하위 명령을 `script/<이름>.sh` shim 으로 부른다" → "단계는 하위 명령을 `{{HARNESS_CLI}} <명령>` 으로 부른다". #215 가 더한 착수 잠금 문장은 그대로다 |
+| "데이터 흐름" 의 forge | #209 의 "셸 스크립트 → `script/forge.sh`(shim) → `harness forge <함수>` →" 를 "에이전트 · 사람 → `harness forge <함수>` →" 로. 같은 항목에 더한다: 하위 명령은 어댑터를 패키지 안에서 부른다 |
+| "데이터 흐름" 의 실행 지표 | #213 이 바꾼 "스팬 기록(`harness span` — start · end · wrap · step, 셸에서는 shim `script/metric.py`)" 에서 ", 셸에서는 shim `script/metric.py`" 를 지운다. #207 이 더하고 #213 이 고친 지표 설정 문장은 그대로 둔다 |
+| "데이터 흐름" 의 가드 · 훅 | #210 의 "`script/harness.env` 의 값으로 판정" → "하네스 루트의 공유 설정으로 판정(render 와 같은 레이어 해석 · preset 대조)" |
 | "신뢰 경계" | 새 항목: 리포 루트의 CI 파일 — `script/run-lint-test.sh` 를 부르는지만 읽는다. 쓰지 않고 내용을 출력에 옮기지 않는다. 모노레포면 하네스 루트 밖의 파일을 읽는다 |
-| "새 코드를 둘 곳" 의 새 관리 스크립트 · 대상 리포 스크립트 | "새 관리 스크립트 → `src/templates/managed/script/` …" 항목을 지운다. 새 항목: 하네스가 대상 리포에서 하는 일 → CLI 하위 명령(`COMMANDS` · 명령 모듈). 절차가 정상 경로에서 부르면 `COMMANDS` 에 허용 표시를 둔다. `script/` 에 스크립트를 두지 않는다 |
-| "새 코드를 둘 곳" 의 새 가드 | "판정에 쓰는 값은 `script/harness.env` 로 받는다" → "판정에 쓰는 값은 설정 값 해석의 판정 값 함수에서 받는다" |
-| "새 코드를 둘 곳" 의 새 회귀 테스트 | 관리 스크립트의 `test-<이름>.sh` 서술을 지운다. 덧붙인다: 하위 명령의 외부 계약 시험도 `src/test/unit/` 에 둔다 |
-| "계층과 의존 방향" 의 규칙 값 문장 | "대상 리포의 스크립트·훅·가드는 … 생성물(…)에서 받는다" → "대상 리포의 훅 · 가드는 값을 하드코딩하지 않고 공유 설정을 직접 읽는다. 역할의 실행 방법과 지표 설정은 실행할 때 `run-plan` 과 같은 함수로 받는다" |
-| "계층과 의존 방향" 의 forge 문장 | "관리 스크립트는 forge 를 `script/forge.sh` 의 어댑터 함수로만 부른다" 류의 문장을 "forge 는 `src/harness/forge/` 의 어댑터로만 부른다 — 하위 명령은 패키지 안에서, 에이전트와 사람은 `harness forge <함수>` 로" 로 |
-| "검사하지 않는 것" | "대상 리포에 깔리는 셸 스크립트는 정적 검사 도구를 거치지 않는다. 회귀 테스트(`script/test-*.sh`)만 있다" → "대상 리포에 깔리는 셸 파일은 git 훅 shim(과 조건부 `script/run-lint-test.sh`)뿐이고 정적 검사 도구를 거치지 않는다" |
+| "새 코드를 둘 곳" 의 새 forge | #209 의 "실제 forge 로 `script/forge-selftest.sh` 를 통과하기 전까지" → "실제 forge 로 `harness forge-selftest` 를 통과하기 전까지" |
+| "새 코드를 둘 곳" 의 새 forge 계약 함수 | #209 의 "셸 shim `script/forge.sh` 는 render 가 함수 표에서 만든다" → "`.ai/forge.md` 의 함수 표는 render 가 함수 표에서 만든다" |
+| "새 코드를 둘 곳" 의 새 관리 스크립트 | #213 이 바꾼 항목 전체를 바꾼다: 하네스가 대상 리포에서 하는 일 → CLI 하위 명령(`COMMANDS` 한 줄과 명령 모듈)과 `docs/workflow/README.md` 의 "하네스 명령" 표 한 줄. 절차가 정상 경로에서 부르는 명령이면 `COMMANDS` 의 허용 표시를 `True` 로 둔다. 대상 리포 `script/` 에 스크립트를 두지 않는다 |
+| "새 코드를 둘 곳" 의 리뷰 루프 | #211 의 "`script/` 의 shim 에는 로직을 넣지 않는다" 를 지운다 |
+| "새 코드를 둘 곳" 의 새 가드 | #210 의 "+ `test-bash-guard.sh` 케이스" → "+ `src/test/unit/` 의 가드 계약 시험", "판정에 쓰는 값은 `script/harness.env` 로 받는다" → "판정에 쓰는 값은 설정 값 해석의 판정 값 함수에서 받는다" |
+| "새 코드를 둘 곳" 의 표지 | #213 의 "셸 표기 `script/harness-format.sh` 를 같은 변경에서 맞춘다" 를 지운다 |
+| "새 코드를 둘 곳" 의 새 회귀 테스트 | 끝에 더한다: 하위 명령의 외부 계약 시험도 `src/test/unit/` 에 둔다 |
+| "계층과 의존 방향" 의 규칙 값 항목 | 항목 전체를 바꾼다(#207 의 ①②③, #209 의 forge 덧문장, #213 의 덧문장을 모두 대신한다): 규칙 값은 공유 설정에서 생성물로 내려간다. 개인 레이어 값은 생성물에 들어가지 않는다. 대상 리포의 훅 · 가드와 하위 명령은 값을 하드코딩하지 않고 공유 설정을 설정 로더로 직접 읽는다 — forge 선택도 `harness forge` 가 공유 설정에서 읽는다. 역할의 실행 방법과 지표 설정은 실행할 때 실효 설정에서 `run_plan()` 으로 같은 프로세스 안에 계산한다 |
+| "계층과 의존 방향" 의 forge 항목 | #209 의 "— 셸 관리 스크립트는 `script/forge.sh` 의 함수로, CLI 는 `harness.forge` 로" → "— 하위 명령은 `harness.forge` 로, 에이전트와 사람은 `harness forge <함수>` 로" |
+| "계층과 의존 방향" 의 하위 명령 항목 | #211 이 더한 "`script/harness.env` 와 `harness run-plan` 을 거치지 않는다" → "`harness run-plan` 을 거치지 않는다" |
+| "계층과 의존 방향" 의 클론 키 항목 | #213 의 "`script/_clone_key.py` 는 그 shim 이다" 를 지운다 |
+| "검사하지 않는 것" | 셸 스크립트 항목 "대상 리포에 깔리는 셸 스크립트는 정적 검사 도구를 거치지 않는다. 회귀 테스트(`script/test-*.sh`)만 있다" → "대상 리포에 깔리는 셸 파일은 git 훅 shim(과 조건부 `script/run-lint-test.sh`)뿐이고 정적 검사 도구를 거치지 않는다". 고정 사본 항목의 "pre-commit · `run-lint-test.sh` · CI 의 검사" → "pre-commit · `harness verify` · CI 의 검사" |
 
 ### 13-2. `.ai/project/glossary.md`
 
@@ -620,8 +642,13 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 | "용어" 의 `관리 파일` | 하네스가 복사해 두는 파일. 하네스 CLI 표기(`{{HARNESS_CLI}}`)만 하네스 루트의 값으로 채운다. 갱신이 덮는다 |
 | "용어" 새 행 `하네스 CLI 표기` | render 가 하네스 루트 종류로 고르는 CLI 경로 — 대상 리포 `.harness/bin/harness`, 소스 리포 `src/bin/harness`. 템플릿과 절차 단계 값에 `{{HARNESS_CLI}}` 로 적는다 |
 | "용어" 의 `shim` (#209 행) | CLI 를 찾아 하위 명령에 넘기기만 하는 얇은 셸 파일. git 훅(`script/githooks/*`)과, 리포 루트 CI 가 부르는 동안의 `script/run-lint-test.sh` 다 |
-| "용어" 의 `실행 계획` | "`run-agent.py` · `review-mr.sh` · `metric.py` 가 읽는다" 를 "역할 실행기 · 리뷰 명령 · 지표 기록기가 같은 함수로 받는다" 로 |
-| "용어" 의 `이월 이슈` · `task 이슈` · `착수 판정` · `회차 라벨` · `자체 검사` · `표지` · `forge 페이크` · `판정 명령` | 괄호 안의 shim · 셸 표기(`script/…` · `script/forge.sh` 자리)를 지운다 |
+| "용어" 의 `실행 계획` (#207 · #211 · #213 이 고친 행) | 행 전체를 바꾼다: 역할마다 무엇을 어떻게 띄우는지 실효 설정에서 실행 시점에 해석한 표. `harness run-plan` 이 내고, 역할 실행기(`harness run-agent`) · 리뷰(`harness review`) · 스팬 기록(`harness span`) · 드라이버는 같은 함수(`run_plan()`)로 같은 프로세스에서 계산한다. 파일로 남기지 않는다 |
+| "용어" 의 `자체 검사` (#209 행) | "(`harness forge-selftest`, shim `script/forge-selftest.sh`)" → "(`harness forge-selftest`)" |
+| "용어" 의 `forge 페이크` (#209 행) | "셸 호출부에는 `script/forge.sh` 자리에, CLI 에는 `HARNESS_FORGE_FAKE` 로 끼운다" → "`HARNESS_FORGE_FAKE` 로 끼운다" |
+| "용어" 의 `task 이슈` · `착수 판정` · `회차 라벨` (#211 행) | 괄호의 "(shim `script/…`)" 를 지운다 — `harness sync-tasks` · `harness preflight` · `harness review` 만 남는다 |
+| "용어" 의 `판정 명령` (#212 행) | "`harness work-check`(shim `script/work-check.sh`)" → "`harness work-check`" |
+| "용어" 의 `이월 이슈` (#213 행) | "(절차는 `script/create-carryover-issue.sh` 로 부른다)" 를 지운다 |
+| "용어" 의 `표지` (#213 행) | ", 셸 표기는 `script/harness-format.sh`" 를 지운다 |
 | "폐기된 별칭" 의 `script/verify-project.sh` 행 | 정식 이름 칸 → `harness.toml` 의 `[commands]` · `[verify]` (검증 `harness verify` 가 실행할 때 읽는다) |
 | "폐기된 별칭" 새 행 | `script/<이름>` (관리 스크립트와 그 shim) → `{{HARNESS_CLI}} <명령>`. 이름마다의 대응은 README "업데이트" 의 표 |
 | "폐기된 별칭" 새 행 | 셸 생성물 `harness.env` · `forge.sh` (`script/` 아래) → 공유 설정 · `harness forge <함수>` |
@@ -633,14 +660,13 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "무엇을 어느 수준으로 검증하나" 의 관리 스크립트 항목 | "대상 리포에 깔리는 관리 스크립트는 각자 `script/test-<이름>.sh` 를 갖는다 …" 항목을 바꾼다: 하위 명령의 외부 계약(인자 · 표준 출력 · 종료 코드 · 남기는 기록)은 `src/test/unit/` 의 시험이 임시 하네스 루트에 설치한 CLI 를 하위 프로세스로 불러 본다(리뷰 루프 · 이월 이슈 · task 동기화 · 되감기 · 시크릿 스캔 · 가드 · 사용 기록 · 착수 판정 · forge 라벨 준비). 대상 리포에는 하네스 회귀 테스트가 가지 않는다 — 고정 사본의 변조는 매니페스트 해시가 잡는다 |
-| 같은 절의 단위 테스트 층 항목(#209 · #210 이 더한 것) | "셸 테스트(`render-test.sh` · `script/test-*.sh`)는 외부 계약의 시험으로 남는다" 를 "외부 계약의 시험은 `render-test.sh` 와 위 항목의 `src/test/unit/` 시험이다" 로 |
-| "외부 의존을 어떻게 다루나" 의 forge 항목 | "셸 호출부에는 `script/forge.sh` 자리에 덮어 끼우고" 를 지운다 — 페이크는 `HARNESS_FORGE_FAKE` 로만 끼운다. "`script/forge-selftest.sh` 로" → "`harness forge-selftest` 로" |
-| "무엇을 어느 수준으로 검증하나" 의 자체 검사 항목 | `forge-selftest.sh` → `harness forge-selftest` |
+| "무엇을 어느 수준으로 검증하나" 의 관리 스크립트 항목 | 항목 전체를 바꾼다(지금 문장과 #213 이 더한 계약 테스트 문장을 대신한다): 하위 명령의 외부 계약(인자 · 표준 출력 · 종료 코드 · 남기는 기록)은 `src/test/unit/` 의 계약 시험이 임시 하네스 루트에 설치한 CLI 를 하위 프로세스로 불러 본다(리뷰 루프 · 이월 이슈 · task 동기화 · 되감기 · 시크릿 스캔 · 가드 · 사용 기록 · 착수 판정 · forge 라벨 준비 · forge-setup). 대상 리포에는 하네스 회귀 테스트가 가지 않는다 — 고정 사본의 변조는 매니페스트 해시가 잡는다 |
+| 같은 절의 Python 단위 테스트 항목 (#206 9절이 더한 것) | "CLI 를 하위 프로세스로 띄우지 않고 패키지 모듈을 불러 함수를 부르며" 앞에 "내부 로직 시험은" 을 둔다. 끝 문장 "셸 테스트(`render-test.sh` · `script/test-*.sh`)는 외부 계약(인자 · 표준 출력 · 종료 코드)을 본다" → "외부 계약(인자 · 표준 출력 · 종료 코드 · 남기는 기록)은 `render-test.sh` 와 위 항목의 계약 시험이 본다". #210 이 덧붙인 "가드 경로가 설정 해석 · 생성 · 지표 모듈을 불러오지 않는지" → "가드 경로가 생성 · 지표 · 사용 기록 모듈을 불러오지 않는지" |
+| "외부 의존을 어떻게 다루나" 의 forge 항목 (#209 가 고친 것) | "셸 호출부에는 `script/forge.sh` 자리에 덮어 끼우고, CLI · Python 쪽 호출에는 `HARNESS_FORGE_FAKE` 로 끼운다" → "CLI · Python 쪽 호출에 `HARNESS_FORGE_FAKE` 로 끼운다". "`script/forge-selftest.sh` 로" → "`harness forge-selftest` 로" |
 
 ### 13-4. `.ai/project/scope.md`
 
-바뀌지 않는다 — 앞 명세가 고친 문장에 shim · 셸 생성물 서술이 없다.
+바뀌지 않는다 — #215 까지 고친 문장에 shim · 셸 생성물 서술이 없다.
 
 ## 14. 이 명세 밖
 
@@ -661,7 +687,12 @@ doctor `references` 가 없는 파일을 가리키는 참조로 짚는다. 파�
 - 모노레포에서 리포 루트 CI 파일이 어느 서브프로젝트의 `script/run-lint-test.sh` 를 부르는지 가르지 않는다. 문자열이 있으면 모든 서브프로젝트가 그 shim 을 남긴다
 - 소유 CI 파일을 고치지 않는 설치본에는 `script/run-lint-test.sh` 가 계속 생성된다. doctor 가 짚을 뿐 끝 시점이 없다
 - 기존 설치본의 소유 원형 사본 `script/project/README.md` 는 옛 `script/README.md` 를 가리킨 채 남는다. doctor 의 `references` 가 짚는다
-- 가드가 Bash 호출마다 설정 레이어를 읽는다. 그 지연은 재지 않았다
+- 가드가 Bash 호출마다 설정 레이어를 읽고 preset 사본을 lock 과 대조한다. 그 지연은 재지 않았다
+- preset 사본(`.harness/preset/`)이나 lock 을 손으로 고쳐 대조가 어긋나면 명령 가드가 에이전트의 Bash 호출을 모두 막고, commit-msg · pre-push 도
+  거부한다(7-1). `harness pull` 이나 사본 · lock 을 되돌리는 일은 사람이 셸에서 한다
+- 프로젝트가 옮겨 둔 `[workflows.review-loop]` 는 이전 기본값 목록의 대상이 아니다. 그 `run` 의 `script/review-mr.sh` · `script/work-check.sh` 는
+  6-2 로 render 를 멈추고, 값을 새 표기로 바꾸거나 `harness.toml` 에서 그 절을 지워 내장 기본값을 쓴다(하네스 기본 절차라 `harness steps --delete` 는 받지 않는다). `harness fix legacy-work` 는
+  `review-loop` 를 다루지 않는다
 - 릴리스를 건너뛴 설치본은 shim 기간을 거치지 않는다. 그 영향은 설정 값(6절 — render 가 멈춘다), 소유 CI(3절 — shim 이 남는다), 이미 떠 있는 세션의 훅
   명령(2-4)에 모인다
 - 프로젝트 스크립트가 옛 `script/forge.sh` · `script/harness.env` 를 source 하던 경우는 하네스가 찾지 않는다. 문서화된 사용처가 없고, 갱신 안내(11-2 README "업데이트")가 바꿀 명령을 적는다
