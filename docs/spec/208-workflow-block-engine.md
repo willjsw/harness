@@ -497,14 +497,17 @@ script/run-agent.py --driver-prompt <read-only|write> --prompt <지시> --out <�
   구현자 단계가 쓰는 조작이다(#212 7절의 헤드리스 구현자 권한 표와 같다). `[permissions].allow_push` 는 대화형 세션의 설정으로 남고
   이 범위를 정하지 않는다
 
-  | 조작 | 예 |
+  | 조작 | 범위 |
   |---|---|
-  | 파일 읽기 · 쓰기 | 역할의 `access = "write"` |
-  | git | `git switch` · `git switch -c` · `git add` · `git commit` · `git push`(보호되지 않은 작업 브랜치, 강제 없이) |
+  | 파일 | 하네스 루트 아래 읽기 · 쓰기 |
+  | git 읽기 | `git status` · `git log` · `git diff` · `git show` · `git rev-parse` · `git branch` · `git fetch` |
+  | git 쓰기 | `git switch` · `git switch -c` · `git add` · `git commit` · `git push`(작업 브랜치, 강제 없이) |
   | 검증 | `script/run-lint-test.sh --commit` |
-  | forge | `.ai/forge.md` 의 리뷰 요청 생성 · 조회, `review_mr_threads` · `review_mr_thread_reply` · `review_mr_note_summary` |
-  | 하네스 스크립트 | `script/create-carryover-issue.sh`(이월 이슈 생성), `script/sync-task-issues.sh <이슈> --dry-run` |
+  | forge 읽기 | `.ai/forge.md` 의 이슈 조회 · 리뷰 요청 조회 · diff · 현재 사용자명. `script/forge.sh` 의 `tracker_issue_view` · `review_mr_view` · `review_mr_threads` |
+  | forge 쓰기 | `.ai/forge.md` 의 리뷰 요청 생성 · 리뷰 스레드 답글. `script/forge.sh` 의 `review_mr_thread_reply` · `review_mr_note_summary` |
+  | 하네스 스크립트 | `script/create-carryover-issue.sh`(이월 이슈 생성 — 원격 쓰기), `script/sync-task-issues.sh <이슈> --dry-run` |
 
+- 표에 없는 조작은 열지 않는다 — 이슈 · 리뷰 요청 닫기, 머지, 이슈 댓글, 라벨 변경, `--dry-run` 없는 task 동기화가 그렇다
 - 보호 브랜치 push 와 force push 는 deny 규칙 · 명령 가드 · pre-push 훅이, `--no-verify` 는 deny 규칙 · 명령 가드가 그대로 막는다
 - **헤드리스 실행에 `--bare` 를 쓰지 않는다** — 설정에 정의된 훅(명령 가드)을 건너뛴다. 벤더 선언의 어느 argv 에도 `--bare` 가 없다.
   헤드리스 `claude -p` 가 `.claude/settings.json` 의 PreToolUse 훅을 거는지 <!-- TBD: 확인 필요 -->
