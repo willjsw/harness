@@ -74,6 +74,9 @@
   `run_plan()` 으로 계산한다 — `harness run-plan` 을 하위 프로세스로 띄우지 않는다 (7절). `usage.log_path` 값의
   셸 문법(명령 치환 등)은 해석하지 않는다
 - 권한 허용 목록에 하위 명령 규칙 4개가 더해진다 (6절)
+- 표지는 패키지에 든 값이다. 하네스 루트의 `script/harness-format.sh` 가 없거나 형식이 깨져도 표지를 읽는 하위 명령이 그 때문에 실패하지
+  않는다 — `secret-scan` 은 표지 파일이 없어도 2(실행 실패)로 끝나지 않고 검사한다. #209 · #211 · #212 의 하위 명령이 표지를 읽지 못해
+  2 로 끝나던 경로도 없어진다 (3절)
 
 ## 2. 하위 명령
 
@@ -353,8 +356,12 @@
 | `src/harness/verify.py` | 단계 목록 · 통과 기록 · 경로 대조 · 단계 실행 | `verify` |
 | 클론 키 모듈 `src/harness/home/clone_key.py` | 키 계산(`clone_key`)과 자리표시 풀기(`expand_key`) | CLI 의 모든 명령 — 지표 경로 · worktree 경로 · 등록 · 옛 이름 디렉터리 옮기기 · `span` · `usage` · `clone-key`, 스팬 기록기를 부르는 명령 |
 
-- 파이썬 코드는 표지를 `src/harness/format.py` 에서만 읽는다 — #209 · #210 · #211 의 하위 명령도 지금처럼 이 모듈에서 읽는다.
-  바뀌는 것은 이 모듈이 값을 얻는 곳 하나다. 루트 `script/harness-format.sh` 를 파싱하지 않고 값을 스스로 갖는다
+- 파이썬 코드는 표지를 `src/harness/format.py` 에서만 읽는다 — #209 · #210 · #211 · #212 의 하위 명령도 지금처럼 이 모듈에서 읽는다.
+  바뀌는 것은 이 모듈이 값을 얻는 곳 하나다. 하네스 루트의 `script/harness-format.sh` 를 파싱하지 않고 값을 스스로 갖는다
+- **`markers()` 계약.** `markers(root)` 는 이름과 인자를 그대로 두고, 내장 값(`FMT_*` 의 이름과 값 전부)의 사전을 돌려준다. `root` 는
+  받기만 하고 쓰지 않는다 — 하네스 루트의 파일을 열지 않는다. 언제나 같은 사전을 돌려주고 예외를 내지 않는다. `FormatError` 는 없어진다
+- 그래서 표지를 읽지 못해 멈추는 경로가 생기지 않는다 — #209 3-3 의 "표지를 읽지 못한다" 행, #210 6절의 허용 표지 읽기 실패,
+  #211 2-1-5 · #212 5절의 "필요한 표지를 읽지 못하면 2" 가 그 경로다. 부르는 쪽의 그 분기는 지운다
 - 클론 키는 `home/clone_key.py` 하나가 계산한다. 그 모듈이 관리 스크립트 `_clone_key.py` 를 경로로 불러오던 방식(`clone_key_module`)은
   없어진다
 - #206 의 `metrics/spans.py` 가 대상 리포의 `script/metric.py` 를 경로로 불러오던 방식(`load_metric`)은 없어진다. 스팬 기록은
@@ -516,6 +523,10 @@ CLI 를 찾지 못할 때:
 | `docs/spec/96-machine-local-state-key.md` 1-2 · 2-3 | 클론 키를 계산하고 푸는 곳은 패키지의 클론 키 모듈(`src/harness/home/clone_key.py`)이고, `script/_clone_key.py` 는 `clone-key` 의 shim 이다 |
 | `docs/spec/64-modularize-cli-review-scripts.md` 6절 | 표지의 정본은 `src/harness/format.py` 다 |
 | `docs/spec/70-generate-permission-allow-list.md` 6절 | 허용 목록의 순서에 하위 명령 묶음(이 명세 6절)이 든다 |
+| `docs/spec/209-port-forge-adapters.md` 2-1 · 3-3 · 8-5 | 2-1 의 `markers()` 는 내장 값을 돌려주고 `FormatError` 가 없다(이 명세 3절). 표지의 정본은 `src/harness/format.py`. 3-3 의 "표지를 읽지 못한다" 행을 지운다. 8-5 의 `test_format.py` 행은 내장 값과 셸 표기의 일치로 바꾼다 |
+| `docs/spec/210-port-guards-and-hooks.md` 1 · 6 · 8-1 · 8-2 · 9-4 | 허용 표지의 정본은 `src/harness/format.py`. 6절의 `markers()` 정의와 허용 표지 읽기 실패 문구를 지운다. 8-1 시크릿 스캔 행의 "표지를 읽지 못하면 2" 와 8-2 의 `script/harness-format.sh` 가 없을 때 행을 지운다 — 표지 파일이 없어도 검사한다. 9-4 의 `markers()` · "secret-scan 표지 실패" 행은 10-4 대로 |
+| `docs/spec/211-port-work-steps.md` 2-1-5 · 5-4 | 2-1-5 의 표지 행은 "표지 모듈이 돌려준 값을 쓴다" 만 남기고 읽기 실패 2 를 지운다. 5-4 의 "표지" 행을 지운다 |
+| `docs/spec/212-drive-work-loop.md` 5절 | 끝 항목의 "필요한 표지를 읽지 못하면 … 종료 코드 2" 를 지운다 |
 
 `docs/workflow/flow.md` 와 절차 · 역할 문서는 바꾸지 않는다 — 진입점 표기가 그대로다.
 
@@ -524,7 +535,7 @@ CLI 를 찾지 못할 때:
 ### 10-1. 판정 기준
 
 - 판정 기준은 기존 셸 테스트와 `render-test.sh` 의 검사 줄이 기대하는 값이다 — 종료 코드 · 출력 · 남긴 기록 · 페이크가 기록한 호출.
-  기대값은 바꾸지 않는다
+  기대값은 바꾸지 않는다. 예외는 1절의 표지 변화로 없어지는 경로(표지를 읽지 못해 2 로 끝나는 경로)를 보는 줄 하나이고, 10-4 의 표대로 고친다
 - 고칠 수 있는 줄은 준비부(샌드박스 배치 · 설정 파일 · 진입점 · 페이크 주입)와 구조 검사(파일 내용 · 내부 함수 · 모듈이 있는지를 보는 줄)다.
   고친 줄마다 리뷰 요청 본문에 옛 줄 → 새 줄 대응표를 둔다
 - 준비부 수정은 구현을 바꾸는 task 보다 먼저 하고 옛 스크립트로 통과시킨다. 그래서 준비부는 옛 스크립트와 shim 양쪽에서 같은 결과를
@@ -584,6 +595,11 @@ CLI 를 찾지 못할 때:
 | 실행 계획 값을 바꿔 보던 케이스(#207 이 고정 사본의 벤더 선언 사본과 페이크 CLI 로 옮긴 것) | 페이크 CLI 의 `run-plan` 출력에 기대는 준비부 | 벤더 선언 사본으로 만들 수 있는 상황은 10-1 대로 옮긴다. 깨진 실행 계획 JSON(`the run plan … is broken`)은 같은 프로세스에서 계산하므로 생기지 않는다 — 지운다. 대응표에 적는다 |
 | #208 의 역할 실행기 케이스(`--driver` · `--driver-prompt` · `--schema`) | — | shim 을 거쳐 그대로 돈다 |
 | #210 의 가드 import 단위 테스트 · 차단 기록을 보는 셸 케이스 | — | 차단 기록이 사용 기록 모듈로 바뀐 뒤에도 통과 경로의 불러온 모듈과 차단 기록 줄이 그대로다 |
+| #209 `test_format.py` | 하네스 루트의 셸 파일을 텍스트로 읽은 값이 source 한 값과 같은지, 형식이 아닌 줄 · 없는 파일 · 디렉터리 · 명령 치환이 `FormatError` 인지 보는 줄 | 앞의 것은 10-5 의 "표지 · 어휘" 행(셸 표기를 셸로 읽은 값 = 내장 값)으로 바꾼다. `FormatError` 를 보는 줄은 지운다 — 그 경로가 없다. 대응표에 적는다 |
+| #210 9-4 의 `markers()` 행 | `markers()` 가 읽은 `FMT_SECRET_ALLOW` 가 `harness:allow-secret` 이다 | 하네스 루트에 표지 파일이 없어도 `markers()` 가 같은 값을 돌려준다 |
+| #210 9-4 의 "secret-scan 표지 실패" 행 | 표지 파일이 없을 때 · 형식이 아닌 줄이 있을 때 · `FMT_SECRET_ALLOW` 줄을 뺀 견본일 때 각각 2 | 1절의 변화로 기대값이 바뀐다 — 세 견본에서도 검사하고, 허용 표지를 단 견본 줄은 0, 표지 없는 자격증명 견본은 1 이다. 형식이 아닌 줄의 명령은 실행되지 않는다. 대응표에 적는다 |
+| #211 5-4 의 "표지" 행(UT-27 에서 옮긴 것) | 표지 파일에서 필요한 표지를 읽지 못하면 2 | 지운다 — 그 경로가 없다. 대응표에 적는다 |
+| 표지 파일을 치우거나 깨뜨려 2 를 보던 그 밖의 케이스(#209 3-3 · #212 5절의 표지 읽기 실패) | 그 케이스 | 같은 규칙으로 지운다. 대응표에 적는다 |
 
 이 밖에 옮긴 파일의 내용이나 내부 함수를 보는 줄은 10-1 규칙으로 고친다.
 
@@ -616,24 +632,24 @@ CLI 를 찾지 못할 때:
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "구성 요소" 의 CLI | 하위 명령 `carryover` · `rollback` · `span` · `usage` · `run-agent` · `verify` · `clone-key` 가 이월 이슈 · 되감기 · 지표 기록 · 사용 기록 · 역할 실행 · 검증 · 클론 키를 맡는다. 공용 모듈은 표지 `src/harness/format.py`(정본) · 사용 기록 `src/harness/usage.py` · 역할 실행기 `src/harness/runner.py` · 스팬 기록기 `src/harness/metrics/recorder.py` · 검증 실행 `src/harness/verify.py` · 클론 키 `src/harness/home/clone_key.py` 다 |
+| "구성 요소" 의 CLI 패키지 항목 (#206 이 나눈 `src/harness/` 항목) | 덧붙인다: 하위 명령 `carryover` · `rollback` · `span` · `usage` · `run-agent` · `verify` · `clone-key` 가 이월 이슈 · 되감기 · 지표 기록 · 사용 기록 · 역할 실행 · 검증 · 클론 키를 맡는다. 공용 모듈은 표지 `src/harness/format.py`(정본) · 사용 기록 `src/harness/usage.py` · 역할 실행기 `src/harness/runner.py` · 스팬 기록기 `src/harness/metrics/recorder.py` · 검증 실행 `src/harness/verify.py` · 클론 키 `src/harness/home/clone_key.py` 다. #210 이 덧붙인 "표지(`script/harness-format.sh`) 읽기는 `src/harness/format.py` 다" 는 "표지는 `src/harness/format.py` 가 값으로 갖는다 — `script/harness-format.sh` 는 같은 값을 셸에 둔 표기다" 로 바꾼다 |
 | "구성 요소" 의 대상 리포 `script/` | 이월 이슈 · 되감기 · 지표 기록 · 사용 기록 · 역할 실행기 · 검증 일괄 · 클론 키 파일은 받은 인자를 그대로 하위 명령에 넘기는 shim 이다. `harness-format.sh` · `usage-vocab.sh` 는 패키지 정본의 셸 표기다 |
 | "데이터 흐름" 의 절차 실행 | 앞 명세들이 고친 문장에서 역할 실행기 표기만 바꾼다. #207 이 고친 표기("`script/run-agent.py` 가 고정 사본 CLI 의 `run-plan` 으로 받은 실행 계획대로 띄운 CLI") → "역할 실행기(`harness run-agent` — 실행 계획을 같은 프로세스에서 `run_plan()` 으로 계산한다. 절차 문서는 shim `script/run-agent.py` 로 부른다)가 실행 계획대로 띄운 CLI". #208 의 driver 문장이 가리키는 역할 실행기는 같은 모듈이고, 드라이버는 그것을 같은 프로세스에서 부른다 — 그 뜻을 괄호로 붙인다. 나머지 문장은 그대로다 |
-| "데이터 흐름" 의 실행 지표 | "명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) →" 를 "명령·단계·역할·스크립트 → 스팬 기록(`harness span` — start · end · wrap · step, 셸에서는 shim `script/metric.py`. CLI 안의 기록은 같은 모듈을 부른다) → 패키지의 스팬 기록기(`src/harness/metrics/recorder.py`) →" 로 바꾼다. #207 이 더한 "`script/metric.py` 는 지표 설정을 `run-plan` 에서 받는다" 는 "지표 설정은 실행 계획(`run_plan()`)에서 받고, 기록 디렉터리의 자리표시는 기록기를 부르는 쪽이 클론 키로 풀어 넘긴다" 로 바꾼다 |
+| "데이터 흐름" 의 실행 지표 | "명령·단계·역할·스크립트 → `script/metric.py`(start · end · wrap) →" 를 "명령·단계·역할·스크립트 → 스팬 기록(`harness span` — start · end · wrap · step, 셸에서는 shim `script/metric.py`) → 패키지의 스팬 기록기(`src/harness/metrics/recorder.py`) →" 로 바꾼다. 그 뒤에 #207 이 더한 "지표 설정은 실행 계획에서 받는다 — 스크립트는 고정 사본 CLI 의 `run-plan` 으로, `harness run` 은 같은 프로세스에서 자리표시를 푼 값을 기록기에 넘긴다" 는 "지표 설정은 실행 계획에서 받는다 — 스팬 기록 하위 명령과 `harness run` 이 같은 프로세스에서 계산하고, 자리표시를 클론 키로 푼 값을 기록기에 넘긴다" 로 바꾼다 |
 | "신뢰 경계" 의 명령줄 인자 | 부른 쪽이 주는 입출력 파일(이월 이슈 본문 · 사용 기록 로그 · 역할 실행기의 `--out`)은 리포 기준 상대 경로 규칙의 예외로 절대 경로도 받는다 |
 | "새 코드를 둘 곳" 의 새 에이전트 CLI | "사용량 파서가 필요하면 `run-agent.py` 의 `PARSERS`" → "사용량 파서가 필요하면 `src/harness/runner.py` 의 `PARSERS`" |
 | "새 코드를 둘 곳" 의 새 관리 스크립트 | 하네스가 대상 리포에서 하는 일은 패키지의 하위 명령으로 둔다. `script/` 에 로직을 담은 새 스크립트를 두지 않는다 |
 | "새 코드를 둘 곳" 의 표지 | 기계가 읽는 문자열은 `src/harness/format.py` 에 두고 셸 표기 `script/harness-format.sh` 를 같은 변경에서 맞춘다 |
-| "새 코드를 둘 곳" | #211 이 더한 `src/harness/scripts.py` 줄(이식하지 않은 관리 스크립트 자산을 부르는 코드)을 지운다. 더한다: 지표 기록 코드 → `src/harness/metrics/recorder.py`(`metrics/` 밖의 하네스 모듈을 불러오지 않는다) |
-| "계층과 의존 방향" 의 규칙 값 문장 | #207 · #209 가 고친 문장 끝에 더한다: 이월 이슈 · 되감기 · 사용 기록 · 검증 하위 명령은 공유 설정을 설정 로더로 읽는다. 역할 실행기 · 스팬 기록 하위 명령은 실행 계획을 `run_plan()` 으로 같은 프로세스에서 계산하고, 대상 리포의 셸 · 파이썬 진입점은 이 하위 명령을 부르는 shim 이다 |
-| "계층과 의존 방향" 의 #211 경계 문장 | #211 이 더한 `src/harness/scripts.py` 경계 문장을 이것으로 바꾼다: 하위 명령은 표지 · 사용 기록 · 지표 기록 · 역할 실행기를 패키지 모듈(`format.py` · `usage.py` · `metrics/recorder.py` · `runner.py`)로 부른다 |
+| "새 코드를 둘 곳" | #211 이 더한 "이식하지 않은 관리 스크립트를 부르는 코드 → `src/harness/scripts.py` 한 곳" 을 지운다. 더한다: 지표 기록 코드 → `src/harness/metrics/recorder.py`(`metrics/` 밖의 하네스 모듈을 불러오지 않는다) |
+| "계층과 의존 방향" 의 규칙 값 항목 | #207 이 고친 항목에서 ③ 의 "— 스크립트는 고정 사본 CLI 의 `run-plan` 으로, CLI 패키지 안의 코드는 같은 함수로 받는다" 를 "— CLI 패키지 안의 코드가 같은 함수로 받는다. 역할 실행기 · 스팬 기록 · 리뷰 하위 명령과 `harness run` · 드라이버가 그렇고, 대상 리포의 셸 · 파이썬 진입점은 이 하위 명령을 부르는 shim 이다" 로 바꾼다. 항목 끝에 더한다: 이월 이슈 · 되감기 · 사용 기록 · 검증 하위 명령은 공유 설정을 설정 로더로 읽는다. #209 가 더한 forge 문장은 그대로 둔다 |
+| "계층과 의존 방향" 의 #211 덧문장 | #211 이 더한 "이식하지 않은 관리 스크립트(사용 기록 · 지표 기록 · 역할 실행기)는 `src/harness/scripts.py` 로만 부른다" 를 "사용 기록 · 지표 기록 · 역할 실행기는 패키지 모듈(`usage.py` · `metrics/recorder.py` · `runner.py`)로 부른다" 로 바꾼다. 같은 덧문장의 "표지는 표지 모듈(`src/harness/format.py`)로만 읽는다" 는 그대로 둔다 |
 | "계층과 의존 방향" 의 클론 키 | 더한다: 클론 키 모듈(`src/harness/home/clone_key.py`) 하나를 CLI 의 모든 명령이 쓰고 계산을 다시 두지 않는다. `script/_clone_key.py` 는 그 shim 이다. 스팬 기록기는 클론 키를 모르고 푼 디렉터리를 받는다 |
 
 ### 11-2. `.ai/project/glossary.md`
 
 | 위치 | 반영할 사실 |
 |---|---|
-| "실행 계획" 행 | #207 이 고친 뜻에서 읽는 쪽 `run-agent.py` · `metric.py` 를 `harness run-agent` · `harness span` 으로 바꾸고 "이 둘은 같은 프로세스에서 계산한다" 를 붙인다 |
+| "실행 계획" 행 | #207 이 고친 뜻("`harness run-plan` 이 내고 역할 실행기 · 리뷰 루프 · 지표 기록기가 읽는다")에 #211 이 리뷰 루프 표기를 더한 문장 위에서, `역할 실행기` 를 "역할 실행기(`harness run-agent`, 같은 프로세스에서 계산)" 로, `지표 기록기` 를 "지표 기록기(`harness span`, 같은 프로세스에서 계산)" 로 바꾼다 |
 | "이월 이슈" 행 | `harness carryover` 가 만든다(절차는 `script/create-carryover-issue.sh` 로 부른다) |
 | "표지" 행 | 정본은 `src/harness/format.py`, 셸 표기는 `script/harness-format.sh` |
 | "클론 키" 행 | 계산은 `src/harness/home/clone_key.py` 가 한다 |
@@ -654,8 +670,10 @@ CLI 를 찾지 못할 때:
 ### 12-1. #221 — shim 과 셸 생성물 정리
 
 main 릴리스를 한 번 거친 뒤 #221 이 맡는다. 대상 리포 `script/` 에 git 훅 shim 과 `script/project/` 만 남는 것이 #221 의 완료 조건이다.
+단 리포 루트의 CI 파일이 `script/run-lint-test.sh` 를 부르는 동안에는 그 파일도 생성 파일로 남는다 — #221 3절의 조건부 생성이다.
 
-- shim 전부(#209 · #210 · #211 · #212 · #215 · 이 명세) 걷기. `script/run-lint-test.sh` 는 #217 이 릴리스된 뒤 걷는다 — 기존 설치본의 소유 CI 설정이 그것을 부른다
+- shim 전부(#209 · #210 · #211 · #212 · #215 · 이 명세) 걷기. `script/run-lint-test.sh` 는 #221 3절대로 리포 루트의 CI 파일 가운데 render 가
+  생성하지 않는 것에 그 경로가 든 줄이 있는 동안만 생성 파일로 남고, 그 줄이 없어진 다음 render 가 걷는다
 - 셸 생성물 `script/harness.env` · `script/forge.sh` · `script/harness-verify.sh` 걷기
 - 셸 표기 `script/harness-format.sh` · `script/usage-vocab.sh` 걷기
 - 옛 허용 규칙(`Bash(script/<이름>:*)`) 걷기와 남은 하위 명령의 허용 규칙
@@ -676,8 +694,8 @@ main 릴리스를 한 번 거친 뒤 #221 이 맡는다. 대상 리포 `script/`
 
 ## 13. 한계
 
-- 기존 GitLab 설치본의 소유 `.gitlab-ci.yml` 은 파이프라인 전체를 담고 `script/run-lint-test.sh` 를 직접 부른다
-  <!-- TBD: 확인 필요 — #217 의 GitLab 게이트 형태(게이트는 별도 파일로 생성, 루트 `.gitlab-ci.yml` 은 소유)에서 기존 설치본의 이 호출이 남는지. 남으면 #221 이 `script/run-lint-test.sh` 를 걷는 시점에 닿는다 -->
+- 기존 설치본의 소유 CI 파일(파이프라인 전체를 담은 GitLab 루트 `.gitlab-ci.yml` 포함)은 `script/run-lint-test.sh` 를 직접 부른다.
+  그 줄이 남아 있는 동안 #221 뒤에도 `script/run-lint-test.sh` 는 생성 파일로 남는다 — 판정은 #221 3-1
 - 단계 시작 표지(`script/metric.py step`)처럼 자주 부르는 경로도 shim 을 거치면 CLI 를 한 번 띄운다. 그 지연은 재지 않았다
 - CLI 를 찾지 못한 `script/metric.py start` 는 스팬 id 를 내지 않는다 (4-1)
 - 스팬 기록은 실행 계획을 실효 설정에서 계산한다. 개인 레이어가 성립하지 않는 기기에서는 그 레이어를 고칠 때까지 스팬을 남기지 않는다
