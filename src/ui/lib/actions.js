@@ -164,9 +164,13 @@ export async function createProject(dir, gitInit) {
   if (target === HOME || target.startsWith(HOME + nodePath.sep)) return { ok: false, out: "하네스 등록부 안에는 만들지 않는다" };
   const r = await harness(target, ["install", "--create", ...(gitInit ? ["--git-init"] : [])]);
   revalidatePath("/");
-  // 등록 이름은 설정의 project.name 이다 — 등록부에서 이 경로의 이름을 찾는다
-  const name = r.ok ? ((await listProjects()).find((p) => p.path === target)?.name ?? nodePath.basename(target)) : undefined;
-  return { ...r, name };
+  // 화면은 클론 키로 이동한다. 같은 이름의 클론이 있어도 경로가 가른다 — CLI 는 실제 경로로 등록한다
+  let key;
+  if (r.ok) {
+    const real = await fs.realpath(target).catch(() => target);
+    key = (await listProjects()).find((p) => p.ok && (p.path === real || p.path === target))?.key;
+  }
+  return { ...r, key };
 }
 
 // 새 프로젝트 디렉터리를 macOS 폴더 선택 창으로 고른다. 창에서 새 폴더도 만들 수 있다.
@@ -193,7 +197,7 @@ export async function setValues(project, pairs) {
   return r;
 }
 
-// 홈 카드가 뒤이어 채우는 상태. 이름은 등록부에 있는 것만 받는다.
+// 홈 카드가 뒤이어 채우는 상태. 등록부에 있는 클론 키만 받는다.
 export async function projectStatus(project, remote = false) {
   const { path } = await getProject(project);
   return readStatus(path, remote);

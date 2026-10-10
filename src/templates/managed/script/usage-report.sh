@@ -3,7 +3,7 @@
 #
 #   script/usage-report.sh [--since YYYY-MM-DD] [로그파일|디렉터리 ...]
 #
-# 인자를 생략하면 설정 `usage.log_path` 가 정한 기록 하나를 읽고,
+# 인자를 생략하면 설정 `usage.log_path` 가 정한 기록 하나를 읽고(값의 `{clone}` 은 이 클론의 키로 푼다),
 # 기간도 생략하면 최근 4주만 집계한다 — 오래된 기록이 현재 마찰 신호에 섞이지 않게 한다.
 # 디렉터리를 주면 그 아래 *.log 전부 — 여러 사람이 내보낸 기록을 한 폴더에 모아 집계한다.
 #
@@ -42,7 +42,16 @@ done
 
 if [ $# -eq 0 ]; then
   eval "_override=\${$USAGE_ENV_VAR:-}"
-  set -- "${_override:-$USAGE_LOG_PATH}"
+  _log=${_override:-$USAGE_LOG_PATH}
+  # 설정 값의 자리표시 {clone}(옛 별칭 {project})은 이 클론의 키로 푼다. 환경 변수로 준 경로는 그대로 쓴다.
+  if [ -z "$_override" ] && [ "$_log" != off ]; then
+    case "$_log" in
+      *"{clone}"*|*"{project}"*)
+        _log=$(python3 script/_clone_key.py expand "$_log" 2>/dev/null) && [ -n "$_log" ] ||
+          { echo "error: could not resolve usage.log_path for this clone" >&2; exit 2; } ;;
+    esac
+  fi
+  set -- "$_log"
 fi
 
 # 기본 기간은 최근 4주. GNU date 와 BSD date 의 상대 날짜 문법이 달라 둘 다 시도한다.

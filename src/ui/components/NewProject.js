@@ -17,7 +17,8 @@ export default function NewProject() {
   const create = () => start(async () => {
     const r = await createProject(dir.trim(), git);
     setMsg(r);
-    if (r.ok && r.name) { ref.current.close(); router.push(`/${encodeURIComponent(r.name)}/settings`); }
+    // 등록을 찾지 못하면 이동하지 않고 install 의 출력을 그대로 보인다
+    if (r.ok && r.key) { ref.current.close(); router.push(`/${encodeURIComponent(r.key)}/settings`); }
   });
   const browse = async () => {
     setPicking(true); setMsg(null);
@@ -47,7 +48,7 @@ export default function NewProject() {
             </button>
           </div>
           <label className="check-row"><input type="checkbox" checked={git} disabled={pending} onChange={(e) => setGit(e.target.checked)} /> Initialize git repository</label>
-          {msg && !msg.ok && <pre className="result err">{msg.out}</pre>}
+          {msg && (!msg.ok || !msg.key) && <pre className={`result${msg.ok ? "" : " err"}`}>{msg.out}</pre>}
           <div className="row end">
             <button type="button" className="btn" disabled={pending} onClick={() => ref.current.close()}>Cancel</button>
             <button type="button" className="btn primary" aria-busy={pending} disabled={pending || !dir.trim()} onClick={create}>{pending ? "Installing…" : "Create & Install"}</button>

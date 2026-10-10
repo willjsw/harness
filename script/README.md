@@ -34,6 +34,7 @@
 | `review-mr.sh` | 리뷰 입력을 묶어 리뷰 도구에 넘기고 `post-review.sh` 로 등록. **회차 라벨을 스스로 올리고 상한을 강제.** 0=PASS, 1=수정 필요, 2=실패, 3=상한 | 리뷰 단계 |
 | `post-review.sh` | 리뷰어의 판정 데이터를 검증해 등록(인라인 + 요약)하고 **발견 등급 집계로 판정.** 0=PASS, 1=수정 필요, 2=실패, 3=한 파일 반복 | `review-mr.sh` |
 | `_review.py` | 리뷰 루프의 파이썬 전부 — 판정 데이터 검증·집계, 등록 댓글(요약·인라인) 렌더링, 리뷰 입력 맥락 구성, 회차 라벨 계산. `python3 script/_review.py <하위명령>` 으로만 실행한다. 표지는 환경의 `FMT_*` 를 읽는다 | `review-mr.sh` · `post-review.sh` |
+| `_clone_key.py` | 클론 키 — 이 기기에서 하네스 루트 하나를 가리키는 값을 git 공통 디렉터리와 리포 안의 위치로 계산하고, 설정 값의 `{clone}` · `{project}` 를 그 키로 푼다. `python3 script/_clone_key.py expand <값>` — 0=푼 값 한 줄, 1=인자 없음·계산 실패 | `metric.py` · `usage-log.sh` · `usage-report.sh` · `harness` CLI |
 | `harness-format.sh` | **기계가 읽는 문자열의 정본.** 쓰는 쪽(계약·양식)과 읽는 쪽(파서)이 같은 값을 보게 한다 | 리뷰·이슈 스크립트 |
 | `forge/_common.sh` | forge 어댑터 **계약**과 기본 구현 | `forge.sh` |
 | `forge/<kind>.sh` | forge 어댑터 구현. CLI 이름과 응답 형태를 여기서만 안다 | `forge.sh` |

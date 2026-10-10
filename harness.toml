@@ -138,9 +138,11 @@ test_on = "push"
 # 명령·단계·에이전트·스크립트마다 시간·토큰·상태를 남긴다. 리포 밖에 남아 커밋되지 않는다.
 # 프롬프트·명령줄·문서 본문은 남기지 않는다. 실패 로그는 capture_logs = "errors" 일 때 실패한 것의
 # 끝부분만, 토큰·쿠키·이메일·홈 경로를 지운 뒤 남긴다.
-#   dir  "off" 면 기록하지 않는다
+#   dir  "off" 면 기록하지 않는다. {clone} 은 기록할 때 이 클론의 키로 풀린다 — 같은 리포를 한 기기에
+#        여러 번 클론해도 클론마다 따로 쌓이고, 한 클론의 worktree 는 그 클론과 같이 쌓인다.
+#        {project} 는 {clone} 의 옛 별칭이다(같은 값으로 풀린다)
 [metrics]
-dir = "$HOME/.harness/{project}/metrics"
+dir = "$HOME/.harness/{clone}/metrics"
 retention_days = 30      # 이보다 오래된 파일은 지운다
 max_file_mb = 10         # 파일 하나가 이만큼 차면 새 파일로 넘어간다
 max_total_mb = 100       # 전체가 이만큼을 넘으면 오래된 파일부터 지운다
@@ -226,8 +228,8 @@ protected = [
 # ─────────────────────────────────────────────────────────────────────────────
 [usage]
 # 가드 차단·착수 판정·리뷰 회차만 남긴다. 명령 내용·문서 본문·사람 이름은 남기지 않는다.
-# "off" 면 기록하지 않는다.
-log_path = "$HOME/.harness/{project}/usage.log"
+# "off" 면 기록하지 않는다. {clone} 은 기록할 때 이 클론의 키로 풀린다. {project} 는 그 옛 별칭이다.
+log_path = "$HOME/.harness/{clone}/usage.log"
 env_var = "HARNESS_USAGE_LOG"
 
 # ─────────────────────────────────────────────────────────────────────────────

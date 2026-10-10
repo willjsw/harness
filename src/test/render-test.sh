@@ -252,10 +252,33 @@ records_under_work() { # records_under_work <리포> — 두 기록 경로가 $w
   case "$ul" in "$work"/*) ok ;; *) bad "$1: the usage log path is outside \$work: $ul" ;; esac
 }
 
+in_work_records() { # in_work_records <리포> — 두 기록 경로(설정 값 그대로)가 $work 아래면 0. 기록을 남기기 전에 실제 홈을 피하려고 본다
+  local md ul
+  md=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$1/script/harness.plan.json" 2>/dev/null)
+  ul=$(sed -n 's/^USAGE_LOG_PATH=//p' "$1/script/harness.env" 2>/dev/null | tr -d "\"'")
+  case "$md" in "$work"/*) ;; *) return 1 ;; esac
+  case "$ul" in "$work"/*) ;; *) return 1 ;; esac
+}
+
 isolate_records() { # isolate_records <리포> — install 한 리포의 기록 경로를 테스트 작업 디렉터리로 옮긴다
   "$root/bin/harness" set --target "$1" metrics.dir "$1.records/metrics" usage.log_path "$1.records/usage.log" >/dev/null \
     || bad "$1: could not move the record paths"
   records_under_work "$1"
+}
+
+regs_for() { # regs_for <하네스 루트> [등록부] — 그 루트를 가리키는 project.json 을 등록부 기준 경로로 한 줄에 하나씩 찍는다
+  python3 - "${2:-$HARNESS_HOME}" "$1" <<'PY'
+import json, os, sys
+home, root = sys.argv[1], os.path.realpath(sys.argv[2])
+for d in sorted(os.listdir(home)) if os.path.isdir(home) else []:
+    f = os.path.join(home, d, "project.json")
+    try:
+        data = json.load(open(f, encoding="utf-8"))
+    except (OSError, ValueError):
+        continue
+    if isinstance(data, dict) and data.get("path") == root:
+        print("%s/project.json" % d)
+PY
 }
 
 setup() {          # setup <대상> — 기본 설정으로 렌더한 대상 하나를 만든다
@@ -460,7 +483,7 @@ cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$src/src/bin/"; cp -R "$r
 [ -e "$src/.harness/bin" ] && bad "the source tree vendored a copy of itself" || ok
 [ -f "$src/.ai/AI_AGENT.md" ] && ok || bad "the source tree did not render"
 has "$src/harness.toml" 'name = "source"' "the seeded config is not the source tree's own"
-[ -f "$HARNESS_HOME/source/project.json" ] && ok || bad "the source tree was not registered"
+check "the source tree is registered under its clone key" "$(regs_for "$src")" "$(python3 "$src/script/_clone_key.py" expand '{clone}')/project.json"
 "$src/src/bin/harness" check --target "$src" >/dev/null 2>&1; check "check on the source tree" "$?" "0"
 "$src/src/bin/harness" metrics --target "$src" >"$work/source-metrics.out" 2>&1; check "metrics on the source tree" "$?" "0"
 [ -e "$src/src/bin/__pycache__" ] && bad "the metrics module left bytecode in src/bin" || ok
@@ -1220,9 +1243,11 @@ hasnt "$t/harness.toml" "workflows.quickfix" "delete left the section in the con
 echo "UT-36 install registers the project for the UI, uninstall drops it"
 t="$work/reg/demo"; rm -rf "$t"; mkdir -p "$t"; ( cd "$t" && git init -q )
 "$root/bin/harness" install --target "$t" >/dev/null 2>&1
-has "$HARNESS_HOME/demo/project.json" "\"$(cd "$t" && pwd -P)\"" "install did not record the project path"
+k36=$(python3 "$t/script/_clone_key.py" expand '{clone}')
+has "$HARNESS_HOME/$k36/project.json" "\"$(cd "$t" && pwd -P)\"" "install did not record the project path under the clone key"
+has "$HARNESS_HOME/$k36/project.json" '"name": "demo"' "install did not record the project name"
 "$root/bin/harness" uninstall --target "$t" >/dev/null 2>&1
-[ ! -f "$HARNESS_HOME/demo/project.json" ] && ok || bad "uninstall left the registry entry"
+[ ! -f "$HARNESS_HOME/$k36/project.json" ] && ok || bad "uninstall left the registry entry"
 
 echo "UT-53 commands and checks live in harness.toml; verification is generated from them"
 t="$work/verify"; setup "$t"
@@ -1432,7 +1457,9 @@ open(f, "w").write(body[: len(body) - len(last)] + full + "\n")
 PY
 imp > "$work/imp3.json"; sum "$work/imp3.json" > "$work/imp3.sum"
 has "$work/imp3.sum" "1 25 130 10 [16] 1" "the completed line was not imported exactly once"
-cur="$HARNESS_HOME/my-project/state/import-cursor.json"   # setup 의 설정은 project.name 을 바꾸지 않는다
+# 커서는 이 클론의 키 아래에 있다
+cur="$HARNESS_HOME/$(python3 "$t/script/_clone_key.py" expand '{clone}')/state/import-cursor.json"
+[ -f "$cur" ] && ok || bad "the import cursor is not under the clone key"
 [ "$(stat -c %a "$cur" 2>/dev/null || stat -f %Lp "$cur")" = "600" ] && ok || bad "the import cursor is not 0600"
 
 echo "UT-63 review threads carry an id, and a reply lands on the thread it names"
@@ -1521,7 +1548,7 @@ unset FAKE_CALLS
 
 echo "UT-70 the worktree section: defaults, unknown keys and paths that are not relative are refused"
 t="$work/wtcfg"; setup "$t"
-has "$t/harness.toml" 'dir = "$HOME/.harness/{project}/worktrees"' "the default config has no worktree.dir default"
+has "$t/harness.toml" 'dir = "$HOME/.harness/{clone}/worktrees"' "the default config has no worktree.dir default"
 has "$t/harness.toml" 'include = [".claude/settings.local.json"]' "the default config has no worktree.include default"
 cp "$t/harness.toml" "$work/wtcfg.orig"
 wt_render() { "$root/bin/harness" render --target "$t" > "$work/wtcfg.log" 2>&1; }
@@ -1542,7 +1569,7 @@ PY
   has "$work/wtcfg.log" "worktree.include[2] must be a path relative to the harness root" "the bad include item $bad_path is not named"
 done
 cp "$work/wtcfg.orig" "$t/harness.toml"
-sedi 's|^dir = "\$HOME/.harness/{project}/worktrees"$|dir = "  "|' "$t/harness.toml"
+sedi 's|^dir = "\$HOME/.harness/{clone}/worktrees"$|dir = "  "|' "$t/harness.toml"
 wt_render; check "render with a blank worktree.dir" "$?" "2"
 has "$work/wtcfg.log" "worktree.dir must be" "the blank worktree.dir is not named"
 # 절이 없는 옛 설정은 기본값으로 돈다
@@ -1627,6 +1654,7 @@ ohead=$(git -C "$wd/7" rev-parse HEAD)
 wtrun "$t" work 7 --worktree; check "exit code for another repository's worktree" "$?" "2"
 [ -f "$work/wt.cwd" ] && bad "the orchestrator launched in another repository's worktree" || ok
 has "$work/wt.log" "error: $wd/7 is not a worktree of this repository" "the path conflict is not named"
+has "$work/wt.log" "help: another clone may share worktree.dir — put {clone} in worktree.dir or move that directory" "the path conflict does not point at {clone}"
 check "another repository's worktree is left as it was" "$(git -C "$wd/7" rev-parse HEAD) $(git -C "$wd/7" status --porcelain | wc -l | tr -d ' ')" "$ohead 0"
 wtg "$o" worktree remove "$wd/7"
 
@@ -1761,7 +1789,8 @@ codex("other", "/elsewhere", 66)
 PY2
   HARNESS_CLAUDE_DIR="$cl" HARNESS_CODEX_DIR="$cx" "$root/bin/harness" metrics import --target "$ti" --since 1d > "$work/wtimp.json"
   check "metrics import with worktree runs ($wtcase)" "$?" "0"
-  python3 - "$work/wtimp.json" "$HARNESS_HOME/my-project/state/import-cursor.json" "$cx" > "$work/wtimp.sum" <<'PY2'
+  kti=$(python3 "$ti/script/_clone_key.py" expand '{clone}')
+  python3 - "$work/wtimp.json" "$HARNESS_HOME/$kti/state/import-cursor.json" "$cx" > "$work/wtimp.sum" <<'PY2'
 import json, os, sys
 d = json.load(open(sys.argv[1])); cur = json.load(open(sys.argv[2])); cx = sys.argv[3]
 tok = {x["trace"]: x["tokens"] for x in d["traces"]}
@@ -1770,7 +1799,7 @@ print(tok.get("t-c7"), tok.get("t-c8"), tok.get("t-x7"), tok.get("t-x8"), tok.ge
       d["diagnostics"]["imported"]["unattributed"], other("x7"), other("x8"), other("other"))
 PY2
   has "$work/wtimp.sum" "11 22 33 44 55 0 False False True" "worktree records are not attributed to their own runs ($wtcase): c7 c8 x7 x8 root unattributed other-flags"
-  rm -rf "$HARNESS_HOME/my-project/state"
+  rm -rf "$HARNESS_HOME/$kti/state"
 done
 
 echo "UT-74 doctor reports the issue worktrees left under worktree.dir with their state"
@@ -1796,177 +1825,6 @@ hasnt "$work/wtdoc.log" "worktree" "doctor looked at worktrees outside a git rep
 hasnt "$work/wtdoc.log" "Traceback" "doctor failed outside a git repository"
 "$root/bin/harness" set --target "$work/wt-base" worktree.dir "$work/base-trees" >/dev/null 2>&1
 doc "$work/wt-base"; check "doctor's exit code outside a git repository does not depend on worktrees" "$?" "$code"
-
-echo "UT-62 one project name points to one path: install refuses a name still in use elsewhere"
-# 이름이 등록부의 키다. 같은 이름의 두 번째 클론이 등록을 덮으면 UI 와 실행 기록이 조용히 다른 리포를 가리킨다.
-dup="$work/dup"; A="$dup/a/twin"; B="$dup/b/twin"
-mkrepo() { rm -rf "$1"; mkdir -p "$1"; ( cd "$1" && git init -q . ); }
-regpath() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$HARNESS_HOME/$1/project.json" 2>/dev/null || echo "(none)"; }
-real() { ( cd "$1" && pwd -P ); }
-n=0
-inst() { n=$((n + 1)); "$1" install --target "$2" >"$work/dup-$n.out" 2>"$work/dup-$n.err"; }
-fresh() { # A 를 twin 으로 설치하고, B 에 같은 이름의 설정만 둔다
-  rm -rf "$dup" "$HARNESS_HOME"/twin*
-  mkrepo "$A"; mkrepo "$B"
-  inst "$root/bin/harness" "$A" || bad "could not install A"
-  cp "$A/harness.toml" "$B/harness.toml"
-  rA=$(real "$A"); rB=$(real "$B")
-}
-
-fresh
-inst "$root/bin/harness" "$B"; check "same name at another path" "$?" "2"
-has "$work/dup-$n.err" "error:" "the refusal is not an error line"
-has "$work/dup-$n.err" "$rA" "the refusal does not name the registered path"
-has "$work/dup-$n.err" "harness uninstall" "the refusal does not suggest uninstalling there"
-has "$work/dup-$n.err" "project.name" "the refusal does not suggest renaming"
-check "registry after the refusal" "$(regpath twin)" "$rA"
-[ -e "$B/.harness" ] && bad "the refused install left .harness/" || ok
-[ -e "$B/.ai/AI_AGENT.md" ] && bad "the refused install rendered" || ok
-
-inst "$root/bin/harness" "$A"; check "reinstall at the same path" "$?" "0"
-check "registry after the reinstall" "$(regpath twin)" "$rA"
-
-sedi 's/^name = "twin"$/name = "twin-b"/' "$B/harness.toml"
-inst "$root/bin/harness" "$B"; check "a second clone under another name" "$?" "0"
-check "the first name keeps its path" "$(regpath twin)" "$rA"
-check "the second name points to the clone" "$(regpath twin-b)" "$rB"
-
-fresh
-echo keep > "$HARNESS_HOME/twin/marker"
-rm "$A/harness.toml"
-inst "$root/bin/harness" "$B"; check "old path without a config" "$?" "0"
-check "registry after taking over" "$(regpath twin)" "$rB"
-has "$work/dup-$n.out" "which no longer holds this project" "the takeover was not reported"
-[ -f "$HARNESS_HOME/twin/marker" ] && ok || bad "taking over removed the records under the name"
-
-fresh
-rm -rf "$A"
-inst "$root/bin/harness" "$B"; check "old path gone" "$?" "0"
-check "registry after the old path is gone" "$(regpath twin)" "$rB"
-
-fresh
-sedi 's/^name = "twin"$/name = "twin-renamed"/' "$A/harness.toml"
-inst "$root/bin/harness" "$B"; check "old path now under another name" "$?" "0"
-check "registry after the old path was renamed" "$(regpath twin)" "$rB"
-
-fresh
-printf 'this is = [not toml\n' >> "$A/harness.toml"
-inst "$root/bin/harness" "$B"; check "old config unreadable" "$?" "2"
-has "$work/dup-$n.err" "could not be read" "the refusal does not say the config could not be read"
-has "$work/dup-$n.err" "$rA/harness.toml" "the refusal does not name the unreadable config"
-check "registry after the unreadable refusal" "$(regpath twin)" "$rA"
-
-# 권한으로 막힌 설정은 없는 설정이 아니다. root 는 권한을 무시하므로 이 두 경우를 만들 수 없다.
-if [ "$(id -u)" != 0 ]; then
-  fresh
-  chmod 000 "$A/harness.toml"
-  inst "$root/bin/harness" "$B"; check "old config without read permission" "$?" "2"
-  has "$work/dup-$n.err" "could not be read" "a config without read permission was not refused as unreadable"
-  check "registry after the permission refusal" "$(regpath twin)" "$rA"
-  chmod 644 "$A/harness.toml"
-
-  fresh
-  chmod 000 "$A"
-  inst "$root/bin/harness" "$B"; check "old path that cannot be searched" "$?" "2"
-  has "$work/dup-$n.err" "could not be read" "a path that cannot be searched was taken over as stale"
-  check "registry after the search-permission refusal" "$(regpath twin)" "$rA"
-  chmod 755 "$A"
-fi
-
-# 같은 이름의 두 설치가 동시에 돌면 하나만 등록되고 다른 하나는 거부된다.
-fresh
-# 판에서 하네스 파일을 남긴 채 매니페스트만 지우면 그 파일이 사용자 파일로 보인다 — 판마다 빈 리포에서 시작한다
-cp "$A/harness.toml" "$dup/twin.toml"
-race=0; for i in 1 2 3 4 5; do
-  rm -rf "$HARNESS_HOME"/twin*
-  mkrepo "$A"; mkrepo "$B"; cp "$dup/twin.toml" "$A/harness.toml"; cp "$dup/twin.toml" "$B/harness.toml"
-  "$root/bin/harness" install --target "$A" >"$work/race-a.out" 2>&1 & pa=$!
-  "$root/bin/harness" install --target "$B" >"$work/race-b.out" 2>&1 & pb=$!
-  wait "$pa"; ca=$?; wait "$pb"; cb=$?
-  got=$(regpath twin)
-  case "$ca $cb" in
-    "0 2") [ "$got" = "$rA" ] || race=1 ;;
-    "2 0") [ "$got" = "$rB" ] || race=1 ;;
-    *) race=1 ;;
-  esac
-done
-check "concurrent installs of one name: one succeeds, the other is refused" "$race" "0"
-
-fresh
-echo '{}' > "$HARNESS_HOME/twin/project.json"
-inst "$root/bin/harness" "$B"; check "a registration without a path" "$?" "0"
-check "registry after an empty registration" "$(regpath twin)" "$rB"
-
-fresh
-sedi 's/^name = "twin"$/name = "twin-new"/' "$A/harness.toml"
-inst "$root/bin/harness" "$A"; check "reinstall under a new name" "$?" "0"
-[ -e "$HARNESS_HOME/twin/project.json" ] && bad "the old name still points to the renamed repo" || ok
-check "the new name points to the repo" "$(regpath twin-new)" "$rA"
-
-# doctor 는 등록 상태를 보고만 한다. 경고는 두 가지이고 FAIL 은 없다.
-regsec() { awk '/^registry$/{f=1; next} /^$/{f=0} f' "$1"; }
-doc() { n=$((n + 1)); "$root/bin/harness" doctor --target "$1" >"$work/dup-$n.out" 2>"$work/dup-$n.err"; regsec "$work/dup-$n.out" > "$work/dup-reg-$n.txt"; }
-fresh
-doc "$A"
-has "$work/dup-reg-$n.txt" "ok   registered as \`twin\`" "doctor: a registered repo is not ok"
-grep -E "^(tools and connections|registry|git)$" "$work/dup-$n.out" | tr '\n' ' ' > "$work/dup-order.txt"
-check "doctor: the registry section sits between tools and git" "$(cat "$work/dup-order.txt")" "tools and connections registry git "
-# 등록하지 않은 채 생성물만 둔 같은 이름의 리포 — doctor 는 렌더된 리포에서 끝까지 돈다.
-"$root/bin/harness" render --target "$B" >/dev/null 2>&1 || bad "could not render B"
-cp "$HARNESS_HOME/twin/project.json" "$work/dup-before.json"
-doc "$B"
-has "$work/dup-reg-$n.txt" "warn \`twin\` is registered to another path" "doctor: another path is not a warning"
-has "$work/dup-reg-$n.txt" "$rA" "doctor: the warning does not name the registered path"
-hasnt "$work/dup-reg-$n.txt" "FAIL" "doctor: the registry section failed on another path"
-cmp -s "$HARNESS_HOME/twin/project.json" "$work/dup-before.json" && ok || bad "doctor changed the registry"
-rm "$HARNESS_HOME/twin/project.json"
-doc "$A"
-has "$work/dup-reg-$n.txt" "warn this repository is not registered" "doctor: a missing registration is not a warning"
-hasnt "$work/dup-reg-$n.txt" "FAIL" "doctor: the registry section failed on a missing registration"
-[ -e "$HARNESS_HOME/twin/project.json" ] && bad "doctor registered the repo" || ok
-
-# 같은 리포의 linked worktree 는 같은 프로젝트다. 같은 리포의 다른 서브디렉터리는 아니다.
-fresh
-rm "$B/harness.toml"
-git -C "$A" add -A && git -C "$A" -c core.hooksPath=/dev/null -c user.name=t -c user.email=t@example.invalid commit -q -m init \
-  && git -C "$A" worktree add -q -b side "$dup/a/twin-wt" || bad "could not set up the linked worktree"
-doc "$dup/a/twin-wt"
-has "$work/dup-reg-$n.txt" "ok   registered as \`twin\`" "doctor: a linked worktree of the registered repo is not ok"
-hasnt "$work/dup-reg-$n.txt" "warn" "doctor: a linked worktree of the registered repo warned"
-mkdir -p "$A/sub"; cp "$A/harness.toml" "$A/sub/harness.toml"
-"$root/bin/harness" render --target "$A/sub" >/dev/null 2>&1 || bad "could not render the subdirectory"
-doc "$A/sub"
-has "$work/dup-reg-$n.txt" "warn \`twin\` is registered to another path" "doctor: another subdirectory of the same repo is not a warning"
-unset -f regsec doc
-
-# 소스 리포 분기도 옛 사본을 걷어내기 전에 같은 판정을 거친다.
-rm -rf "$HARNESS_HOME"/srcdup
-for s in "$dup/s1/srcdup" "$dup/s2/srcdup"; do
-  rm -rf "$s"; mkdir -p "$s/src/bin"
-  cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s/src/bin/"; cp -R "$root/templates" "$s/src/templates"
-  ( cd "$s" && git init -q . )
-done
-s2="$dup/s2/srcdup"
-inst "$dup/s1/srcdup/src/bin/harness" "$dup/s1/srcdup"; check "first source tree install" "$?" "0"
-mkdir -p "$s2/.harness/bin"; echo 0.0.1 > "$s2/.harness/VERSION"
-inst "$s2/src/bin/harness" "$s2"; check "second source tree under the same name" "$?" "2"
-[ -d "$s2/.harness/bin" ] && [ -f "$s2/.harness/VERSION" ] && ok || bad "the refused source install cleared the old copy"
-[ -e "$s2/.ai/AI_AGENT.md" ] && bad "the refused source install rendered" || ok
-
-cat "$work"/dup-*.out "$work"/dup-*.err > "$work/dup.log"
-python3 - "$work/dup.log" > "$work/dup.hits" <<'HANGUL'
-import re, sys
-for n, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
-    if re.search(r"[가-힣]", line):
-        print(f"{n}: {line.rstrip()}")
-HANGUL
-if [ -s "$work/dup.hits" ]; then
-  bad "Korean is in the registry output"
-  head -3 "$work/dup.hits" >&2
-else
-  ok
-fi
-unset -f mkrepo regpath real inst fresh
 
 echo "UT-75 the permission allow list: managed scripts, the configured forge's commands and git"
 t="$work/allow"; setup "$t"
@@ -3008,7 +2866,7 @@ check "the user script is untouched" "$(sed -n 2p "$u/script/review-mr.sh")" "ec
 for f in .harness .ai/AI_AGENT.md script/project/README.md; do
   [ -e "$u/$f" ] && bad "the refused install wrote $f" || ok
 done
-[ -e "$HARNESS_HOME/user87/project.json" ] && bad "the refused install registered the project" || ok
+check "the refused install registered nothing" "$(regs_for "$u")" ""
 # 넘겨받기 — 원래 파일은 <경로>.orig 로 남고 매니페스트에는 들지 않는다
 "$root/bin/harness" install --target "$u" --adopt > "$work/u87-2.out" 2> "$work/u87-2.err"; check "install --adopt" "$?" "0"
 check "CLAUDE.md.orig keeps the user's content" "$(cat "$u/CLAUDE.md.orig")" "my own agent notes"
@@ -3082,7 +2940,7 @@ check "the user file named script is untouched" "$(cat "$pf87/script")" "not a d
 for f in .harness .ai/AI_AGENT.md .ai/project/scope.md; do
   [ -e "$pf87/$f" ] && bad "the refused install wrote $f" || ok
 done
-[ -e "$HARNESS_HOME/parent87/project.json" ] && bad "the refused install registered the project" || ok
+check "the refused install registered nothing" "$(regs_for "$pf87")" ""
 # 매니페스트에 있던 관리 파일 자리에 디렉터리가 생겨도 쓰기 전에 멈춘다
 rm "$u/script/review-mr.sh"; mkdir "$u/script/review-mr.sh"; cp "$u/.harness/managed" "$work/u87-mf2"
 "$root/bin/harness" render --target "$u" > "$work/u87-14.out" 2> "$work/u87-14.err"; check "render where a managed file became a directory" "$?" "2"
@@ -3853,12 +3711,13 @@ has "$work/p101-10.err" "  --> .harness" "the refusal does not name the linked .
 check "the link target's file is kept" "$(cat "$out101/pin/keep.txt")" "outside"
 check "the link target's nested file is kept" "$(cat "$out101/pin/keep-dir/nested.txt")" "nested"
 check "nothing was written behind the link" "$(ls "$out101/pin" | tr '\n' ' ')" "keep-dir keep.txt "
-[ -e "$HARNESS_HOME/hlink101/project.json" ] && bad "the refused install registered the project" || ok
-cp "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy"
+check "the refused install registered nothing" "$(regs_for "$hl")" ""
+reg101m=$(regs_for "$m")
+cp "$HARNESS_HOME/$reg101m" "$work/p101-reg.copy" || bad "the linked-manifest repo is not registered"
 cp -R "$m/.harness" "$out101/pinned"; mv "$m/.harness" "$m/.harness.real"; ln -s "$out101/pinned" "$m/.harness"
 "$root/bin/harness" install --target "$m" > "$work/p101-11.out" 2> "$work/p101-11.err"; check "reinstall with a linked .harness" "$?" "2"
 [ -f "$out101/pinned/bin/harness" ] && [ -f "$out101/pinned/managed" ] && ok || bad "the reinstall removed files behind the link"
-same101 "$HARNESS_HOME/mlink101/project.json" "$work/p101-reg.copy" "the refused reinstall changed the registry"
+same101 "$HARNESS_HOME/$reg101m" "$work/p101-reg.copy" "the refused reinstall changed the registry"
 rm "$m/.harness"; mv "$m/.harness.real" "$m/.harness"
 # 소스 리포의 옛 사본 정리 — .harness/bin 이 바깥 디렉터리 링크면 멈춘다
 s101="$work/source101"; rm -rf "$s101"; mkdir -p "$s101/src/bin" "$out101/oldbin"
@@ -4270,23 +4129,23 @@ unset -f fix101
 # install --create · --git-init — 새 프로젝트 만들기가 CLI 한 번이다. 거부되면 아무것도 만들지 않는다
 c101="$work/create101"; rm -rf "$c101" "$work/home101"
 in101() { HARNESS_HOME="$work/home101" "$root/bin/harness" install "$@" > "$work/in101.out" 2> "$work/in101.err"; }
-reg101() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("path", ""))' "$work/home101/$1/project.json" 2>/dev/null || echo "(none)"; }
+reg101() { regs_for "$1" "$work/home101"; }
 in101 --create --git-init --target "$c101/a/fresh101"; check "install --create --git-init into a missing path" "$?" "0"
 [ -d "$c101/a/fresh101/.git" ] && ok || bad "install --git-init did not start a git repository"
 [ -f "$c101/a/fresh101/harness.toml" ] && ok || bad "install --create did not lay down the config"
-check "the new path is registered" "$(reg101 fresh101)" "$(cd "$c101/a/fresh101" && pwd -P)"
+check "the new path is registered under its clone key" "$(reg101 "$c101/a/fresh101")" \
+  "$(python3 "$c101/a/fresh101/script/_clone_key.py" expand '{clone}')/project.json"
 cat "$work/in101.out" "$work/in101.err" > "$work/in101-all.log"
 in101 --target "$c101/b/missing101"; check "install into a missing path without --create" "$?" "2"
 [ ! -e "$c101/b" ] && ok || bad "install without --create made the path"
 has "$work/in101.err" "error: target directory does not exist" "the refusal does not say the directory is missing"
 has "$work/in101.err" "--create" "the refusal does not point at --create"
 cat "$work/in101.err" >> "$work/in101-all.log"
-before=$(cat "$work/home101/fresh101/project.json")
-in101 --create --git-init --target "$c101/c/fresh101"; check "install --create under a name in use elsewhere" "$?" "2"
-[ ! -e "$c101/c" ] && ok || bad "a refused install --create made the path"
-check "a refused install --create leaves the registry" "$(cat "$work/home101/fresh101/project.json")" "$before"
-has "$work/in101.err" "is already registered to another repository" "the refusal is not the registry's"
-cat "$work/in101.err" >> "$work/in101-all.log"
+# 같은 이름의 두 번째 클론도 등록된다 — 거부하지 않고 알리기만 한다
+in101 --create --git-init --target "$c101/c/fresh101"; check "install --create of a second clone under the same name" "$?" "0"
+check "both clones are registered" "$(reg101 "$c101/a/fresh101" | wc -l | tr -d ' ') $(reg101 "$c101/c/fresh101" | wc -l | tr -d ' ')" "1 1"
+has "$work/in101.out" "install: \`fresh101\` is also registered at $(cd "$c101/a/fresh101" && pwd -P)" "the second install does not name the first clone"
+cat "$work/in101.out" "$work/in101.err" >> "$work/in101-all.log"
 # 있는 대상에서 install 이 바꿀 경로가 판정에서 멈추면 .git 도 설정도 생기지 않는다 — 설정이 없을 때와 있을 때
 mkdir -p "$work/outside105"
 for e in noconf conf; do
@@ -4315,7 +4174,9 @@ if [ "\$1" = init ]; then echo note > "$c101/i/notes109.txt"; echo "fatal: canno
 exec "$(command -v git)" "\$@"
 SH
 chmod +x "$fg109/git"
+before=$(cat "$work"/home101/*/project.json 2>/dev/null | sort)
 PATH="$fg109:$PATH" in101 --create --git-init --target "$c101/i/repo109"; check "install --create --git-init when git init fails" "$?" "2"
+check "a failed install --create leaves the registry" "$(cat "$work"/home101/*/project.json 2>/dev/null | sort)" "$before"
 check "a file another process made in the new directory is kept" "$(cat "$c101/i/notes109.txt" 2>/dev/null)" "note"
 [ ! -e "$c101/i/repo109" ] && ok || bad "the empty directory this run made is left"
 has "$work/in101.out" "something else is in it now" "install does not say it kept a directory that is no longer empty"
@@ -4405,6 +4266,1195 @@ check "schema base_protected with docs.protected emptied" "$(schema101 "$root/bi
 check "the existing schema keys stay" \
   "$(schema101 "$root/bin/harness" "$t" 'all(k in s for k in ("agents", "script_roles", "orchestrator", "orchestrator_model", "roles", "commands", "checks", "legacy_verify", "doctor", "workflow_notes", "workflows"))')" "True"
 unset -f schema101
+
+echo "UT-106 the clone key: one per clone, shared by its worktrees, apart for subprojects, opaque, and expanded on the command line"
+k106="$work/key106"; rm -rf "$k106"; mkdir -p "$k106"
+kg106() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+plant106() { mkdir -p "$1/script" && cp "$root/templates/managed/script/_clone_key.py" "$1/script/"; }
+# 그 하네스 루트에 둔 모듈이 구한 키
+ck106() { python3 "$1/script/_clone_key.py" expand '{clone}'; }
+r106="$k106/repo"; plant106 "$r106"; plant106 "$r106/a"; plant106 "$r106/b"
+git init -q "$r106" && kg106 "$r106" add -A && kg106 "$r106" commit -q -m init || bad "could not set up the clone key repository"
+kg106 "$r106" worktree add -q --detach "$k106/wt" || bad "could not add a linked worktree"
+git clone -q "$r106" "$k106/c1" && git clone -q "$r106" "$k106/c2" || bad "could not clone the repository twice"
+plain106="$k106/plain"; plant106 "$plain106"
+kr106=$(ck106 "$r106"); kw106=$(ck106 "$k106/wt"); kc1=$(ck106 "$k106/c1"); kc2=$(ck106 "$k106/c2")
+ka106=$(ck106 "$r106/a"); kb106=$(ck106 "$r106/b"); kp106=$(ck106 "$plain106")
+check "a repository and its linked worktree share the key" "$kw106" "$kr106"
+[ "$kc1" != "$kc2" ] && [ "$kc1" != "$kr106" ] && ok || bad "two clones of one remote share a key"
+[ "$ka106" != "$kb106" ] && [ "$ka106" != "$kr106" ] && ok || bad "two subdirectories of one repository share a key"
+check "outside git the key is the same when asked again" "$(ck106 "$plain106")" "$kp106"
+check "a root outside git has a key" "$(printf '%s' "$kp106" | grep -cE '^c-[0-9a-f]{16}$')" "1"
+for k in "$kr106" "$kw106" "$kc1" "$kc2" "$ka106" "$kb106" "$kp106"; do
+  printf '%s\n' "$k" | grep -qE '^c-[0-9a-f]{16}$' && ok || bad "a key is not c- and 16 hex digits: $k"
+  case "$k" in *repo*|*plain*|*key106*|*/*) bad "a key carries a piece of its path: $k" ;; *) ok ;; esac
+done
+# 명령줄 — {clone} 과 옛 별칭 {project} 는 같은 값, 자리표시가 없으면 그대로, 인자가 없으면 아무것도 내지 않고 1
+ex106="$plain106/script/_clone_key.py"
+check "expand puts the key in place of {clone}" "$(python3 "$ex106" expand '{clone}/x')" "$kp106/x"
+check "expand turns {project} into the same key" "$(python3 "$ex106" expand '{project}/x')" "$kp106/x"
+check "expand leaves a value without a placeholder as it is" "$(python3 "$ex106" expand 'plain $HOME/~')" 'plain $HOME/~'
+python3 "$ex106" > "$work/ck106.out" 2>&1; check "no arguments exit code" "$?" "1"
+check "no arguments print nothing" "$(cat "$work/ck106.out")" ""
+python3 "$ex106" expand > "$work/ck106.out" 2>&1; check "expand without a value exit code" "$?" "1"
+check "expand without a value prints nothing" "$(cat "$work/ck106.out")" ""
+for d in "$r106" "$k106/wt" "$plain106"; do
+  [ -e "$d/script/__pycache__" ] && bad "the clone key module left bytecode in $d/script" || ok
+done
+# 이름공간 — 키 모양의 project.name 은 설정 검증이 거부한다. 비슷하지만 키가 아닌 이름은 받는다
+t="$k106/named"; setup "$t"
+name106() { python3 - "$t/harness.toml" "$1" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+open(p, "w", encoding="utf-8").write(re.sub(r'(?m)^(\[project\]\nname = ).*$', lambda m: m.group(1) + '"%s"' % sys.argv[2], s, count=1))
+PY
+}
+name106 c-0123456789abcdef
+"$root/bin/harness" render --target "$t" > "$work/ck106-name.out" 2> "$work/ck106-name.err"; check "render with a key-shaped project.name" "$?" "2"
+has "$work/ck106-name.err" "error: project.name \`c-0123456789abcdef\` has the form of a clone key (c- and 16 hex digits)" "the refusal does not name the key-shaped project.name"
+has "$work/ck106-name.err" "help: choose another project.name in harness.toml" "the refusal does not say what to do"
+name106 c-0123456789ABCDEF
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1; check "render with a name that is not quite a key" "$?" "0"
+# 생성 파일에는 키가 들어가지 않는다
+kt106=$(ck106 "$t")
+grep -rlF "$kt106" "$t" > "$work/ck106-gen.txt"
+check "no generated file carries the clone key" "$(cat "$work/ck106-gen.txt")" ""
+no_hangul "$work/ck106-name.err" "the clone key refusal"
+unset -f kg106 plant106 ck106 name106
+
+echo "UT-107 {clone} in the record and worktree paths resolves to the clone key when used, {project} resolves the same and is noted, and generated files keep the value"
+# 기본값 — 세 값이 {clone} 을 담고 {project} 를 담지 않는다
+python3 - "$root/templates/harness.toml" > "$work/ph107-defaults.txt" <<'PY'
+import sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+for v in (c["metrics"]["dir"], c["usage"]["log_path"], c["worktree"]["dir"]):
+    print("{clone}" in v, "{project}" in v)
+PY
+check "the shipped defaults use {clone} and not {project}" "$(tr '\n' ' ' < "$work/ph107-defaults.txt")" "True False True False True False "
+t="$work/ph107"; setup "$t"; p107="$work/ph107-rec"
+( cd "$t" && git init -q . ) || bad "could not start git in the placeholder repo"
+mkdir -p "$work/ph107-bin" && printf '#!/bin/sh\nexit 0\n' > "$work/ph107-bin/claude" && chmod +x "$work/ph107-bin/claude"
+key107=$(python3 "$t/script/_clone_key.py" expand '{clone}')
+dry107() { ( cd "$t" && PATH="$work/ph107-bin:$PATH" "$root/bin/harness" run work 7 --worktree --dry-run ) > "$work/ph107-run.log" 2>&1; }
+# 설정에 없는 키의 기본값 — 계획 파일에는 {clone} 그대로, worktree 자리는 키로 푼 자리
+cp "$t/harness.toml" "$work/ph107.toml"
+python3 - "$t/harness.toml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+s = re.sub(r'(?m)^(\[metrics\]\n(?:#.*\n)*)dir = .*\n', r'\1', s, count=1)
+s, n = re.subn(r'^\[worktree\]\n(?:(?!\[).*\n)*', '', s, flags=re.M)
+assert n == 1
+open(p, "w", encoding="utf-8").write(s)
+PY
+"$root/bin/harness" render --target "$t" >/dev/null 2>&1 || bad "could not render without metrics.dir and the worktree section"
+check "the default metrics.dir reaches the plan as written" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$t/script/harness.plan.json")" '$HOME/.harness/{clone}/metrics'
+dry107; check "run --worktree --dry-run with the default worktree.dir" "$?" "0"
+has "$work/ph107-run.log" "worktree: $HOME/.harness/$key107/worktrees/7 (new)" "the default worktree.dir is not resolved with the clone key"
+cp "$work/ph107.toml" "$t/harness.toml"
+# {clone} 과 {project} — 같은 자리에 쌓이고, 생성 파일은 설정 값 그대로
+rec107() { # rec107 — 이 클론에서 스팬 하나와 사용 기록 한 줄을 남긴다. 기록 경로가 테스트 작업 디렉터리 밖이면 남기지 않는다
+  in_work_records "$t" || { bad "the record paths of $t are not under the test work directory"; return 1; }
+  ( cd "$t" && python3 script/metric.py start --name ph107 --kind script >/dev/null && env -u HARNESS_USAGE_LOG script/usage-log.sh note test-caller )
+}
+for ph in '{clone}' '{project}'; do
+  "$root/bin/harness" set --target "$t" metrics.dir "$p107/$ph/metrics" usage.log_path "$p107/$ph/usage.log" worktree.dir "$p107/$ph/trees" >/dev/null 2>&1 \
+    || bad "could not set the three paths with $ph"
+  check "the plan keeps metrics.dir with $ph" \
+    "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$t/script/harness.plan.json")" "$p107/$ph/metrics"
+  has "$t/script/harness.env" "USAGE_LOG_PATH=\"$p107/$ph/usage.log\"" "harness.env does not keep usage.log_path with $ph"
+  rec107
+  dry107; has "$work/ph107-run.log" "worktree: $p107/$key107/trees/7 (new)" "worktree.dir with $ph is not resolved with the clone key"
+  "$root/bin/harness" metrics --target "$t" > "$work/ph107-metrics.json" 2>&1 || bad "metrics with $ph failed"
+  check "metrics names the resolved dir with $ph" \
+    "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["diagnostics"]["dir"])' "$work/ph107-metrics.json")" "$p107/$key107/metrics"
+done
+# 옛 별칭 안내 — render 는 키마다 note 한 줄(결과와 종료 코드는 그대로), doctor 는 config 절에 키마다 warn
+alias107() { # alias107 <이름> — render 의 표준 오류와 doctor 의 config 절 항목을 남긴다
+  "$root/bin/harness" render --target "$t" > "$work/ph107-$1.out" 2> "$work/ph107-$1.err"; echo "$?" > "$work/ph107-$1.rc"
+  "$root/bin/harness" doctor --json --target "$t" 2>/dev/null | python3 -c '
+import json, sys
+items = [i for i in json.load(sys.stdin)["items"] if i["section"] == "config"]
+for i in items:
+    if "{project}" in i["what"]:
+        print("%s|%s|%s" % (i["state"], i["what"], i["detail"]))
+print("bad-in-config" if any(i["state"] == "bad" for i in items) else "no-bad-in-config")' > "$work/ph107-$1.doctor"
+}
+alias107 project
+check "render with {project} exits 0" "$(cat "$work/ph107-project.rc")" "0"
+for k in metrics.dir usage.log_path worktree.dir; do
+  has "$work/ph107-project.err" "note: $k uses {project}, an old alias of {clone} — replace it with {clone} in harness.toml" "render does not note $k"
+  has "$work/ph107-project.doctor" "warn|\`$k\` uses \`{project}\`|an old alias of {clone} — replace it with {clone} in harness.toml" "doctor does not warn about $k"
+done
+check "render notes once per key" "$(grep -c '^note: ' "$work/ph107-project.err")" "3"
+check "doctor warns once per key" "$(grep -c '^warn|' "$work/ph107-project.doctor")" "3"
+has "$work/ph107-project.doctor" "no-bad-in-config" "doctor fails the config section for {project}"
+check "the plan with {project} keeps the value" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metrics"]["dir"])' "$t/script/harness.plan.json")" "$p107/{project}/metrics"
+"$root/bin/harness" set --target "$t" metrics.dir "$p107/{clone}/metrics" usage.log_path "$p107/{clone}/usage.log" worktree.dir "$p107/{clone}/trees" >/dev/null 2>&1 \
+  || bad "could not set the three paths back to {clone}"
+alias107 clone
+check "render with {clone} exits 0" "$(cat "$work/ph107-clone.rc")" "0"
+hasnt "$work/ph107-clone.err" "note:" "render notes a config that uses {clone}"
+check "doctor has no {project} item for a config that uses {clone}" "$(grep -c '|' "$work/ph107-clone.doctor")" "0"
+cat "$work/ph107-project.err" "$work/ph107-project.out" > "$work/ph107-alias.log"
+no_hangul "$work/ph107-alias.log" "the {project} notes"
+check "the spans of both placeholders are under the clone key" "$(cat "$p107/$key107"/metrics/spans-*.jsonl 2>/dev/null | grep -c '"name":"ph107"')" "2"
+check "the usage lines of both placeholders are under the clone key" "$(grep -c '|note|test-caller|' "$p107/$key107/usage.log" 2>/dev/null)" "2"
+[ ! -e "$p107/{clone}" ] && [ ! -e "$p107/{project}" ] && ok || bad "a placeholder was written into a path as it is"
+grep -rlF "$key107" "$t" > "$work/ph107-gen.txt"
+check "no file in the repository carries the clone key" "$(cat "$work/ph107-gen.txt")" ""
+[ -e "$t/script/__pycache__" ] && bad "resolving the placeholders left bytecode in script/" || ok
+# 키를 구하지 못하면 지표를 남기지 않는다 — 모듈 없이 둔 기록기
+nk107="$work/ph107-nokey"; rm -rf "$nk107"; mkdir -p "$nk107/script"
+cp "$t/script/metric.py" "$nk107/script/"
+printf '{"metrics": {"dir": "%s/{clone}/metrics", "retention_days": 30, "max_file_mb": 10, "max_total_mb": 100, "stale_after_hours": 6, "capture_logs": "errors"}}\n' "$nk107" \
+  > "$nk107/script/harness.plan.json"
+python3 "$nk107/script/metric.py" start --name ph107 --kind script > /dev/null; check "metric.py without the key module still exits 0" "$?" "0"
+check "metric.py records nothing when it cannot compute the key" "$(find "$nk107" -name 'spans-*' | wc -l | tr -d ' ')" "0"
+no_hangul "$work/ph107-run.log" "run --worktree --dry-run output"
+unset -f dry107 rec107 alias107
+
+echo "UT-108 two clones of one repository live side by side: each its own registration and records, the same generated files, a worktree with its clone, and harness projects lists them"
+cl108="$work/clones108"; rm -rf "$cl108"; mkdir -p "$cl108"
+g108() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+key108() { python3 "$1/script/_clone_key.py" expand '{clone}'; }
+in108() { "$root/bin/harness" install --target "$2" > "$work/in108-$1.out" 2> "$work/in108-$1.err"; }
+pj108() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("name"), d.get("path"))' "$HARNESS_HOME/$1/project.json" 2>&1; }
+spans108() { cat "$cl108/rec/$1"/metrics/spans-*.jsonl 2>/dev/null | grep -c '"name":"rec108"'; }
+rec108() { # rec108 <루트> — 스팬 하나와 사용 기록 한 줄. 기록 경로가 테스트 작업 디렉터리 밖이면 남기지 않는다
+  in_work_records "$1" || { bad "the record paths of $1 are not under the test work directory"; return 1; }
+  ( cd "$1" && python3 script/metric.py start --name rec108 --kind script >/dev/null && env -u HARNESS_USAGE_LOG script/usage-log.sh note test-caller )
+}
+# 두 클론이 나눠 갖는 커밋된 설정 하나 — 기록 경로는 {clone} 을 담은 채 테스트 작업 디렉터리 아래로 둔다
+o108="$cl108/origin"; mkdir -p "$o108"; cp "$root/templates/harness.toml" "$o108/harness.toml"
+python3 - "$o108/harness.toml" "$cl108/rec" <<'PY'
+import re, sys
+p, rec = sys.argv[1], sys.argv[2]; s = open(p, encoding="utf-8").read()
+for pat, repl in ((r'(?m)^(\[project\]\nname = ).*$', lambda m: m.group(1) + '"twin"'),
+                  (r'(?m)^(\[metrics\]\n(?:#.*\n)*)dir = .*$', lambda m: m.group(1) + 'dir = "%s/{clone}/metrics"' % rec),
+                  (r'(?m)^log_path = .*$', lambda m: 'log_path = "%s/{clone}/usage.log"' % rec)):
+    s, n = re.subn(pat, repl, s, count=1)
+    assert n == 1, pat
+open(p, "w", encoding="utf-8").write(s)
+PY
+git init -q "$o108" && g108 "$o108" add -A && g108 "$o108" commit -q -m init || bad "could not set up the shared repository"
+A108="$cl108/a/twin"; B108="$cl108/b/twin"
+git clone -q "$o108" "$A108" && git clone -q "$o108" "$B108" || bad "could not clone the repository twice"
+# 등록 — 같은 이름의 두 클론이 둘 다 설치되고 각자의 키로 등록된다. 두 번째는 첫 번째를 알린다
+in108 a "$A108"; check "install the first clone" "$?" "0"
+in108 b "$B108"; check "install a second clone under the same name" "$?" "0"
+rA108=$(cd "$A108" && pwd -P); rB108=$(cd "$B108" && pwd -P); kA108=$(key108 "$A108"); kB108=$(key108 "$B108")
+[ "$kA108" != "$kB108" ] && ok || bad "two clones got one key"
+check "the first clone is registered under its key" "$(regs_for "$A108")" "$kA108/project.json"
+check "the second clone is registered under its key" "$(regs_for "$B108")" "$kB108/project.json"
+check "the first registration holds the name and the path" "$(pj108 "$kA108")" "twin $rA108"
+check "the second registration holds the name and the path" "$(pj108 "$kB108")" "twin $rB108"
+has "$work/in108-b.out" "install: \`twin\` is also registered at $rA108" "the second install does not name the first clone"
+hasnt "$work/in108-a.out" "is also registered" "the first install names a clone that is not there"
+# 생성 파일 — 두 클론에서 같고 키가 없으며, 한쪽 것을 다른 쪽에 둬도 check 가 통과한다
+cmp -s "$A108/script/harness.plan.json" "$B108/script/harness.plan.json" && cmp -s "$A108/script/harness.env" "$B108/script/harness.env" \
+  && ok || bad "two clones have different generated files"
+cat "$A108/script/harness.plan.json" "$A108/script/harness.env" > "$work/gen108.txt"
+hasnt "$work/gen108.txt" "$kA108" "a generated file carries the first clone's key"
+hasnt "$work/gen108.txt" "$kB108" "a generated file carries the second clone's key"
+cp "$A108/script/harness.plan.json" "$A108/script/harness.env" "$B108/script/"
+"$root/bin/harness" check --target "$B108" >/dev/null 2>&1; check "check passes with the other clone's generated files" "$?" "0"
+# 기록 경로 — 클론마다 자기 키 아래에 쌓인다
+rec108 "$A108"; rec108 "$B108"
+check "the first clone's span is under its key" "$(spans108 "$kA108")" "1"
+check "the second clone's span is under its key" "$(spans108 "$kB108")" "1"
+check "the first clone's usage line is under its key" "$(grep -c . "$cl108/rec/$kA108/usage.log" 2>&1)" "1"
+check "the second clone's usage line is under its key" "$(grep -c . "$cl108/rec/$kB108/usage.log" 2>&1)" "1"
+# worktree — 한 클론의 worktree 에서 남긴 기록은 그 클론의 키 아래에 쌓이고, worktree 는 등록되지 않는다
+g108 "$A108" add -A && g108 "$A108" commit -q -m harness && g108 "$A108" worktree add -q --detach "$cl108/a-wt" \
+  || bad "could not add a worktree to the first clone"
+rec108 "$cl108/a-wt"
+check "a worktree's span lands with its clone" "$(spans108 "$kA108")" "2"
+check "a worktree's span does not reach the other clone" "$(spans108 "$kB108")" "1"
+check "the worktree is not registered on its own" "$(regs_for "$cl108/a-wt")" ""
+# 재설치 — 등록은 하나 그대로, 이름을 바꾸면 같은 키의 이름만 바뀌고 키 아래 기록은 남는다
+in108 a2 "$A108"; check "reinstall the first clone" "$?" "0"
+check "a reinstall keeps one registration" "$(regs_for "$A108")" "$kA108/project.json"
+echo keep > "$HARNESS_HOME/$kA108/marker"; echo keep > "$cl108/rec/$kA108/metrics/marker"
+sedi 's/^name = "twin"$/name = "twin-renamed"/' "$A108/harness.toml"
+in108 a3 "$A108"; check "reinstall under a new name" "$?" "0"
+check "a rename keeps the key and changes the name" "$(regs_for "$A108") $(pj108 "$kA108")" "$kA108/project.json twin-renamed $rA108"
+[ -f "$HARNESS_HOME/$kA108/marker" ] && [ -f "$cl108/rec/$kA108/metrics/marker" ] && ok || bad "a rename lost what was under the key"
+hasnt "$work/in108-a3.out" "is also registered" "a renamed clone is reported as sharing a name"
+sedi 's/^name = "twin-renamed"$/name = "twin"/' "$A108/harness.toml"
+in108 a4 "$A108"; check "reinstall under the first name again" "$?" "0"
+# 소스 리포 — 같은 이름의 소스 트리 복제본 둘이 각자의 키로 등록된다
+for s108 in "$cl108/s1/srcdup" "$cl108/s2/srcdup"; do
+  mkdir -p "$s108/src/bin"
+  cp "$root/bin/harness" "$root/bin/harness_metrics.py" "$s108/src/bin/"; cp -R "$root/templates" "$s108/src/templates"
+  ( cd "$s108" && git init -q . ) || bad "could not make a source tree copy"
+done
+"$cl108/s1/srcdup/src/bin/harness" install --target "$cl108/s1/srcdup" > "$work/in108-s1.out" 2>&1; check "install the first source tree" "$?" "0"
+"$cl108/s2/srcdup/src/bin/harness" install --target "$cl108/s2/srcdup" > "$work/in108-s2.out" 2>&1; check "install a second source tree under the same name" "$?" "0"
+check "the first source tree is registered under its key" "$(regs_for "$cl108/s1/srcdup")" "$(key108 "$cl108/s1/srcdup")/project.json"
+check "the second source tree is registered under its key" "$(regs_for "$cl108/s2/srcdup")" "$(key108 "$cl108/s2/srcdup")/project.json"
+has "$work/in108-s2.out" "install: \`srcdup\` is also registered at $(cd "$cl108/s1/srcdup" && pwd -P)" "the second source tree install does not name the first"
+# projects — 등록부의 키 디렉터리는 projects, 옛 이름 디렉터리는 legacy. 파일과 . 으로 시작하는 항목은 등록이 아니다
+hp108="$work/home108p"; rm -rf "$hp108"; mkdir -p "$hp108"
+cp -R "$HARNESS_HOME/$kA108" "$HARNESS_HOME/$kB108" "$hp108/"
+mkdir -p "$hp108/old-twin" "$hp108/c-00000000000000ff" "$hp108/c-0000000000000000" "$hp108/no-registration" "$hp108/.install.lock.d"
+printf '{"path": "%s"}\n' "$work/gone108" > "$hp108/old-twin/project.json"
+printf 'not json\n' > "$hp108/c-00000000000000ff/project.json"
+printf '{"path": "%s"}\n' "$rA108" > "$hp108/.install.lock.d/project.json"
+printf '{}\n' > "$hp108/tools.json"; : > "$hp108/.install.lock"; : > "$hp108/ui.log"
+snap108() { ( cd "$hp108" && find . | sort && find . -type f | sort | while read -r f; do cat "$f"; done ); }
+before108=$(snap108)
+( cd "$work" && HARNESS_HOME="$hp108" "$root/bin/harness" projects ) > "$work/projects108.json" 2> "$work/projects108.err"
+check "projects runs where there is no config" "$?" "0"
+python3 - "$work/projects108.json" "$kA108" "$kB108" "$rA108" "$rB108" > "$work/projects108.txt" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); kA, kB, rA, rB = sys.argv[2:6]
+want = {"projects": [{"key": "c-00000000000000ff", "name": "c-00000000000000ff", "path": None, "ok": False},
+                     {"key": kA, "name": "twin", "path": rA, "ok": True},
+                     {"key": kB, "name": "twin", "path": rB, "ok": True}],
+        "legacy": [{"name": "old-twin", "path": sys.argv[1].rsplit("/", 1)[0] + "/gone108"}]}
+print("same" if d == want else "differs: %s" % json.dumps(d))
+PY
+check "projects lists the clones, the unreadable one and the old name directory" "$(cat "$work/projects108.txt")" "same"
+check "projects does not change the registry" "$(snap108)" "$before108"
+( cd "$work" && HARNESS_HOME="$work/nohome108" "$root/bin/harness" projects ) > "$work/projects108-none.json" 2>&1
+check "projects with no registry exits 0" "$?" "0"
+check "projects with no registry lists nothing" "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])))' "$work/projects108-none.json")" \
+  "{'projects': [], 'legacy': []}"
+[ ! -e "$work/nohome108" ] && ok || bad "projects made the registry directory"
+cat "$work/projects108.err" >> "$work/in108-a.err"
+# uninstall — 그 클론의 등록만 지우고 기록과 다른 클론의 등록은 남긴다
+"$root/bin/harness" uninstall --target "$B108" > "$work/un108.out" 2>&1; check "uninstall the second clone" "$?" "0"
+check "uninstall drops only that clone's registration" "[$(regs_for "$B108")] [$(regs_for "$A108")]" "[] [$kA108/project.json]"
+[ -d "$HARNESS_HOME/$kB108" ] && [ -f "$cl108/rec/$kA108/usage.log" ] && [ -f "$cl108/rec/$kB108/usage.log" ] && ok \
+  || bad "uninstall removed records"
+cat "$work"/in108-*.out "$work"/in108-*.err "$work/un108.out" > "$work/out108.log"
+no_hangul "$work/out108.log" "the two-clone install output"
+unset -f g108 key108 in108 pj108 spans108 rec108 snap108
+
+echo "UT-109 doctor's registry section judges this clone by its key: registered, its worktree, not registered, registered elsewhere, a sibling subproject"
+r109="$work/reg109"; rm -rf "$r109"; mkdir -p "$r109"
+g109() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+doc109() { # doc109 <이름> <대상> — doctor 의 출력과 registry 절을 남긴다
+  "$root/bin/harness" doctor --target "$2" > "$work/doc109-$1.out" 2> "$work/doc109-$1.err"
+  awk '/^registry$/{f=1; next} /^$/{f=0} f' "$work/doc109-$1.out" > "$work/doc109-$1.reg"
+}
+regsnap109() { ( cd "$HARNESS_HOME" && find . -name project.json | sort | while read -r f; do echo "$f"; cat "$f"; done ); }
+A109="$r109/twin109"; mkdir -p "$A109"; ( cd "$A109" && git init -q . )
+"$root/bin/harness" install --target "$A109" > "$work/in109.out" 2>&1 || bad "could not install the doctor repository"
+isolate_records "$A109"
+before109=$(regsnap109)
+doc109 reg "$A109"
+check "a registered clone is ok" "$(cat "$work/doc109-reg.reg")" "  ok   registered as \`twin109\`"
+check "the registry section sits between tools and git" "$(grep -E '^(tools and connections|registry|git)$' "$work/doc109-reg.out" | tr '\n' ' ')" \
+  "tools and connections registry git "
+"$root/bin/harness" doctor --json --target "$A109" 2>/dev/null | python3 -c '
+import json, sys
+print(json.dumps([i for i in json.load(sys.stdin)["items"] if i["section"] == "registry"]))' > "$work/doc109-reg.json"
+check "doctor --json carries the registry item" "$(cat "$work/doc109-reg.json")" \
+  '[{"section": "registry", "state": "ok", "what": "registered as `twin109`", "detail": ""}]'
+# 같은 클론의 worktree 는 등록된 클론과 키가 같다
+g109 "$A109" add -A && g109 "$A109" commit -q -m init && g109 "$A109" worktree add -q -b side "$r109/twin109-wt" || bad "could not add a worktree"
+doc109 wt "$r109/twin109-wt"
+check "a linked worktree of the registered clone is ok without a warning" "$(cat "$work/doc109-wt.reg")" "  ok   registered as \`twin109\`"
+# 같은 이름의 등록되지 않은 리포 — 다른 클론의 등록을 자기 것으로 보지 않는다
+B109="$r109/other/twin109"; mkdir -p "$B109"; ( cd "$B109" && git init -q . ); cp "$A109/harness.toml" "$B109/harness.toml"
+"$root/bin/harness" render --target "$B109" >/dev/null 2>&1 || bad "could not render the unregistered repository"
+doc109 unreg "$B109"
+check "an unregistered repository warns" "$(cat "$work/doc109-unreg.reg")" \
+  "  warn this repository is not registered  — run \`harness install\` to list it in the UI"
+check "doctor does not register an unregistered repository" "$(regs_for "$B109")" ""
+# 모노레포 — 같은 리포의 다른 서브디렉터리는 위치가 달라 자기 키로 판정한다
+mkdir -p "$A109/sub"; cp "$A109/harness.toml" "$A109/sub/harness.toml"
+"$root/bin/harness" render --target "$A109/sub" >/dev/null 2>&1 || bad "could not render the subdirectory"
+doc109 sub "$A109/sub"
+check "a sibling subproject under the same name is not registered" "$(cat "$work/doc109-sub.reg")" \
+  "  warn this repository is not registered  — run \`harness install\` to list it in the UI"
+check "doctor does not change the registry" "$(regsnap109)" "$before109"
+# 키의 등록이 다른 리포를 가리키면 그 경로와 함께 알린다
+kA109=$(python3 "$A109/script/_clone_key.py" expand '{clone}')
+cp "$HARNESS_HOME/$kA109/project.json" "$work/reg109.json"
+python3 - "$HARNESS_HOME/$kA109/project.json" "$(cd "$B109" && pwd -P)" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); d["path"] = sys.argv[2]; json.dump(d, open(sys.argv[1], "w"))
+PY
+doc109 moved "$A109"
+check "a registration that points at another repository warns with that path" "$(cat "$work/doc109-moved.reg")" \
+  "  warn this clone is registered to another path  — $(cd "$B109" && pwd -P)"
+cp "$work/reg109.json" "$HARNESS_HOME/$kA109/project.json"
+cat "$work"/doc109-*.reg > "$work/doc109-all.reg"
+hasnt "$work/doc109-all.reg" "FAIL" "the registry section failed in some state"
+cat "$work"/doc109-*.out "$work"/doc109-*.err > "$work/doc109-all.log"
+no_hangul "$work/doc109-all.log" "the doctor registry output"
+unset -f g109 doc109 regsnap109
+
+echo "UT-110 install and render move what an old version left under the name directory to the clone key, leave what they cannot move or what is a link with the reason, and merge without losing lines"
+lg110="$work/legacy110"; rm -rf "$lg110"; mkdir -p "$lg110"
+g110() { git -C "$1" -c user.name=t -c user.email=t@example.invalid -c core.hooksPath=/dev/null "${@:2}"; }
+perm110() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+moved110() { grep -E '^(install|render): (moved|left|kept|removed|cleared) ' "$1"; }
+# 옛 이름 디렉터리에 남은 기록 파일 — 다 옮김 표지 · 덧붙인 자리 기록과 기록기의 표지(잠금 · 정리 표지)는 기록이 아니다
+rest110() { ( cd "$1" && find . -type f ! -name .moved.json ! -name .moved-offsets.json ! -name .lock ! -name .pruned | sort ); }
+mk110() { # mk110 <리포> <이름> — 기록 경로를 등록부 아래 {clone} 으로 둔 설정으로 렌더하고 커밋한 리포
+  mkdir -p "$1" && ( cd "$1" && git init -q . ) && cp "$root/templates/harness.toml" "$1/harness.toml" || return 1
+  python3 - "$1/harness.toml" "$2" "$HARNESS_HOME" <<'PY'
+import re, sys
+p, name, home = sys.argv[1:4]; s = open(p, encoding="utf-8").read()
+for pat, repl in ((r'(?m)^(\[project\]\nname = ).*$', lambda m: m.group(1) + '"%s"' % name),
+                  (r'(?m)^(\[metrics\]\n(?:#.*\n)*)dir = .*$', lambda m: m.group(1) + 'dir = "%s/{clone}/metrics"' % home),
+                  (r'(?m)^log_path = .*$', lambda m: 'log_path = "%s/{clone}/usage.log"' % home),
+                  (r'(?m)^(\[worktree\]\n(?:#.*\n)*)dir = .*$', lambda m: m.group(1) + 'dir = "%s/{clone}/worktrees"' % home)):
+    s, n = re.subn(pat, repl, s, count=1)
+    assert n == 1, pat
+open(p, "w", encoding="utf-8").write(s)
+PY
+  "$root/bin/harness" render --target "$1" >/dev/null 2>&1 && g110 "$1" add -A && g110 "$1" commit -q -m init
+}
+old110() { # old110 <등록이 가리킬 리포> <이름> — 옛 버전이 남긴 이름 디렉터리: 등록 · 가져오기 커서 · 지표 · 사용 기록
+  mkdir -p "$HARNESS_HOME/$2/state" "$HARNESS_HOME/$2/metrics" \
+    && printf '{"path": "%s"}\n' "$(cd "$1" && pwd -P)" > "$HARNESS_HOME/$2/project.json" \
+    && printf '{"old": 1}\n' > "$HARNESS_HOME/$2/state/import-cursor.json" \
+    && printf '{"old":1}\n' > "$HARNESS_HOME/$2/metrics/spans-20260101.jsonl" && printf 'old-usage\n' > "$HARNESS_HOME/$2/usage.log"
+}
+# 전부 옮김 — install 이 커서 · 지표 · 사용 기록 · 깨끗한 worktree 를 키 아래로 옮기고 옛 디렉터리를 지운다
+A110="$lg110/a"; mk110 "$A110" legacy110a || bad "could not set up the first legacy repository"
+old110 "$A110" legacy110a || bad "could not lay down the old name directory"
+g110 "$A110" worktree add -q --detach "$HARNESS_HOME/legacy110a/worktrees/5" || bad "could not add the clean worktree"
+kA110=$(python3 "$A110/script/_clone_key.py" expand '{clone}'); nA110="$HARNESS_HOME/$kA110"
+"$root/bin/harness" doctor --target "$A110" > "$work/doc110-before.out" 2>&1
+has "$work/doc110-before.out" "warn state under the old name directory is not moved  — run \`harness render\` to move \`$HARNESS_HOME/legacy110a\`" \
+  "doctor does not report the state left under the old name"
+"$root/bin/harness" install --target "$A110" > "$work/in110a.out" 2> "$work/in110a.err"; check "install over the old name directory" "$?" "0"
+for l in "install: moved import state to $nA110/state" "install: moved run metrics to $nA110/metrics" "install: moved usage log to $nA110/usage.log" \
+         "install: moved worktree 5 to $nA110/worktrees/5" "install: cleared $HARNESS_HOME/legacy110a — files older versions may still write to stay there; render moves what they add"; do
+  has "$work/in110a.out" "$l" "install does not say: $l"
+done
+check "the cursor is under the clone key" "$(cat "$nA110/state/import-cursor.json" 2>&1)" '{"old": 1}'
+check "the spans are under the clone key" "$(cat "$nA110/metrics/spans-20260101.jsonl" 2>&1)" '{"old":1}'
+check "the usage log is under the clone key" "$(cat "$nA110/usage.log" 2>&1)" "old-usage"
+git -C "$A110" worktree list --porcelain | grep -qF "worktree" && git -C "$A110" worktree list --porcelain | grep -F "$kA110/worktrees/5" >/dev/null \
+  && [ -f "$nA110/worktrees/5/harness.toml" ] && ok || bad "the worktree is not at its new path in git worktree list"
+check "nothing to move is left under the old name directory" "$(rest110 "$HARNESS_HOME/legacy110a")" ""
+[ ! -e "$HARNESS_HOME/legacy110a/project.json" ] && [ -f "$HARNESS_HOME/legacy110a/.moved.json" ] && ok \
+  || bad "the old registration did not turn into the moved marker"
+[ -d "$HARNESS_HOME/legacy110a/metrics" ] && [ -f "$HARNESS_HOME/legacy110a/metrics/.lock" ] && ok \
+  || bad "the old metrics directory or its lock file went away while older writers may wait on it"
+( cd "$work" && "$root/bin/harness" projects ) > "$work/projects110.json" 2>&1
+check "a fully moved old name directory is no longer listed" \
+  "$(python3 -c 'import json,sys; print([x["name"] for x in json.load(open(sys.argv[1]))["legacy"] if x["name"] == "legacy110a"])' "$work/projects110.json")" "[]"
+check "install registered the clone" "$(regs_for "$A110")" "$kA110/project.json"
+check "the moved cursor directory is private" "$(perm110 "$nA110/state")" "700"
+check "the moved cursor is private" "$(perm110 "$nA110/state/import-cursor.json")" "600"
+check "the moved metrics directory is private" "$(perm110 "$nA110/metrics")" "700"
+check "the moved span file is private" "$(perm110 "$nA110/metrics/spans-20260101.jsonl")" "600"
+"$root/bin/harness" doctor --target "$A110" > "$work/doc110-after.out" 2>&1
+hasnt "$work/doc110-after.out" "state under the old name directory is not moved" "doctor still reports state that was moved"
+# uninstall 은 다 옮김 표지도 지워 그 뒤로는 옮기지 않는다. 남은 디렉터리와 잠금은 그대로다
+"$root/bin/harness" uninstall --target "$A110" > "$work/un110.out" 2>&1; check "uninstall after the move exits 0" "$?" "0"
+[ ! -e "$HARNESS_HOME/legacy110a/.moved.json" ] && [ -f "$HARNESS_HOME/legacy110a/metrics/.lock" ] && ok \
+  || bad "uninstall left the moved marker or removed the old lock file"
+# 남김 — 미커밋 변경 · 잠김 · 없는 경로 · 새 자리 있음은 옛 자리에 두고 사유를 알린다. 옛 등록도 남는다
+B110="$lg110/b"; mk110 "$B110" legacy110b || bad "could not set up the second legacy repository"
+old110 "$B110" legacy110b || bad "could not lay down the second old name directory"
+ob110="$HARNESS_HOME/legacy110b/worktrees"
+for n in 7 8 9 10; do g110 "$B110" worktree add -q --detach "$ob110/$n" || bad "could not add worktree $n"; done
+echo dirty > "$ob110/7/notes.txt"; g110 "$B110" worktree lock "$ob110/8"; rm -rf "$ob110/9"
+kB110=$(python3 "$B110/script/_clone_key.py" expand '{clone}'); nB110="$HARNESS_HOME/$kB110"
+mkdir -p "$nB110/worktrees/10"
+"$root/bin/harness" render --target "$B110" > "$work/r110b.out" 2> "$work/r110b.err"; check "render that leaves worktrees behind exits 0" "$?" "0"
+for l in "render: left worktree 7 at $ob110/7 — uncommitted changes" "render: left worktree 8 at $ob110/8 — locked" \
+         "render: left worktree 9 at $ob110/9 — missing — run git worktree prune" "render: left worktree 10 at $ob110/10 — destination exists" \
+         "render: kept $HARNESS_HOME/legacy110b — 4 item(s) left there" "render: moved import state to $nB110/state"; do
+  has "$work/r110b.out" "$l" "render does not say: $l"
+done
+[ -f "$HARNESS_HOME/legacy110b/project.json" ] && ok || bad "the old registration went away while worktrees are left"
+[ -d "$ob110/7" ] && [ -d "$ob110/8" ] && [ ! -e "$nB110/worktrees/7" ] && ok || bad "a worktree that could not move was touched"
+check "render registers the clone and keeps the old registration" "$(regs_for "$B110" | tr '\n' ' ')" "$kB110/project.json legacy110b/project.json "
+# 이슈 worktree 에서 도는 렌더는 옮기지 않는다 — 옛 등록은 본 클론을 가리킨다
+"$root/bin/harness" render --target "$ob110/7" > "$work/r110wt.out" 2>&1; check "render in an issue worktree exits 0" "$?" "0"
+check "render in an issue worktree moves nothing" "$(moved110 "$work/r110wt.out")" ""
+# 남긴 것을 풀고 다시 렌더하면 옮겨지고 옛 디렉터리가 사라진다
+g110 "$ob110/7" add -A && g110 "$ob110/7" commit -q -m fix || bad "could not commit in worktree 7"
+g110 "$B110" worktree unlock "$ob110/8" && g110 "$B110" worktree prune && rm -rf "$nB110/worktrees/10" || bad "could not free the worktrees"
+"$root/bin/harness" render --target "$B110" > "$work/r110c.out" 2>&1; check "render after the worktrees are freed exits 0" "$?" "0"
+for n in 7 8 10; do has "$work/r110c.out" "render: moved worktree $n to $nB110/worktrees/$n" "render did not move worktree $n the second time"; done
+has "$work/r110c.out" "render: cleared $HARNESS_HOME/legacy110b — files older versions may still write to stay there; render moves what they add" "render did not clear the old name directory"
+check "nothing to move is left after the second render" "$(rest110 "$HARNESS_HOME/legacy110b")" ""
+[ -f "$HARNESS_HOME/legacy110b/.moved.json" ] && [ ! -e "$HARNESS_HOME/legacy110b/project.json" ] && ok || bad "the second render did not mark the old name directory moved"
+# 합치기 — 키 아래에 같은 이름이 있으면 스팬 · 사용 기록은 옛 줄을 끝에 붙이고, 커서와 그 밖의 파일은 새 것을 남긴다
+C110="$lg110/c"; mk110 "$C110" legacy110c || bad "could not set up the merge repository"
+kC110=$(python3 "$C110/script/_clone_key.py" expand '{clone}'); nC110="$HARNESS_HOME/$kC110"
+old110 "$C110" legacy110c || bad "could not lay down the merge old name directory"
+printf 'old-only\n' > "$HARNESS_HOME/legacy110c/metrics/spans-20260102.jsonl"; printf 'old-lock\n' > "$HARNESS_HOME/legacy110c/metrics/.lock"
+mkdir -p "$nC110/state" "$nC110/metrics"
+printf '{"new": 1}\n' > "$nC110/state/import-cursor.json"; printf '{"new":1}\n' > "$nC110/metrics/spans-20260101.jsonl"
+printf 'new-lock\n' > "$nC110/metrics/.lock"; printf 'new-usage\n' > "$nC110/usage.log"
+"$root/bin/harness" render --target "$C110" > "$work/r110m.out" 2>&1; check "render that merges into the clone key exits 0" "$?" "0"
+check "old span lines follow the new ones" "$(tr '\n' ' ' < "$nC110/metrics/spans-20260101.jsonl")" '{"new":1} {"old":1} '
+check "an old span file the clone key lacks is moved" "$(cat "$nC110/metrics/spans-20260102.jsonl" 2>&1)" "old-only"
+check "the clone key's own lock file stays" "$(cat "$nC110/metrics/.lock")" "new-lock"
+check "old usage lines follow the new ones" "$(tr '\n' ' ' < "$nC110/usage.log")" "new-usage old-usage "
+check "the clone key's cursor stays" "$(cat "$nC110/state/import-cursor.json")" '{"new": 1}'
+check "only the old usage log stays after merging, as it was — older recorders may still append to it" \
+  "$(rest110 "$HARNESS_HOME/legacy110c") $(cat "$HARNESS_HOME/legacy110c/usage.log" 2>&1)" "./usage.log old-usage"
+check "the old lock file stays where older writers may wait on it" "$(cat "$HARNESS_HOME/legacy110c/metrics/.lock")" "old-lock"
+"$root/bin/harness" render --target "$C110" > "$work/r110m2.out" 2>&1; check "render again after merging exits 0" "$?" "0"
+check "render again moves nothing when the old usage log has no new line" "$(moved110 "$work/r110m2.out")" ""
+check "render again does not append the merged usage lines twice" "$(tr '\n' ' ' < "$nC110/usage.log")" "new-usage old-usage "
+# 다른 경로 — 옛 등록이 다른 리포를 가리키면 아무것도 옮기지 않고 알리지 않는다
+D110="$lg110/d"; mk110 "$D110" legacy110d || bad "could not set up the other-path repository"
+old110 "$C110" legacy110d || bad "could not lay down the other-path old name directory"
+"$root/bin/harness" render --target "$D110" > "$work/r110d.out" 2>&1; check "render beside another repository's old name directory exits 0" "$?" "0"
+check "render moves nothing for another repository's old name directory" "$(moved110 "$work/r110d.out")" ""
+[ -f "$HARNESS_HOME/legacy110d/state/import-cursor.json" ] && [ -f "$HARNESS_HOME/legacy110d/usage.log" ] && ok \
+  || bad "another repository's old name directory was touched"
+"$root/bin/harness" doctor --target "$D110" > "$work/doc110-other.out" 2>&1
+hasnt "$work/doc110-other.out" "state under the old name directory is not moved" "doctor reports another repository's old name directory"
+# 다 옮긴 뒤 옛 자리에서 잠금을 기다리던 기록기 — 잠금 파일과 디렉터리가 그대로라 잠금을 얻은 뒤 그 자리에 쓸 수 있고,
+# 그 기록은 다음 render 가 옮긴다
+W110="$lg110/w"; mk110 "$W110" legacy110w || bad "could not set up the waiting writer repository"
+old110 "$W110" legacy110w || bad "could not lay down the waiting writer's old name directory"
+kW110=$(python3 "$W110/script/_clone_key.py" expand '{clone}'); nW110="$HARNESS_HOME/$kW110"; oW110="$HARNESS_HOME/legacy110w"
+python3 - "$root/bin/harness" "$W110" "$oW110/metrics" > "$work/wait110.txt" 2>&1 <<'PY'
+import fcntl, os, subprocess, sys
+cli, repo, old = sys.argv[1:4]
+fd = os.open(old + "/.lock", os.O_RDWR | os.O_CREAT, 0o600)   # 옛 기록기가 잠금 파일을 열고 기다리는 중이다
+r = subprocess.run([cli, "render", "--target", repo], capture_output=True, text=True)
+fcntl.flock(fd, fcntl.LOCK_EX)
+same = os.path.exists(old + "/.lock") and os.fstat(fd).st_ino == os.stat(old + "/.lock").st_ino
+try:
+    with open(old + "/spans-20260103.jsonl", "w") as f:
+        f.write('{"late":1}\n')
+    wrote = "wrote"
+except OSError as e:
+    wrote = type(e).__name__
+print(r.returncode, "same-lock" if same else "lock-replaced", wrote)
+PY
+check "a writer waiting on the old lock gets the same lock file and can still write" "$(cat "$work/wait110.txt")" "0 same-lock wrote"
+"$root/bin/harness" doctor --target "$W110" > "$work/doc110-late.out" 2>&1
+has "$work/doc110-late.out" "warn state under the old name directory is not moved" "doctor does not report records a waiting writer left"
+"$root/bin/harness" render --target "$W110" > "$work/r110w.out" 2>&1; check "render after a waiting writer exits 0" "$?" "0"
+has "$work/r110w.out" "render: moved run metrics to $nW110/metrics" "render did not move what the waiting writer left"
+check "what the waiting writer left reaches the clone key" "$(cat "$nW110/metrics/spans-20260103.jsonl" 2>&1)" '{"late":1}'
+# 새 자리 쪽 링크 — 새 키의 스팬 파일 · 사용 기록 · 커서 디렉터리가 다른 곳을 가리키면 쓰지 않고 남긴다
+K110="$lg110/k"; mk110 "$K110" legacy110k || bad "could not set up the new-side link repository"
+old110 "$K110" legacy110k || bad "could not lay down the new-side link repository's old name directory"
+kK110=$(python3 "$K110/script/_clone_key.py" expand '{clone}'); nK110="$HARNESS_HOME/$kK110"; oK110="$HARNESS_HOME/legacy110k"
+out110="$lg110/k-outside"; mkdir -p "$out110/state" "$nK110/metrics"
+printf 'outside-spans\n' > "$out110/spans.jsonl"; printf 'outside-usage\n' > "$out110/usage.log"
+ln -s "$out110/spans.jsonl" "$nK110/metrics/spans-20260101.jsonl"; ln -s "$out110/usage.log" "$nK110/usage.log"; ln -s "$out110/state" "$nK110/state"
+"$root/bin/harness" render --target "$K110" > "$work/r110k.out" 2>&1; check "render over links at the new path exits 0" "$?" "0"
+for l in "render: left import state at $oK110/state — a symbolic link at the new path" "render: left run metrics at $oK110/metrics — a symbolic link at the new path" \
+         "render: left usage log at $oK110/usage.log — a symbolic link at the new path"; do
+  has "$work/r110k.out" "$l" "render does not say: $l"
+done
+check "a file a new-side link points at is not written" "$(cat "$out110/spans.jsonl") $(cat "$out110/usage.log") $(ls "$out110/state" | wc -l | tr -d ' ')" "outside-spans outside-usage 0"
+check "the old records stay when the new side is a link" "$(cat "$oK110/state/import-cursor.json") $(cat "$oK110/metrics/spans-20260101.jsonl") $(cat "$oK110/usage.log")" '{"old": 1} {"old":1} old-usage'
+# 한 파일의 두 이름(새 이름을 건 뒤 옛 이름을 지우기 전에 멈춘 것)은 옛 이름만 지우고, 멈춘 실행이 옛 이름 디렉터리에 남긴
+# 임시 파일은 치운다
+L110="$lg110/l"; mk110 "$L110" legacy110l || bad "could not set up the interrupted repository"
+old110 "$L110" legacy110l || bad "could not lay down the interrupted repository's old name directory"
+kL110=$(python3 "$L110/script/_clone_key.py" expand '{clone}'); nL110="$HARNESS_HOME/$kL110"; oL110="$HARNESS_HOME/legacy110l"
+mkdir -p "$nL110/state" && ln "$oL110/usage.log" "$nL110/usage.log" && printf 'half\n' > "$oL110/.harness-move-stale"
+"$root/bin/harness" render --target "$L110" > "$work/r110l.out" 2>&1; check "render after an interrupted move exits 0" "$?" "0"
+has "$work/r110l.out" "render: moved usage log to $nL110/usage.log" "render did not finish the interrupted usage log"
+check "a usage log already linked in place is not doubled" "$(cat "$nL110/usage.log")" "old-usage"
+[ ! -e "$oL110/usage.log" ] && ok || bad "the old name of the linked usage log is left"
+[ ! -e "$oL110/.harness-move-stale" ] && ok || bad "a temporary file an interrupted move left is still there"
+check "the cursor still moves after an interrupted move" "$(cat "$nL110/state/import-cursor.json" 2>&1)" '{"old": 1}'
+# 하드 링크가 없는 곳 — 옮기기가 새 이름에 파일을 드러내기 바로 전에 새 기록기가 그 이름에 쓴다. 새 이름을 덮지 않는다:
+# 사용 기록 · 스팬은 덧붙여 옮기고, 커서는 옮기지 않고 옛 자리에 남긴 채 사유를 알린다
+python3 - "$root/bin/harness" "$lg110/nolink" > "$work/nolink110.txt" 2>&1 <<'PY'
+import contextlib, errno, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]; home, root = d + "/home", d + "/root"
+old = home + "/nolink110"
+os.makedirs(old + "/state"); os.makedirs(old + "/metrics"); os.makedirs(root)
+os.environ["HARNESS_HOME"] = home
+json.dump({"path": os.path.realpath(root)}, open(old + "/project.json", "w"))
+open(old + "/state/import-cursor.json", "w").write('{"old": 1}\n')
+open(old + "/metrics/spans-20260101.jsonl", "w").write('{"old":1}\n')
+open(old + "/usage.log", "w").write("old-usage\n")
+key = cli.clone_key(Path(root)); new = home + "/" + key
+cfg = {"project": {"name": "nolink110"}, "metrics": {"dir": home + "/{clone}/metrics"},
+       "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+real_link, real_open, real_rename, real_replace = os.link, os.open, os.rename, os.replace
+wrote = set()
+
+def no_link(*a, **k):   # 하드 링크를 만들 수 없는 파일 시스템
+    raise OSError(errno.EXDEV, "cross-device link")
+
+def recorder(p):   # 새 기록기가 새 이름에 먼저 쓴다 — 사용 기록은 한 줄 덧붙이고, 가져오기는 커서를 바꿔 단다
+    try:
+        rp = os.path.realpath(p)
+    except (TypeError, ValueError):
+        return
+    if rp in wrote or not rp.startswith(os.path.realpath(new) + "/"):
+        return
+    if rp.endswith("/usage.log"):
+        wrote.add(rp)
+        with open(rp, "a") as f:
+            f.write("new-recorder\n")
+    elif rp.endswith("/import-cursor.json"):
+        wrote.add(rp)
+        with open(rp, "w") as f:
+            f.write('{"new": 1}\n')
+
+def racing_open(p, flags, *a, **k):   # 새 이름을 만들며 여는 바로 전
+    if flags & os.O_CREAT:
+        recorder(p)
+    return real_open(p, flags, *a, **k)
+
+def racing_rename(src, dst, *a, **k):   # 새 이름으로 바꿔 다는 바로 전
+    recorder(dst)
+    return real_rename(src, dst, *a, **k)
+
+def racing_replace(src, dst, *a, **k):
+    recorder(dst)
+    return real_replace(src, dst, *a, **k)
+
+def run():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.migrate_legacy(cfg, Path(root), "render")
+    return out.getvalue()
+
+os.link, os.open, os.rename, os.replace = no_link, racing_open, racing_rename, racing_replace
+try:
+    first, second = run(), run()
+finally:
+    os.link, os.open, os.rename, os.replace = real_link, real_open, real_rename, real_replace
+read = lambda p: open(p).read().replace("\n", " ") if os.path.exists(p) else "none"
+print("left-cursor" if "left import state at %s/state — cannot hard-link to the new path" % old in first else "first: " + first.strip().replace("\n", " / "))
+print("cursor:", read(new + "/state/import-cursor.json"), "| old:", read(old + "/state/import-cursor.json"))
+print("usage:", read(new + "/usage.log"), "| old:", read(old + "/usage.log"))
+print("spans:", read(new + "/metrics/spans-20260101.jsonl"), "| old:", read(old + "/metrics/spans-20260101.jsonl"))
+print("kept" if "kept %s — 1 item(s) left there" % old in first and os.path.exists(old + "/project.json") else "not kept: " + first.strip().replace("\n", " / "))
+print("second:", " / ".join(x for x in second.strip().split("\n") if " moved " in x))
+PY
+check "a cursor that cannot be hard-linked is left with the reason" "$(sed -n 1p "$work/nolink110.txt")" "left-cursor"
+check "a cursor that cannot be hard-linked is not copied, and the old one stays" "$(sed -n 2p "$work/nolink110.txt")" 'cursor: none | old: {"old": 1} '
+check "old usage lines go after the line a new recorder wrote meanwhile, and the old usage log stays" "$(sed -n 3p "$work/nolink110.txt")" "usage: new-recorder old-usage  | old: old-usage "
+check "spans are appended without a hard link" "$(sed -n 4p "$work/nolink110.txt")" 'spans: {"old":1}  | old: none'
+check "the old name directory is kept while the cursor is left" "$(sed -n 5p "$work/nolink110.txt")" "kept"
+check "the next run does not move the same lines again" "$(sed -n 6p "$work/nolink110.txt")" "second: "
+# 쓰기 실패 — 하드 링크를 못 만드는 곳에서 덧붙이다 디스크가 차도, 잠금 아래의 스팬은 붙이다 만 앞부분을 되돌리고 옛 파일을
+# 남긴다. 사용 기록은 옛 파일을 남기고 덧붙인 자리를 적지 않는다. 다음 실행이 온전한 줄을 옮긴다
+python3 - "$root/bin/harness" "$lg110/fail" > "$work/fail110.txt" 2>&1 <<'PY'
+import contextlib, errno, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]; home, root = d + "/home", d + "/root"
+old = home + "/fail110"
+os.makedirs(old + "/metrics"); os.makedirs(root)
+os.environ["HARNESS_HOME"] = home
+json.dump({"path": os.path.realpath(root)}, open(old + "/project.json", "w"))
+open(old + "/metrics/spans-20260101.jsonl", "w").write('{"old":1}\n')
+open(old + "/usage.log", "w").write("old-usage\n")
+key = cli.clone_key(Path(root)); new = os.path.realpath(home) + "/" + key
+cfg = {"project": {"name": "fail110"}, "metrics": {"dir": home + "/{clone}/metrics"},
+       "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+real_link, real_open, real_write = os.link, os.open, os.write
+fds, failed, short = {}, set(), set()
+
+def no_link(*a, **k):   # 하드 링크를 만들 수 없는 파일 시스템
+    raise OSError(errno.EXDEV, "cross-device link")
+
+def watch_open(p, flags, *a, **k):
+    fd = real_open(p, flags, *a, **k)
+    fds.pop(fd, None)
+    try:
+        rp = os.path.realpath(p)
+        if rp.startswith(new + "/") and flags & (os.O_WRONLY | os.O_RDWR):
+            fds[fd] = rp
+    except (TypeError, ValueError):
+        pass
+    return fd
+
+def full_disk(fd, data):   # 새 자리의 파일마다 처음 쓸 때 앞 3바이트만 쓰이고, 이어 쓰려 하면 디스크가 찬다
+    if fd in fds and fds[fd] not in failed:
+        if fd not in short:
+            short.add(fd)
+            return real_write(fd, data[:3])
+        failed.add(fds[fd])
+        raise OSError(errno.ENOSPC, "no space left on device")
+    return real_write(fd, data)
+
+def run():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.migrate_legacy(cfg, Path(root), "render")
+    return out.getvalue()
+
+read = lambda p: open(p).read() if os.path.exists(p) else ""
+os.link, os.open, os.write = no_link, watch_open, full_disk
+try:
+    first = run()
+    spans_after = read(new + "/metrics/spans-20260101.jsonl")
+    old_spans_after = os.path.exists(old + "/metrics/spans-20260101.jsonl")
+    usage_old_after, offsets_after = read(old + "/usage.log"), os.path.exists(old + "/.moved-offsets.json")
+    second = run()
+finally:
+    os.link, os.open, os.write = real_link, real_open, real_write
+print("left-oserror" if all("left %s at %s — OSError" % x in first for x in (("run metrics", old + "/metrics"), ("usage log", old + "/usage.log")))
+      else "first: " + first.strip().replace("\n", " / "))
+print("spans-after-failure: [%s] old-spans: %s" % (spans_after, "kept" if old_spans_after else "gone"))
+print("usage-old-after-failure:", usage_old_after.strip(), "| offsets:", "written" if offsets_after else "none")
+print("moved" if "moved run metrics" in second and "moved usage log" in second else "second: " + second.strip().replace("\n", " / "))
+print("spans:", read(new + "/metrics/spans-20260101.jsonl").strip(), "| old:", "kept" if os.path.exists(old + "/metrics/spans-20260101.jsonl") else "gone")
+print("usage-has-the-whole-line:", "old-usage" in read(new + "/usage.log").split("\n"), "| old:", read(old + "/usage.log").strip())
+PY
+check "a failed append is reported and leaves the items" "$(sed -n 1p "$work/fail110.txt")" "left-oserror"
+check "a failed append under the recorder's lock leaves nothing half-written and keeps the old spans" "$(sed -n 2p "$work/fail110.txt")" "spans-after-failure: [] old-spans: kept"
+check "a failed usage append keeps the old usage log and records no place" "$(sed -n 3p "$work/fail110.txt")" "usage-old-after-failure: old-usage | offsets: none"
+check "the next run moves the items" "$(sed -n 4p "$work/fail110.txt")" "moved"
+check "the next run's spans are the whole old spans, once" "$(sed -n 5p "$work/fail110.txt")" 'spans: {"old":1} | old: gone'
+check "the next run's usage log has the whole old line and the old usage log stays" "$(sed -n 6p "$work/fail110.txt")" "usage-has-the-whole-line: True | old: old-usage"
+# 늦은 쓰기 — 옛 사용 기록을 추가 모드로 열어 둔 기록기가 옮긴 뒤에 쓴 줄도 잃지 않는다. 새 파일이 있으면 옛 파일을 지우지 않고
+# 덧붙인 자리를 적어 다음 render 가 늘어난 줄만 덧붙이고, 새 파일이 없으면 옛 파일에 새 이름을 걸어 열린 파일의 줄이 새 파일에 남는다
+late110() { # late110 <리포> <이름> — 옛 사용 기록을 열어 둔 채 render 하고, 그 뒤 열린 파일에 한 줄을 쓴 다음 doctor 를 본다
+  python3 - "$root/bin/harness" "$1" "$HARNESS_HOME/$2/usage.log" <<'PY'
+import os, subprocess, sys
+cli, repo, old = sys.argv[1:4]
+fd = os.open(old, os.O_WRONLY | os.O_APPEND)   # 옛 기록기가 옛 사용 기록을 열고 멈춘 중이다
+first = subprocess.run([cli, "render", "--target", repo], capture_output=True, text=True)
+os.write(fd, b"late-usage\n")
+os.close(fd)
+doctor = subprocess.run([cli, "doctor", "--target", repo], capture_output=True, text=True)
+print(first.returncode, "warn" if "state under the old name directory is not moved" in doctor.stdout else "quiet")
+PY
+}
+LM110="$lg110/late-merge"; mk110 "$LM110" legacy110lm || bad "could not set up the late writer repository with a new usage log"
+old110 "$LM110" legacy110lm || bad "could not lay down the late writer's old name directory"
+nLM110="$HARNESS_HOME/$(python3 "$LM110/script/_clone_key.py" expand '{clone}')"
+mkdir -p "$nLM110" && printf 'new-usage\n' > "$nLM110/usage.log"
+check "doctor reports a line written late to the kept old usage log" "$(late110 "$LM110" legacy110lm 2>&1)" "0 warn"
+"$root/bin/harness" render --target "$LM110" > "$work/r110lm.out" 2>&1; check "render after a late write exits 0" "$?" "0"
+has "$work/r110lm.out" "render: moved usage log to $nLM110/usage.log" "render did not move the line written late to the old usage log"
+check "a line written late to the old usage log reaches the new one, once" "$(tr '\n' ' ' < "$nLM110/usage.log")" "new-usage old-usage late-usage "
+"$root/bin/harness" render --target "$LM110" > "$work/r110lm2.out" 2>&1
+check "a render after the late line is moved moves nothing" "$(moved110 "$work/r110lm2.out")" ""
+LL110="$lg110/late-link"; mk110 "$LL110" legacy110ll || bad "could not set up the late writer repository without a new usage log"
+old110 "$LL110" legacy110ll || bad "could not lay down the hard-link late writer's old name directory"
+nLL110="$HARNESS_HOME/$(python3 "$LL110/script/_clone_key.py" expand '{clone}')"
+check "doctor has nothing to report after a late write through the hard-linked old name" "$(late110 "$LL110" legacy110ll 2>&1)" "0 quiet"
+check "a line written late through the hard-linked old name is in the new usage log" "$(tr '\n' ' ' < "$nLL110/usage.log")" "old-usage late-usage "
+"$root/bin/harness" render --target "$LL110" > "$work/r110ll.out" 2>&1
+check "render does not move the hard-linked usage log again" "$(moved110 "$work/r110ll.out")" ""
+# 옛 기록 디렉터리 안의 링크 디렉터리 — 파일이 없어도 옮길 것이 남은 것으로 보고 남기는 사유를 알린다. 다 옮김 표지로 바꾸지 않는다
+S110="$lg110/s"; mk110 "$S110" legacy110s || bad "could not set up the linked subdirectory repository"
+oS110="$HARNESS_HOME/legacy110s"; sout110="$lg110/s-outside"
+mkdir -p "$sout110/sessions" "$oS110/state" "$oS110/metrics" && printf 'outside\n' > "$sout110/sessions/x" && : > "$oS110/metrics/.lock"
+printf '{"path": "%s"}\n' "$(cd "$S110" && pwd -P)" > "$oS110/project.json"
+ln -s "$sout110/sessions" "$oS110/state/sessions"; ln -s "$sout110/sessions" "$oS110/metrics/archive"
+"$root/bin/harness" doctor --target "$S110" > "$work/doc110-slink.out" 2>&1
+has "$work/doc110-slink.out" "warn state under the old name directory is not moved" "doctor does not report an old directory holding only a linked subdirectory"
+"$root/bin/harness" render --target "$S110" > "$work/r110s.out" 2>&1; check "render over linked subdirectories exits 0" "$?" "0"
+for l in "render: left import state at $oS110/state — holds a symbolic link" "render: left run metrics at $oS110/metrics — holds a symbolic link" \
+         "render: kept $oS110 — 2 item(s) left there"; do
+  has "$work/r110s.out" "$l" "render does not say: $l"
+done
+[ -f "$oS110/project.json" ] && [ ! -e "$oS110/.moved.json" ] && [ -L "$oS110/state/sessions" ] && [ -L "$oS110/metrics/archive" ] && ok \
+  || bad "an old directory holding a linked subdirectory was marked moved or its links went away"
+check "what a linked subdirectory points at stays" "$(ls "$sout110/sessions") $(cat "$sout110/sessions/x")" "x outside"
+# 읽지 못하는 하위 디렉터리 — 비었다고 보지 않고 남긴다. 그 안을 볼 수 있는 사용자(root)면 건너뛴다
+U110="$lg110/u"; mk110 "$U110" legacy110u || bad "could not set up the unreadable subdirectory repository"
+oU110="$HARNESS_HOME/legacy110u"; mkdir -p "$oU110/state/sealed" && printf 'sealed\n' > "$oU110/state/sealed/x"
+printf '{"path": "%s"}\n' "$(cd "$U110" && pwd -P)" > "$oU110/project.json"
+chmod 000 "$oU110/state/sealed"
+if ls "$oU110/state/sealed" >/dev/null 2>&1; then
+  ok
+else
+  "$root/bin/harness" render --target "$U110" > "$work/r110u.out" 2>&1; check "render over an unreadable subdirectory exits 0" "$?" "0"
+  has "$work/r110u.out" "render: left import state at $oU110/state — PermissionError" "render does not say it left an unreadable subdirectory"
+  has "$work/r110u.out" "render: kept $oU110 — 1 item(s) left there" "render does not keep the old directory with an unreadable subdirectory"
+  [ -f "$oU110/project.json" ] && [ ! -e "$oU110/.moved.json" ] && ok || bad "an old directory with an unreadable subdirectory was marked moved"
+fi
+chmod 700 "$oU110/state/sealed"
+check "the unreadable subdirectory's file stays" "$(cat "$oU110/state/sealed/x")" "sealed"
+# 링크 — 옛 기록이 새 자리를 가리키는 링크면 합치지 않고 사유와 함께 남긴다. 따라가 합치면 같은 파일을 자기 자신에
+# 덧붙이고 지워 새 자리의 기록이 사라진다
+E110="$lg110/e"; mk110 "$E110" legacy110e || bad "could not set up the link repository"
+kE110=$(python3 "$E110/script/_clone_key.py" expand '{clone}'); nE110="$HARNESS_HOME/$kE110"; oE110="$HARNESS_HOME/legacy110e"
+mkdir -p "$nE110/metrics" "$nE110/state" "$oE110"
+printf '{"new":1}\n' > "$nE110/metrics/spans-20260101.jsonl"; printf '{"new": 1}\n' > "$nE110/state/import-cursor.json"
+printf 'new-usage\n' > "$nE110/usage.log"
+g110 "$E110" worktree add -q --detach "$nE110/worktrees/3" || bad "could not add a worktree under the clone key"
+printf '{"path": "%s"}\n' "$(cd "$E110" && pwd -P)" > "$oE110/project.json"
+for x in metrics state usage.log worktrees; do ln -s "$nE110/$x" "$oE110/$x"; done
+"$root/bin/harness" render --target "$E110" > "$work/r110e.out" 2>&1; check "render over links to the clone key exits 0" "$?" "0"
+for l in "render: left import state at $oE110/state — a symbolic link" "render: left run metrics at $oE110/metrics — a symbolic link" \
+         "render: left usage log at $oE110/usage.log — a symbolic link" "render: left worktrees at $oE110/worktrees — a symbolic link" \
+         "render: kept $oE110 — 4 item(s) left there"; do
+  has "$work/r110e.out" "$l" "render does not say: $l"
+done
+check "spans the old metrics link points at stay as they were" "$(cat "$nE110/metrics/spans-20260101.jsonl" 2>&1)" '{"new":1}'
+check "the cursor the old state link points at stays" "$(cat "$nE110/state/import-cursor.json" 2>&1)" '{"new": 1}'
+check "the usage log the old link points at stays as it was" "$(cat "$nE110/usage.log" 2>&1)" "new-usage"
+[ -L "$oE110/metrics" ] && [ -L "$oE110/usage.log" ] && [ -f "$oE110/project.json" ] && ok || bad "a link or the registration under the old name directory went away"
+git -C "$E110" worktree list --porcelain | grep -F "$kE110/worktrees/3" >/dev/null && ok || bad "the worktree under the clone key was moved"
+# 옛 이름 디렉터리 자체가 클론 키 디렉터리를 가리키는 링크면 아무것도 옮기지 않는다
+H110="$lg110/h"; mk110 "$H110" legacy110h || bad "could not set up the linked name directory repository"
+kH110=$(python3 "$H110/script/_clone_key.py" expand '{clone}'); nH110="$HARNESS_HOME/$kH110"
+mkdir -p "$nH110/state" && printf '{"new": 1}\n' > "$nH110/state/import-cursor.json"
+printf '{"path": "%s", "name": "legacy110h"}\n' "$(cd "$H110" && pwd -P)" > "$nH110/project.json"
+ln -s "$nH110" "$HARNESS_HOME/legacy110h"
+"$root/bin/harness" render --target "$H110" > "$work/r110h.out" 2>&1; check "render over a linked name directory exits 0" "$?" "0"
+has "$work/r110h.out" "render: kept $HARNESS_HOME/legacy110h — a symbolic link" "render does not say it kept the linked name directory"
+check "render over a linked name directory moves nothing" "$(moved110 "$work/r110h.out" | grep -v '— a symbolic link$')" ""
+check "the cursor behind the linked name directory stays" "$(cat "$nH110/state/import-cursor.json" 2>&1)" '{"new": 1}'
+[ -L "$HARNESS_HOME/legacy110h" ] && ok || bad "the linked name directory went away"
+# 옛 디렉터리 안에 새 자리를 가리키는 링크가 있으면 그 디렉터리를 통째로 남긴다
+F110="$lg110/f"; mk110 "$F110" legacy110f || bad "could not set up the inner link repository"
+kF110=$(python3 "$F110/script/_clone_key.py" expand '{clone}'); nF110="$HARNESS_HOME/$kF110"; oF110="$HARNESS_HOME/legacy110f"
+mkdir -p "$nF110/metrics" "$oF110/metrics"
+printf '{"new":1}\n' > "$nF110/metrics/spans-20260101.jsonl"; printf 'old-only\n' > "$oF110/metrics/spans-20260102.jsonl"
+ln -s "$nF110/metrics/spans-20260101.jsonl" "$oF110/metrics/spans-20260101.jsonl"
+printf '{"path": "%s"}\n' "$(cd "$F110" && pwd -P)" > "$oF110/project.json"
+"$root/bin/harness" render --target "$F110" > "$work/r110f.out" 2>&1; check "render over an inner link exits 0" "$?" "0"
+has "$work/r110f.out" "render: left run metrics at $oF110/metrics — holds a symbolic link" "render does not say it left the metrics holding a link"
+check "the span file an inner link points at is not merged into itself" "$(cat "$nF110/metrics/spans-20260101.jsonl" 2>&1)" '{"new":1}'
+[ -f "$oF110/metrics/spans-20260102.jsonl" ] && [ ! -e "$nF110/metrics/spans-20260102.jsonl" ] && ok || bad "part of a metrics directory left behind was moved"
+# 상위 경로의 링크 때문에 옛 경로가 새 자리와 같은 곳이면 남긴다
+G110="$lg110/g"; mk110 "$G110" legacy110g || bad "could not set up the linked parent repository"
+gr110="$lg110/g-rec"
+"$root/bin/harness" set --target "$G110" metrics.dir "$gr110/{clone}/metrics" >/dev/null 2>&1 || bad "could not set metrics.dir under a linked parent"
+kG110=$(python3 "$G110/script/_clone_key.py" expand '{clone}')
+mkdir -p "$gr110/$kG110/metrics" "$HARNESS_HOME/legacy110g" && printf '{"new":1}\n' > "$gr110/$kG110/metrics/spans-20260101.jsonl"
+ln -s "$gr110/$kG110" "$gr110/legacy110g"
+printf '{"path": "%s"}\n' "$(cd "$G110" && pwd -P)" > "$HARNESS_HOME/legacy110g/project.json"
+"$root/bin/harness" render --target "$G110" > "$work/r110g.out" 2>&1; check "render over a linked parent exits 0" "$?" "0"
+has "$work/r110g.out" "render: left run metrics at $gr110/legacy110g/metrics — overlaps the new path" "render does not say the old metrics overlap the new ones"
+check "spans reached through a linked parent stay as they were" "$(cat "$gr110/$kG110/metrics/spans-20260101.jsonl" 2>&1)" '{"new":1}'
+# 사용자 파일로 거부된 렌더는 옮기지 않는다 — 쓰기 전 판정이 옮기기보다 먼저다
+J110="$lg110/j"; mk110 "$J110" legacy110j || bad "could not set up the refused repository"
+old110 "$J110" legacy110j || bad "could not lay down the refused repository's old name directory"
+sedi '/  script\/review-mr.sh$/d' "$J110/.harness/managed"
+"$root/bin/harness" render --target "$J110" > "$work/r110j.out" 2>&1; check "render over a user file is refused" "$?" "2"
+check "a refused render moves nothing" "$(moved110 "$work/r110j.out")" ""
+[ -f "$HARNESS_HOME/legacy110j/state/import-cursor.json" ] && [ -f "$HARNESS_HOME/legacy110j/metrics/spans-20260101.jsonl" ] \
+  && [ -f "$HARNESS_HOME/legacy110j/usage.log" ] && ok || bad "a refused render moved the old records"
+check "a refused render leaves only the old registration" "$(regs_for "$J110")" "legacy110j/project.json"
+# 합치는 동안의 다른 기록기 — 지표는 기록기의 잠금(옛 · 새 자리 모두)을 잡은 채 합치고, 덧붙이기는 추가 쓰기라 그 사이
+# 덧붙인 줄을 덮지 않는다. 합치기가 목적 파일에 쓰기 직전에 끼어드는 기록기를 흉내 낸다
+python3 - "$root/bin/harness" "$lg110/race" > "$work/race110.txt" 2>&1 <<'PY'
+import contextlib, fcntl, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]; home, root, rec = d + "/home", d + "/root", d + "/rec"
+os.makedirs(home + "/race110"); os.makedirs(root)
+os.environ["HARNESS_HOME"] = home
+json.dump({"path": os.path.realpath(root)}, open(home + "/race110/project.json", "w"))
+key = cli.clone_key(Path(root))
+for side, tag in ((rec + "/race110", "old"), (rec + "/" + key, "new")):
+    os.makedirs(side + "/metrics")
+    open(side + "/metrics/spans-20260101.jsonl", "w").write('{"%s":1}\n' % tag)
+    open(side + "/metrics/.lock", "w").close()
+    open(side + "/usage.log", "w").write("%s-usage\n" % tag)
+spans = os.path.realpath(rec + "/" + key + "/metrics/spans-20260101.jsonl")
+usage = os.path.realpath(rec + "/" + key + "/usage.log")
+real_os_open, real_os_write, real_open = os.open, os.write, open
+locks, done, fds = [], set(), {}
+
+def lock_state(p):
+    fd = real_os_open(p, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return "free"
+    except BlockingIOError:
+        return "held"
+    finally:
+        os.close(fd)
+
+def hit(path):   # 목적 파일에 처음 쓰기 직전 — 지표는 잠금을 보고, 사용 기록은 다른 기록기가 한 줄을 덧붙인다
+    if path in done:
+        return
+    done.add(path)
+    if path == spans:
+        locks.append("old=%s new=%s" % (lock_state(rec + "/race110/metrics/.lock"), lock_state(rec + "/" + key + "/metrics/.lock")))
+    else:
+        fd = real_os_open(path, os.O_WRONLY | os.O_APPEND)
+        real_os_write(fd, b"concurrent\n")
+        os.close(fd)
+
+def target(p):
+    try:
+        rp = os.path.realpath(p)
+    except (TypeError, ValueError):
+        return None
+    return rp if rp in (spans, usage) else None
+
+def os_open(p, flags, *a, **k):
+    fd = real_os_open(p, flags, *a, **k)
+    fds.pop(fd, None)
+    if target(p) and flags & (os.O_WRONLY | os.O_RDWR):
+        fds[fd] = target(p)
+    return fd
+
+def os_write(fd, data):
+    if fd in fds:
+        hit(fds[fd])
+    return real_os_write(fd, data)
+
+class Hooked:
+    def __init__(self, f, p):
+        self._f, self._p = f, p
+    def write(self, b):
+        hit(self._p)
+        return self._f.write(b)
+    def __getattr__(self, n):
+        return getattr(self._f, n)
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return self._f.__exit__(*a)
+
+def hooked_open(p, mode="r", *a, **k):
+    f = real_open(p, mode, *a, **k)
+    return Hooked(f, target(p)) if target(p) and any(c in mode for c in "wa+") else f
+
+cli.open = hooked_open
+os.open, os.write = os_open, os_write
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        cli.migrate_legacy({"project": {"name": "race110"}, "metrics": {"dir": rec + "/{clone}/metrics"},
+                            "usage": {"log_path": rec + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}, Path(root), "render")
+finally:
+    os.open, os.write = real_os_open, real_os_write
+print(locks[0] if locks else "no write to the spans file")
+print(real_open(spans).read().replace("\n", " "))
+lines = real_open(usage).read().split("\n")
+print(" ".join(sorted(lines)))
+PY
+check "metrics merge under the recorder's lock in both places" "$(sed -n 1p "$work/race110.txt")" "old=held new=held"
+check "the merged spans keep both lines" "$(sed -n 2p "$work/race110.txt")" '{"new":1} {"old":1} '
+check "merging the usage log keeps a line another recorder appended meanwhile" "$(sed -n 3p "$work/race110.txt")" " concurrent new-usage old-usage"
+# 조각보다 큰 기록 — 옮기기와 남은 줄 판정은 고정 크기 조각으로 읽는다. 조각을 몇 바이트로 줄여도 판정 · 옮긴 내용 · 덧붙인
+# 자리 · 출력이 한 조각에 다 들어갈 때와 같다. 잠금 아래의 스팬은 여러 조각을 쓰다 실패해도 붙인 것 전부를 되돌리고, 사용
+# 기록은 다른 기록기의 줄이 조각 사이에 끼어들어도 줄과 줄 사이에만 들어간다
+python3 - "$root/bin/harness" "$lg110/chunk" > "$work/chunk110.txt" 2>&1 <<'PY'
+import contextlib, errno, importlib.machinery, importlib.util, io, json, os, sys
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+d = sys.argv[2]
+real_open, real_write = os.open, os.write
+read = lambda p: open(p).read() if os.path.exists(p) else ""
+OLD_USAGE = "a\n" + "b" * 30 + "\ncc\n" + "d" * 23
+OLD_SPANS = "".join('{"old":%d}\n' % i for i in range(7))
+
+def lay(tag, chunk):   # 옛 이름 디렉터리와 새 자리의 기록 — 새 자리에 같은 이름이 있어 덧붙여 합친다
+    home, root = d + "/" + tag + "/home", d + "/" + tag + "/root"
+    old = home + "/chunk110"
+    os.makedirs(old + "/metrics"); os.makedirs(root)
+    os.environ["HARNESS_HOME"] = home
+    cli.COPY_CHUNK = chunk
+    json.dump({"path": os.path.realpath(root)}, open(old + "/project.json", "w"))
+    open(old + "/usage.log", "w").write(OLD_USAGE)
+    open(old + "/metrics/spans-20260101.jsonl", "w").write(OLD_SPANS)
+    new = home + "/" + cli.clone_key(Path(root))
+    os.makedirs(new + "/metrics")
+    open(new + "/usage.log", "w").write("new-usage\n")
+    open(new + "/metrics/spans-20260101.jsonl", "w").write('{"new":1}\n')
+    cfg = {"project": {"name": "chunk110"}, "metrics": {"dir": home + "/{clone}/metrics"},
+           "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+    return cfg, Path(root), Path(old), old, new
+
+def migrate(cfg, root, old, new):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        cli.migrate_legacy(cfg, root, "render")
+    return out.getvalue().replace(new, "<new>").replace(old, "<old>")
+
+def whole_run(tag, chunk):   # 처음 옮기고, 옛 기록기가 쓰던 줄을 마치고 한 줄 더 쓴 뒤 다시 옮긴다
+    cfg, root, old_dir, old, new = lay(tag, chunk)
+    left = [cli.legacy_left(cfg, root, old_dir)]
+    first = migrate(cfg, root, old, new)
+    left.append(cli.legacy_left(cfg, root, old_dir))
+    off = json.load(open(old + "/.moved-offsets.json"))[old + "/usage.log"]["off"]
+    with open(old + "/usage.log", "a") as f:
+        f.write("-end\ne\n")
+    left.append(cli.legacy_left(cfg, root, old_dir))
+    second = migrate(cfg, root, old, new)
+    left.append(cli.legacy_left(cfg, root, old_dir))
+    return {"left": left, "first": first, "off": off, "second": second, "usage": read(new + "/usage.log"),
+            "spans": read(new + "/metrics/spans-20260101.jsonl"), "old-usage": read(old + "/usage.log"),
+            "old-spans": os.path.exists(old + "/metrics/spans-20260101.jsonl")}
+
+real_read, real_pread, olds, biggest = os.read, os.pread, {}, [0]
+def old_open(p, flags, *a, **k):   # 옛 이름 디렉터리 아래에서 연 파일을 기억한다
+    fd = real_open(p, flags, *a, **k)
+    olds.pop(fd, None)
+    try:
+        if os.path.realpath(p).startswith(os.path.realpath(d + "/small/home/chunk110") + "/"):
+            olds[fd] = p
+    except (TypeError, ValueError):
+        pass
+    return fd
+
+def sized_read(fd, n):   # 옛 기록에서 한 번에 읽으려는 크기
+    if fd in olds:
+        biggest[0] = max(biggest[0], n)
+    return real_read(fd, n)
+
+def sized_pread(fd, n, at):
+    if fd in olds:
+        biggest[0] = max(biggest[0], n)
+    return real_pread(fd, n, at)
+
+os.open, os.read, os.pread = old_open, sized_read, sized_pread
+try:
+    small = whole_run("small", 5)
+finally:
+    os.open, os.read, os.pread = real_open, real_read, real_pread
+big = whole_run("big", 1 << 20)
+print("same" if small == big else "differs: %r / %r" % (small, big))
+print("left:", " ".join(map(str, small["left"])), "| off:", small["off"])
+print("usage:", small["usage"].replace("\n", " "))
+print("spans:", small["spans"].replace("\n", " "), "| old:", "kept" if small["old-spans"] else "gone")
+print("first:", " / ".join(small["first"].strip().split("\n")))
+
+fds, writes = {}, []
+def watch_open(p, flags, *a, **k):
+    fd = real_open(p, flags, *a, **k)
+    fds.pop(fd, None)
+    try:
+        rp = os.path.realpath(p)
+        if rp.startswith(watch + "/") and flags & (os.O_WRONLY | os.O_RDWR) and not os.path.basename(rp).startswith("."):
+            fds[fd] = rp
+    except (TypeError, ValueError):
+        pass
+    return fd
+
+def third_write_fails(fd, data):   # 새 자리의 파일마다 두 번은 쓰이고 세 번째에 디스크가 찬다
+    if fd in fds:
+        writes.append(fds[fd])
+        if writes.count(fds[fd]) >= 3:
+            raise OSError(errno.ENOSPC, "no space left on device")
+    return real_write(fd, data)
+
+cfg, root, old_dir, old, new = lay("fail", 5)
+watch = os.path.realpath(new)
+os.open, os.write = watch_open, third_write_fails
+try:
+    failed = migrate(cfg, root, old, new)
+finally:
+    os.open, os.write = real_open, real_write
+print("failed:", " / ".join(failed.strip().split("\n")))
+print("spans-after-failure:", read(watch + "/metrics/spans-20260101.jsonl").replace("\n", " "), "| old:",
+      "kept" if read(old + "/metrics/spans-20260101.jsonl") == OLD_SPANS else "changed",
+      "| offsets:", "written" if os.path.exists(old + "/.moved-offsets.json") else "none")
+again = migrate(cfg, root, old, new)
+usage = read(watch + "/usage.log").split("\n")
+print("after-failure-retry:", read(watch + "/metrics/spans-20260101.jsonl") == '{"new":1}\n' + OLD_SPANS,
+      all(x in usage for x in ("a", "b" * 30, "cc")))
+
+def interleaving(fd, data):   # 잠금 없이 덧붙이는 다른 기록기 — 새 사용 기록에 쓰일 때마다 그 바로 전에 한 줄을 덧붙인다
+    if fds.get(fd, "").endswith("/usage.log"):
+        o = real_open(fds[fd], os.O_WRONLY | os.O_APPEND)
+        real_write(o, b"R\n")
+        os.close(o)
+    return real_write(fd, data)
+
+cfg, root, old_dir, old, new = lay("race", 8)
+watch = os.path.realpath(new)
+open(old + "/usage.log", "w").write("".join("u%d\n" % i for i in range(1, 10)))
+os.open, os.write = watch_open, interleaving
+try:
+    migrate(cfg, root, old, new)
+finally:
+    os.open, os.write = real_open, real_write
+lines = read(watch + "/usage.log").split("\n")[:-1]
+print("interleaved:", lines.count("R") > 1, "| ours:", " ".join(x for x in lines if x != "R"),
+      "| whole:", all(x == "R" or x == "new-usage" or (len(x) == 2 and x[0] == "u") for x in lines))
+print("largest-read:", "within a chunk or the 4KiB head" if 0 < biggest[0] <= 4096 else biggest[0])
+
+cfg, root, old_dir, old, new = lay("shrink", 5)
+real_append = cli.append_range
+def shrink_then_append(src, start, end, dst, undo, lines):   # 남은 줄을 가른 뒤 덧붙이기 바로 전에 옛 사용 기록이 줄어든다
+    if lines:
+        os.truncate(old + "/usage.log", 10)
+    return real_append(src, start, end, dst, undo, lines)
+
+cli.append_range = shrink_then_append
+try:
+    out = migrate(cfg, root, old, new)
+finally:
+    cli.append_range = real_append
+print("shrunk:", "render: left usage log at <old>/usage.log — OSError" in out.split("\n"),
+      "| offsets:", "written" if os.path.exists(old + "/.moved-offsets.json") else "none")
+PY
+[ "$?" -eq 0 ] || bad "the chunked move checks did not run: $(tail -3 "$work/chunk110.txt")"
+check "a chunk smaller than the records moves and judges the same as one chunk" "$(sed -n 1p "$work/chunk110.txt")" "same"
+check "remaining lines are judged across chunks, and the place is after the last whole line" "$(sed -n 2p "$work/chunk110.txt")" "left: 2 0 1 0 | off: 36"
+check "usage lines longer than a chunk move whole, and the finished line follows once" "$(sed -n 3p "$work/chunk110.txt")" \
+  "usage: new-usage a $(printf 'b%.0s' $(seq 30)) cc $(printf 'd%.0s' $(seq 23))-end e "
+check "spans larger than a chunk are appended whole" "$(sed -n 4p "$work/chunk110.txt")" \
+  'spans: {"new":1} {"old":0} {"old":1} {"old":2} {"old":3} {"old":4} {"old":5} {"old":6}  | old: gone'
+check "the chunked move says what it moved" "$(sed -n 5p "$work/chunk110.txt")" \
+  "first: render: moved run metrics to <new>/metrics / render: moved usage log to <new>/usage.log / render: cleared <old> — files older versions may still write to stay there; render moves what they add"
+check "a chunked append that fails is reported" "$(sed -n 6p "$work/chunk110.txt")" \
+  "failed: render: left run metrics at <old>/metrics — OSError / render: left usage log at <old>/usage.log — OSError / render: kept <old> — 2 item(s) left there"
+check "a chunked append under the recorder's lock that fails takes back every chunk it wrote" "$(sed -n 7p "$work/chunk110.txt")" \
+  'spans-after-failure: {"new":1}  | old: kept | offsets: none'
+check "the run after a failed chunked append moves the whole records" "$(sed -n 8p "$work/chunk110.txt")" "after-failure-retry: True True"
+check "another recorder's lines land between whole usage lines while moving in chunks" "$(sed -n 9p "$work/chunk110.txt")" \
+  "interleaved: True | ours: new-usage u1 u2 u3 u4 u5 u6 u7 u8 u9 | whole: True"
+check "moving and judging read the old records a chunk at a time, not whole" "$(sed -n 10p "$work/chunk110.txt")" \
+  "largest-read: within a chunk or the 4KiB head"
+check "an old usage log that shrinks while it is appended is left and its place is not recorded" "$(sed -n 11p "$work/chunk110.txt")" \
+  "shrunk: True | offsets: none"
+# 옮기는 도중의 세션 가져오기 — 옮기기가 등록부 잠금을 잡고 커서를 옮기기 전, 그리고 스팬을 여러 조각으로 덧붙이는 사이에
+# 가져오기를 띄운다. 가져오기는 옮기기가 끝날 때까지 기다린 뒤 읽어, 옛 커서가 이미 센 세션을 다시 세지 않고 옛 파일 뒤쪽의
+# 실행 스팬에 세션을 붙인다. 옛 등록이 가리키지 않는 같은 클론의 worktree 에서 띄운 가져오기도 같다 — 같은 기록을 읽는다
+I110="$lg110/i"; mk110 "$I110" legacy110i || bad "could not set up the import-during-move repository"
+g110 "$I110" worktree add -q --detach "$lg110/i-wt" || bad "could not add a worktree to the import-during-move repository"
+python3 - "$root/bin/harness" "$I110" "$lg110/i-sessions" "$lg110/i-wt" > "$work/imp110.txt" 2>&1 <<'PY'
+import contextlib, datetime, importlib.machinery, importlib.util, io, json, os, re, shutil, subprocess, sys, time
+from pathlib import Path
+sys.dont_write_bytecode = True
+loader = importlib.machinery.SourceFileLoader("harness_cli", sys.argv[1])
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+harness, repo, sessions, wt = sys.argv[1:5]
+home = os.environ["HARNESS_HOME"]
+old, new = home + "/legacy110i", home + "/" + cli.clone_key(Path(repo))
+now = datetime.datetime.now(datetime.timezone.utc)
+ts = lambda m: (now - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+span = lambda **e: json.dumps(dict(e, v=1)) + "\n"
+name = "spans-%s-1.jsonl" % now.strftime("%Y%m%d")
+cfg = {"project": {"name": "legacy110i"}, "metrics": {"dir": home + "/{clone}/metrics"},
+       "usage": {"log_path": home + "/{clone}/usage.log"}, "worktree": {"dir": "off"}}
+said = lambda m, mid, i, o: json.dumps({"type": "assistant", "sessionId": mid, "timestamp": ts(m),
+                                        "message": {"id": mid, "model": "claude-x", "usage": {"input_tokens": i, "output_tokens": o}}}) + "\n"
+
+def lay(at):   # 옛 이름 디렉터리: 세션 하나를 이미 센 커서 · 앞쪽은 다른 기록이고 뒤쪽에 실행이 있는 스팬. 새 자리에 같은 이름의 스팬.
+    # 세션 기록은 가져오기를 띄울 하네스 루트 at 의 것이다
+    chat = os.path.join(sessions, re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(at)))
+    for d in (old, new + "/state", new + "/metrics", sessions):
+        shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(old + "/state"); os.makedirs(old + "/metrics"); os.makedirs(new + "/metrics"); os.makedirs(chat)
+    json.dump({"path": os.path.realpath(repo)}, open(old + "/project.json", "w"))
+    open(chat + "/counted.jsonl", "w").write(said(6, "counted", 20, 10))
+    open(chat + "/fresh.jsonl", "w").write(said(5, "fresh", 5, 7))
+    f = Path(sessions, os.path.basename(chat), "counted.jsonl")
+    json.dump({"claude:" + str(f): {"ino": f.stat().st_ino, "off": f.stat().st_size, "ids": ["counted"]}},
+              open(old + "/state/import-cursor.json", "w"))
+    filler = "".join(span(ev="start", span="s-pad%d" % i, trace="t-pad", kind="script", name="pad", attrs={}, t=ts(30)) for i in range(8))
+    open(old + "/metrics/" + name, "w").write(filler + span(ev="start", span="s-run", trace="t-run110", kind="command", name="run/work",
+                                                            attrs={"workflow": "work", "vendor": "claude"}, t=ts(10))
+                                              + span(ev="end", span="s-run", status="ok", exit=0, dur_ms=540000, t=ts(1)))
+    open(new + "/metrics/" + name, "w").write(span(ev="start", span="s-new", trace="t-new", kind="script", name="new", attrs={}, t=ts(20)))
+    return os.path.realpath(new + "/metrics/" + name)
+
+# 가져오기 프로세스 — 등록부 잠금을 청하기 직전과 잡은 직후를 표시 파일에 한 줄씩 남기고 CLI 를 그대로 돈다
+CHILD = """
+import contextlib, importlib.machinery, importlib.util, sys
+sys.dont_write_bytecode = True
+harness, mark = sys.argv[1:3]
+loader = importlib.machinery.SourceFileLoader("harness_cli", harness)
+cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_cli", loader))
+loader.exec_module(cli)
+held = cli.registry_lock
+@contextlib.contextmanager
+def registry_lock():
+    open(mark, "a").write("waiting\\n")
+    with held():
+        open(mark, "a").write("held\\n")
+        yield
+cli.registry_lock = registry_lock
+sys.argv = [harness] + sys.argv[3:]
+sys.exit(cli.main())
+"""
+
+def marks(mark):
+    return open(mark).read().split() if os.path.exists(mark) else []
+
+def start_import(at, mark):   # 하네스 루트 at 에서 가져오기를 띄우고 그것이 등록부 잠금을 청할 때까지 기다린다
+    env = dict(os.environ, HARNESS_CLAUDE_DIR=sessions, HARNESS_CODEX_DIR=sessions + "/none")
+    p = subprocess.Popen([sys.executable, "-c", CHILD, harness, mark, "metrics", "import", "--target", at, "--since", "1d"], env=env,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + 60
+    while not marks(mark) and p.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return p
+
+def run(pause, at):
+    target = lay(at)
+    mark = os.path.join(os.path.dirname(sessions), "lock-%s-%s" % (pause, "wt" if at == wt else "main"))
+    if os.path.exists(mark):
+        os.remove(mark)
+    real_open, real_write, fds, seen, procs = os.open, os.write, {}, [], []
+    def os_open(p, flags, *a, **k):
+        fd = real_open(p, flags, *a, **k)
+        fds.pop(fd, None)
+        try:
+            if flags & (os.O_WRONLY | os.O_RDWR) and os.path.realpath(p) == target:
+                fds[fd] = True
+        except (TypeError, ValueError):
+            pass
+        return fd
+    def os_write(fd, data):   # 새 스팬 파일에 첫 조각을 쓴 직후 가져오기를 띄운다
+        n = real_write(fd, data)
+        if fd in fds and pause == "mid-append" and not procs:
+            procs.append(start_import(at, mark))
+        return n
+    cli.COPY_CHUNK = 256
+    os.open, os.write = os_open, os_write
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), cli.registry_lock():
+            if pause == "before-move":
+                procs.append(start_import(at, mark))
+            cli.migrate_legacy(cfg, Path(repo), "render")
+            seen.append(marks(mark) == ["waiting"])   # 옮기기가 끝나 잠금을 놓기 전까지 가져오기는 잠금을 청한 채 기다린다
+    finally:
+        os.open, os.write = real_open, real_write
+    if not procs:
+        return "%s: the move did not pause" % pause
+    try:
+        out, err = procs[0].communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        procs[0].kill()
+        return "%s: the import did not finish after the move" % pause
+    try:
+        d = json.loads(out)
+    except ValueError:
+        return "%s: import failed: %s" % (pause, err.strip()[-200:])
+    if marks(mark) != ["waiting", "held"]:
+        return "%s: the import did not take the lock after the move: %s" % (pause, marks(mark))
+    imp = d["diagnostics"]["imported"]
+    tokens = {t["trace"]: t["tokens"] for t in d["traces"]}
+    return "%s%s: waited %s | records %s | unattributed %s | run tokens %s" % (
+        "worktree " if at == wt else "", pause, seen[0], imp["records"], imp["unattributed"], tokens.get("t-run110"))
+
+print(run("before-move", repo))
+print(run("mid-append", repo))
+print(run("before-move", wt))
+PY
+check "an import started before the move waits for it, keeps the moved cursor and finds the moved run" "$(sed -n 1p "$work/imp110.txt")" \
+  "before-move: waited True | records 1 | unattributed 0 | run tokens 12"
+check "an import started between appended chunks waits for the move and finds the run past the first chunk" "$(sed -n 2p "$work/imp110.txt")" \
+  "mid-append: waited True | records 1 | unattributed 0 | run tokens 12"
+check "an import started in a worktree of the same clone also waits for the move" "$(sed -n 3p "$work/imp110.txt")" \
+  "worktree before-move: waited True | records 1 | unattributed 0 | run tokens 12"
+cat "$work"/in110a.* "$work"/r110*.out "$work"/r110b.err "$work"/doc110-*.out "$work/race110.txt" "$work/wait110.txt" "$work/fail110.txt" \
+  "$work/nolink110.txt" "$work/chunk110.txt" "$work/imp110.txt" > "$work/out110.log"
+no_hangul "$work/out110.log" "the old name directory move output"
+unset -f g110 perm110 moved110 rest110 mk110 old110 late110
 
 echo
 if [ "$fail" -eq 0 ]; then

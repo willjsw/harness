@@ -10,37 +10,31 @@ const run = promisify(execFile);
 export const HOME = process.env.HARNESS_HOME || path.join(os.homedir(), ".harness");
 const BIN = process.env.HARNESS_BIN || "harness";
 
-// `~/.harness/<이름>/project.json` 이 설치 목록이다. `harness install` 이 쓴다.
-// 경로가 없는 디렉터리(등록부 도입 전 설치)는 목록에 남기되 다시 설치하라고 알린다.
+// 설치 목록은 `harness projects` 가 낸다 — 등록부의 디렉터리 규칙은 CLI 만 안다. 등록부를 직접 읽지 않는다.
+// 프로젝트는 클론 키로 가리킨다. 같은 이름의 클론이 여럿일 수 있어 화면은 이름과 경로를 함께 보인다.
 export async function listProjects() {
-  let names = [];
-  // 등록부에는 기기 단위 기록(tools.json)도 있다 — 프로젝트는 디렉터리만이다
-  try { names = (await fs.readdir(HOME, { withFileTypes: true })).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return []; }
-  const out = [];
-  for (const name of names.sort()) {
-    if (name.startsWith(".")) continue;
-    let p = null;
-    try { p = registeredPath(JSON.parse(await fs.readFile(path.join(HOME, name, "project.json"), "utf8"))); } catch {}
-    const ok = p !== null && (await exists(path.join(p, "harness.toml")));
-    out.push({ name, path: p, ok });
-  }
-  return out;
+  const r = await harness(HOME, ["projects"]);
+  if (!r.ok) return [];
+  try { return parseProjects(JSON.parse(r.out)); } catch { return []; }
 }
 
-// 등록 JSON 의 경로. 비어 있지 않은 문자열만 경로로 보고, 나머지는 경로 없음(null)이다.
-export function registeredPath(data) {
-  const p = data && typeof data === "object" && !Array.isArray(data) ? data.path : null;
-  return typeof p === "string" && p !== "" ? p : null;
+// `harness projects` 의 출력 → 화면이 쓰는 목록. 클론 등록은 { key, name, path, ok }, 옛 버전이 이름으로 남긴 등록은
+// 키 없이 다시 설치하라고 알리는 항목이다. 형식이 아니면 빈 목록이다.
+export function parseProjects(data) {
+  if (!data || typeof data !== "object" || Array.isArray(data) || !Array.isArray(data.projects) || !Array.isArray(data.legacy)) return [];
+  const text = (x) => (typeof x === "string" && x !== "" ? x : null);
+  const item = (x) => x && typeof x === "object" && !Array.isArray(x) && text(x.name) !== null;
+  return [
+    ...data.projects.filter((x) => item(x) && text(x.key) !== null)
+      .map((x) => ({ key: x.key, name: x.name, path: text(x.path), ok: x.ok === true && text(x.path) !== null })),
+    ...data.legacy.filter(item).map((x) => ({ key: null, name: x.name, path: text(x.path), ok: false, legacy: true })),
+  ];
 }
 
-export async function getProject(name) {
-  const p = (await listProjects()).find((x) => x.name === name);
-  if (!p?.ok) throw new Error(`unknown project: ${name}`);
+export async function getProject(key) {
+  const p = (await listProjects()).find((x) => x.key === key && x.ok);
+  if (!p) throw new Error(`unknown project: ${key}`);
   return p;
-}
-
-async function exists(f) {
-  try { await fs.access(f); return true; } catch { return false; }
 }
 
 // TOML 파서를 들이지 않는다. 하네스가 이미 요구하는 python3 의 tomllib 로 읽는다.

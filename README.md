@@ -69,11 +69,13 @@ harness doctor
 무엇이 비어 있는지 알려 준다. 원격 준비(origin·base 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너)는
 `harness doctor --remote` 로 확인한다. 읽기만 하고 원격 설정을 바꾸지 않는다.
 
-**한 기기에 같은 리포는 하나만 설치한다.** 같은 `project.name` 이 아직 쓰이는 다른 경로에 등록돼
-있으면 `install` 이 거부한다 — 그 클론에서 `harness uninstall` 하거나 이 리포의 `project.name` 을
-바꾼다. 옛 경로에 그 프로젝트가 없으면(리포를 옮겼다) 등록을 넘겨받고, `~/.harness/<이름>/` 아래
-기록은 그대로 이어진다. 같은 리포에서 여러 작업을 나란히 하려면 두 번째 클론이 아니라
-`harness run --worktree` 로 이슈별 worktree 를 쓴다.
+**등록과 기록은 클론마다 따로다.** 같은 리포를 한 기기에 여러 번 클론해 각각 설치할 수 있다 — 등록부와
+실행 지표·사용 기록·가져오기 커서·이슈 worktree 가 `project.name` 이 아니라 클론 키(그 클론의 git 공통
+디렉터리와 리포 안의 위치에서 계산하는 값)로 나뉜다. 같은 이름이 이미 등록돼 있으면 `install` 은 거부하지
+않고 그 경로를 알리기만 한다. 한 클론의 이슈 worktree(`harness run --worktree`)는 그 클론의 등록과 기록을
+쓴다. 옛 버전이 `~/.harness/<이름>/` 에 남긴 기록은 `install` · `render` 가 이 클론 아래로 옮기고, 옮기지
+못한 worktree(잠김·미커밋 변경 등)는 사유와 함께 알린다 — 그 사유를 풀고 `render` 를 다시 돌리면 옮긴다.
+클론을 다른 경로로 옮기면 키가 바뀌어 옛 기록이 이어지지 않는다.
 
 **git 훅은 `install` 이 켠다.** `core.hooksPath` 가 비어 있으면 하네스의 `script/githooks` 로 설정하고
 그 사실을 출력한다. 이미 다른 값이 있거나 `.git/hooks/` 에 자기 훅(`.sample` 이 아닌 파일)이 있으면 건드리지 않고,
@@ -123,7 +125,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 
 | 명령 | 하는 일 |
 |---|---|
-| `harness install [--create] [--git-init]` | 하네스를 `.harness/` 에 넣고 렌더까지. `--create` 면 없는 대상 디렉터리를 만들고, `--git-init` 이면 `.git` 이 없는 대상에서 git 을 시작한다. 같은 이름이 다른 경로에 등록돼 있으면 아무것도 만들지 않고 멈춘다 |
+| `harness install [--create] [--git-init]` | 하네스를 `.harness/` 에 넣고 이 클론을 등록한 뒤 렌더까지. `--create` 면 없는 대상 디렉터리를 만들고, `--git-init` 이면 `.git` 이 없는 대상에서 git 을 시작한다. 같은 이름의 다른 클론이 등록돼 있으면 알리기만 한다 |
 | `harness render` | 설정과 프로젝트 사실 → 생성 파일 |
 | `harness check` | 생성 파일이 설정과, 관리 파일이 매니페스트(`.harness/managed`)와 일치하는지. pre-commit 이 `--staged` 로 부른다 |
 | `harness doctor [--remote] [--json]` | 쓸 준비가 됐는지 — 설정·생성물·관리 파일 변조·비어 있는 자리·끊긴 참조·도구·어댑터 검증 상태·훅. `--remote` 면 origin·base 브랜치·원격 기본 브랜치·forge 로그인·라벨·브랜치 보호·리뷰어 러너까지 읽기 전용으로 점검한다. `--json` 이면 결과를 JSON 으로 낸다 |
@@ -137,6 +139,7 @@ python3 3.11 이상이 필요하다. 그 밖의 의존성은 없다.
 | `harness stop-server` | `start-server` 가 띄운 웹 UI 를 멈춘다. 기록(`ui.pid`)이 살아 있는 프로세스와 맞을 때만 멈추고, 기록 없이 포트를 쓰는 프로세스는 건드리지 않는다 |
 | `harness server-status` | 웹 UI 가 떠서 응답하는지 한 줄로. 떠 있으면 종료 코드 0, 아니면 1 |
 | `harness tools [--sync]` | 이 기기에 설치된 에이전트 CLI·결정 기록 도구. 결과는 `~/.harness/tools.json` |
+| `harness projects` | 이 기기에 등록된 클론 목록(JSON) — 클론 키·이름·경로와 그 경로에 설정이 있는지, 그리고 옛 버전이 이름으로 남긴 등록. UI 가 쓴다 |
 | `harness schema` | 에이전트 등록부와 역할별 실제 실행 주체(JSON). 문서·원형·절차 문서 경로, 검증 스크립트·훅 경로, 설정 주석, 기본 보호 문서 목록도 낸다. UI 는 선택지와 경로·목록을 이것에서 받는다 |
 | `harness status [--remote]` | 홈 화면용 프로젝트 상태(JSON) — check·doctor·프로젝트 사실·git. `--remote` 를 받아 doctor 에 넘긴다 |
 | `harness uninstall` | 하네스가 깐 것만 지운다. `--purge` 면 소유 파일과 설정도 (확인을 받는다) |
@@ -197,10 +200,10 @@ UI 소스(`src/ui/` 의 `app/` · `components/` · `lib/` 와 패키지·빌드 
 UI 자체를 고칠 때는 `harness start-server --dev` 가 지금 터미널에서 `next dev` 를 돌린다. 기록을 남기지
 않고, 백그라운드 서버가 떠 있으면 `stop-server` 를 먼저 하라고 멈춘다.
 
-`harness install` 이 `~/.harness/<프로젝트>/project.json` 에 경로를 남기고, UI 가 그 목록으로
-프로젝트를 전환한다. 경로가 없는 옛 설치는 목록에 "재설치 필요" 로 뜬다 — 그 프로젝트에서
-`harness install` 을 다시 돌린다. 등록부의 프로젝트 이름 하나는 경로 하나를 가리킨다 — 같은 리포의
-병렬 작업은 두 번째 클론이 아니라 `harness run --worktree` 다. 서버는 루프백에만 묶이고, 첫 실행에 `npm install` 을 한 번 한다
+`harness install` 이 `~/.harness/<클론 키>/project.json` 에 경로와 이름을 남기고, UI 는 `harness projects` 로
+그 목록을 받아 프로젝트를 전환한다. 같은 이름의 클론은 카드와 전환 메뉴에 함께 보이는 경로로 구별한다. 옛 설치
+(옛 버전이 `~/.harness/<이름>/` 에 남긴 등록)와 경로에 설정이 없는 등록은 "재설치 필요" 로 뜬다 — 그 프로젝트에서
+`harness install` 을 다시 돌린다. 서버는 루프백에만 묶이고, 첫 실행에 `npm install` 을 한 번 한다
 (Node.js 필요).
 
 | 화면 | 무엇을 | 쓰기 경로 |
@@ -278,10 +281,15 @@ UI 는 설정을 고치는 로직을 따로 갖지 않는다 — 검증·되돌�
 | `verify.checks` · `test_paths` · `test_on` · `incremental` · `script_tests` | `script/harness-verify.sh` — 단계 목록, 단계마다 다시 돌릴 경로(`paths`)와 시점(`on` = `commit` · `push`), 통과 기록으로 안 바뀐 단계 건너뛰기, 하네스 스크립트 회귀 테스트 |
 | `verify.pre_push` · `post_commit` | pre-push 훅의 검증 전부(실패하면 push 차단), post-commit 훅(켤 때만 생성) |
 | `permissions.allow_push` | `.claude/settings.json` 의 허용 목록에 `git push` 를 넣는지 |
+| `metrics.dir` · `retention_days` · `max_file_mb` · `max_total_mb` · `stale_after_hours` · `capture_logs` | `script/harness.plan.json` 의 지표 설정(값 그대로), 절차 문서의 단계 시작 표지(`dir` 이 `off` 면 빠진다) |
 | `usage.log_path` · `env_var` | 기록·집계 스크립트, 회고 절차 |
 | `worktree.dir` · `include` | 생성 파일은 없다. `harness run --worktree` · `doctor` · 세션 가져오기가 읽는다 |
 | `doctor.remote_timeout` | `script/harness.plan.json` 의 CLI 러너 역할마다 `auth_timeout`(`run-agent.py --check` 가 로그인 확인 명령에 주는 시간). `doctor --remote` 의 원격 호출 하나에 주는 시간(초, 1~600, 기본 30)이고, UI 의 원격 점검은 이 값으로 기다릴 시간을 정한다 |
 | `workflows.<절차>.steps` | `.ai/workflows/<절차>.md` — 단계 순서·종류(`type`)·제목. 없으면 하네스 기본값. 절차 끝에 붙일 지시는 `.ai/project/workflows/<절차>.md` |
+
+`metrics.dir` · `usage.log_path` · `worktree.dir` 의 `{clone}` 은 렌더가 풀지 않고 실행할 때 이 클론의 키로
+풀린다 — 생성 파일에는 `{clone}` 이 그대로 들어가 모든 클론에서 같다. `{project}` 는 `{clone}` 의 옛 별칭이라 같은
+값으로 풀리고, `render` 와 `doctor` 가 `{clone}` 으로 바꾸라고 알린다.
 
 `invariants.distinct_reviewer` 는 파일을 만들지 않고 **render 를 막는다.** 구현자와 리뷰어의
 러너가 같으면 거부한다 — 같은 모델이 자기 코드를 리뷰하면 같은 맹점을 두 번 지나간다.

@@ -40,7 +40,8 @@
 | forge | 이슈 추적기와 코드 리뷰 호스트를 묶어 부르는 말 (GitHub · GitLab · Jira) |
 | 어댑터 | forge 명령을 감싸는 스크립트(`script/forge/<kind>.sh`), 또는 역할 계약을 CLI 별 형식으로 옮긴 정의 파일(`.claude/agents/` · `.codex/agents/`) |
 | 자체 검사 | 어댑터가 계약을 지키는지 실제 forge 로 확인하는 것 (`script/forge-selftest.sh`) |
-| 등록부 | 설치된 프로젝트와 기기의 도구 기록 (`~/.harness/`). UI 가 이것으로 프로젝트를 전환한다 |
+| 클론 키 | 한 기기에서 하네스 루트 하나(클론 하나, 모노레포면 서브프로젝트 하나)를 가리키는 불투명 값(`c-` 와 16진 16자). git 공통 디렉터리와 리포 안의 위치에서 실행할 때 계산한다(`script/_clone_key.py`). 같은 클론의 worktree 는 같은 키다. 기기 단위 상태가 이것으로 나뉜다 |
+| 등록부 | 클론 키마다 `project.json` 하나(`~/.harness/<클론 키>/` — 경로와 이름)와 기기의 도구 기록. UI 가 `harness projects` 로 목록을 받아 프로젝트를 전환한다 |
 | 스팬 · 트레이스 | 실행 지표의 단위. 명령·단계·역할·스크립트 한 번이 스팬, 한 실행의 스팬 묶음이 트레이스 |
 | 결정 기록 | 되돌리기 비싼 결정의 "왜" (`docs/adr/`, Nygard 방식) |
 | 이슈 worktree | `harness run --worktree` 가 이슈 번호 이름으로 `worktree.dir` 아래에 만드는 git worktree |
@@ -57,3 +58,4 @@
 | 단계의 `kind` | 단계의 `type` (`workflows.<절차>.steps`) |
 | `AGENTS` 표 · `SCRIPT_ROLES` (CLI 안의 벤더·역할 분기) | 벤더 선언(`vendors.toml`)과 역할 선언(frontmatter) |
 | task 라벨 `new` | `Task` (`issues.labels.task`) |
+| `{project}` (`metrics.dir` · `usage.log_path` · `worktree.dir` 의 자리표시) | `{clone}`. 같은 값(클론 키)으로 풀린다 |
