@@ -1,6 +1,6 @@
 # forge 어댑터의 Python 패키지 이식
 
-forge 어댑터(이슈 트래커 군 · 리뷰 호스트 군)와 자체 검사 · 라벨 준비가 하네스 패키지 `src/harness/forge/` 에 있다.
+forge 어댑터(이슈 트래커 군 · 리뷰 호스트 군)와 자체 검사 · 라벨 준비가 CLI 패키지 `src/harness/forge/` 에 있다.
 `gh` · `glab` · `jira` 는 그 패키지가 subprocess 로 감싼다. 아직 셸인 호출부를 위해 `script/forge.sh` ·
 `script/forge-selftest.sh` · `script/forge-setup.sh` 는 같은 인자로 CLI 명령을 부르는 **shim** 으로 남는다.
 외부 계약 — 계약 함수의 이름 · 인자 · 표준 출력 · 종료 코드, 자체 검사와 라벨 준비의 명령줄 · 출력 · 종료 코드 — 은
@@ -13,7 +13,7 @@ forge 어댑터(이슈 트래커 군 · 리뷰 호스트 군)와 자체 검사 �
 패키지 배치(`src/harness/` · 명령 하나에 모듈 하나인 `commands/` · 진입 스크립트 `src/bin/harness` · 고정 사본
 `.harness/lib/harness/` · 바이트코드 위치)는 #206 이 정한다. 이 명세는 CLI 쪽 코드를 함수 이름으로 적는다 —
 `derive()` · `validate()` · `doctor_items()` · `remote_call()` · `delegate()` 는 #206 이 옮긴 자리에 있다. 명령 이름 뒤의 인자를
-공용 해석기가 건드리지 않는 통과 명령(#206 3-3)과 Python 단위 테스트의 자리 · 실행 명령 · 검증 단계도 #206 이 둔다.
+공용 파서가 건드리지 않는 통과 명령(#206 3-3)과 Python 단위 테스트의 자리 · 실행 명령 · 검증 단계도 #206 이 둔다.
 
 정본 위치:
 
@@ -306,9 +306,9 @@ forge 기능이 아니라 하네스 자신의 문법에서 도출한다. `review
 
 ### 3-1. `harness forge [--target DIR] <함수> [인수...]`
 
-- 통과 명령이다(#206 3-3) — `harness [--target DIR] forge <함수> [인수...]`. 하네스 루트는 명령 이름 앞의 `--target DIR`, 또는
-  명령 이름 바로 뒤에 한 번 오는 `--target DIR` 로 정한다. 그다음 인자가 함수 이름이고, 함수 이름부터 뒤는 그대로 함수 인수다 —
-  `-` 로 시작하는 본문(`--help` · `--target` 포함)도 인수다
+- 통과 명령이다 — `harness [--target DIR] forge <함수> [인수...]`. 인자를 나누는 규칙과 그 오류는 #206 3-3 의 "인자 통과" 다.
+  하네스 루트는 명령 이름 앞의 `--target DIR`, 또는 명령 이름 바로 뒤의 `--target DIR` 하나다(둘 다 주면 #206 3-3 의 오류와 2).
+  그다음 인자가 함수 이름이고, 함수 이름부터 뒤는 그대로 함수 인수다 — `-` 로 시작하는 본문(`--help` · `--target` 포함)도 인수다
 - 공유 설정을 읽고 검증한 뒤 `load()` · `call()` 로 함수 하나를 부르고, 그 표준 출력 · 표준 오류 · 종료 코드를 그대로 낸다.
   그 밖에는 아무것도 출력하지 않는다
 - 본문 파일 자리(`tracker_issue_create` 의 둘째 인수, `review_mr_note_summary` 의 둘째 인수)는 `-` 만 받고 본문을 표준 입력에서 읽는다.
@@ -337,13 +337,13 @@ forge 기능이 아니라 하네스 자신의 문법에서 도출한다. `review
 - CLI 를 찾지 못하면 함수는 표준 오류 두 줄 `error: harness CLI not found under <루트> (.harness/bin/harness or src/bin/harness)` ·
   `help: harness install --target <루트>` 를 내고 2 로 돌아간다
 - 머리글: 생성 파일이니 고치지 않는다는 문구, source 방법(하네스 루트에서, 모노레포면 그 서브프로젝트), 계약 함수 표(2-2 의 이름 ·
-  인자 · 출력), 정규화 JSON 형태, 계약 정본이 하네스 패키지의 `forge/contract.py` 라는 것
+  인자 · 출력), 정규화 JSON 형태, 계약 정본이 CLI 패키지의 `forge/contract.py` 라는 것
 
 ### 3-3. `harness forge-selftest` · `script/forge-selftest.sh`
 
 `harness forge-selftest [--target DIR] [--write|--create-issue] <리뷰요청번호> [이슈번호]` 는 어댑터가 계약을 지키는지 실제 forge 를
-상대로 확인한다. 3-1 과 같은 통과 명령이다 — 하네스 루트는 명령 이름 앞이나 바로 뒤의 `--target DIR` 이고, 그 뒤 인자는 전부
-자체 검사의 인자다.
+상대로 확인한다. 3-1 과 같은 통과 명령이다 — 하네스 루트는 #206 3-3 대로 명령 이름 앞이나 바로 뒤의 `--target DIR` 하나이고,
+그 뒤 인자는 전부 자체 검사의 인자다.
 
 `script/forge-selftest.sh`(관리 파일)는 실행하는 shim 이다.
 
@@ -352,7 +352,7 @@ forge 기능이 아니라 하네스 자신의 문법에서 도출한다. `review
 3. `<CLI> --target <루트> forge-selftest <받은 인자 그대로>` 로 exec 한다
 
 - 현재 디렉터리 · 표준 입출력 · 환경을 바꾸지 않고, 설정과 생성물을 읽지 않는다. 종료 코드는 CLI 의 것이다
-- 첫 줄은 `#!/usr/bin/env sh` 이고 `bash <파일>` 로도 돈다. 머리글은 부르는 명령의 이름과 로직이 하네스 패키지에 있다는 것을 적는다
+- 첫 줄은 `#!/usr/bin/env sh` 이고 `bash <파일>` 로도 돈다. 머리글은 부르는 명령의 이름과 로직이 CLI 패키지에 있다는 것을 적는다
 - CLI 를 찾지 못하면 3-2 와 같은 두 줄을 표준 오류에 내고 2
 - 이 형태와 문구는 다른 이식 이슈(#211 · #213)의 shim 과 같다
 
@@ -401,19 +401,17 @@ forge 기능이 아니라 하네스 자신의 문법에서 도출한다. `review
 3. 표준 출력 `forge-setup: labels ready on <tracker>: <빈 값을 뺀 라벨을 ", " 로 이은 것, 없으면 none>` 과 0
 
 `script/forge-setup.sh`(관리 파일)는 3-3 과 같은 형태의 shim 이고 `<CLI> --target <루트> forge-setup <받은 인자 그대로>` 로 exec 한다.
-CLI 를 찾지 못하면 3-2 와 같은 두 줄과 2. `harness forge-setup` 은 통과 명령이 아니다 — 공용 해석기로 인자를 받고, 위치 인자를 쓰지 않는다.
+CLI 를 찾지 못하면 3-2 와 같은 두 줄과 2. `harness forge-setup` 은 통과 명령이 아니다 — 공용 파서로 인자를 받고, 위치 인자를 쓰지 않는다.
 공유 설정을 읽는다.
 
 만드는 것은 설정의 이슈 라벨뿐이다. 회차 라벨은 `review_mr_labels_set` 이 붙일 때 만든다.
 
 ### 3-5. 명령 등록
 
-- `COMMANDS` 에 둘을 더한다. 둘 다 설정이 필요한 명령이고 #206 3-3 의 통과 표시를 단다. `harness help` 에 나오는 인수와 설명:
-
-  | 명령 | 인수 | 설명 |
-  |---|---|---|
-  | `forge` | `<function> [args...]` | `call one forge adapter function — script/forge.sh calls this; write functions write to the remote` |
-  | `forge-selftest` | `[--write\|--create-issue] <review-request> [issue]` | `check the forge adapters against the real forge (--write and --create-issue leave traces)` |
+- `COMMANDS` 에 둘을 더한다. 항목은 #206 3-3 의 `(통과, 설정이 필요한가, 인수, 설명)` 이고, 둘 다 통과 명령이며 설정이 필요하다
+  - `"forge": (True, True, "<function> [args...]", "call one forge adapter function — script/forge.sh calls this; write functions write to the remote")`
+  - `"forge-selftest": (True, True, "[--write|--create-issue] <review-request> [issue]", "check the forge adapters against the real forge (--write and --create-issue leave traces)")`
+- `forge-setup` 항목은 통과 표시가 `None` 그대로다
 - `DELEGATES` 에 `forge` · `forge-selftest` 를 더한다(`forge-setup` 은 이미 있다). 어댑터는 고정 사본의 패키지에 있으므로 고정된 버전이
   답한다
 - 권한 허용 목록은 바뀌지 않는다. `harness forge` 는 쓰기 함수(`tracker_issue_create` · `tracker_issue_close` · `review_mr_close` 등)를
@@ -452,7 +450,7 @@ CLI 를 찾지 못하면 3-2 와 같은 두 줄과 2. `harness forge-setup` 은 
 
 ### 4-5. 주입 지점 정리
 
-하네스 패키지로 옮긴 로직의 테스트는 아래 넷 가운데 하나로 forge 를 바꿔 끼운다. 셸 호출부를 이식하는 다음 이슈들도 같은 지점을 쓴다.
+CLI 패키지로 옮긴 로직의 테스트는 아래 넷 가운데 하나로 forge 를 바꿔 끼운다. 셸 호출부를 이식하는 다음 이슈들도 같은 지점을 쓴다.
 
 | 층 | 지점 | 쓰는 곳 |
 |---|---|---|
@@ -502,10 +500,10 @@ CLI 가 forge CLI 를 직접 부르지 않는다.
 
 | 문서 | 반영할 것 |
 |---|---|
-| `src/templates/forge/forge.md` | "함수 목록과 출력 계약은 `script/forge/_common.sh` 상단에 있다." → "함수 목록과 출력 계약은 `script/forge.sh` 머리글에 있다. 하네스 패키지의 계약 표(`forge/contract.py`)에서 생성된다." |
+| `src/templates/forge/forge.md` | "함수 목록과 출력 계약은 `script/forge/_common.sh` 상단에 있다." → "함수 목록과 출력 계약은 `script/forge.sh` 머리글에 있다. CLI 패키지의 계약 표(`forge/contract.py`)에서 생성된다." |
 | `src/templates/forge/github/review.md` | 끝의 "어댑터 미검증" 인용 두 줄을 지운다 — 9절의 기록과 같은 커밋 |
-| `src/templates/managed/script/README.md` | 부류 표의 생성 행 `forge.sh` 에 "계약 함수마다 `harness forge` 를 부르는 shim". 목록의 `forge/_common.sh` · `forge/<kind>.sh` 행을 지운다. `forge-selftest.sh` 행은 "shim — `harness forge-selftest` 를 같은 인자로 부른다" 를 더하고, `forge-setup.sh` 행은 "shim — `harness forge-setup` 을 부른다" 로, 호출 시점은 "사람이 1회". 규칙의 "어댑터를 새로 쓰거나 고치면 …" 은 "어댑터(하네스 패키지의 `forge/`)를 새로 쓰거나 고치면 `forge-selftest.sh` 를 실제 forge 로 돌린다. 회귀 테스트는 페이크와 CLI 스텁을 쓰므로 실제 forge 의 응답을 보지 않는다" |
-| `src/templates/managed/docs/workflow/README.md` | "어댑터는 `script/forge/` 에 이미 있다" → "어댑터는 하네스 패키지에 이미 있다" |
+| `src/templates/managed/script/README.md` | 부류 표의 생성 행 `forge.sh` 에 "계약 함수마다 `harness forge` 를 부르는 shim". 목록의 `forge/_common.sh` · `forge/<kind>.sh` 행을 지운다. `forge-selftest.sh` 행은 "shim — `harness forge-selftest` 를 같은 인자로 부른다" 를 더하고, `forge-setup.sh` 행은 "shim — `harness forge-setup` 을 부른다" 로, 호출 시점은 "사람이 1회". 규칙의 "어댑터를 새로 쓰거나 고치면 …" 은 "어댑터(CLI 패키지의 `forge/`)를 새로 쓰거나 고치면 `forge-selftest.sh` 를 실제 forge 로 돌린다. 회귀 테스트는 페이크와 CLI 스텁을 쓰므로 실제 forge 의 응답을 보지 않는다" |
+| `src/templates/managed/docs/workflow/README.md` | "어댑터는 `script/forge/` 에 이미 있다" → "어댑터는 CLI 패키지에 이미 있다" |
 | `src/templates/managed/docs/workflow/changing.md` | `forge 함수 구현` 행 → `src/harness/forge/<kind>.py` — **한 곳** |
 | `src/test/fake-forge.sh` 머리글 | 쓰는 곳 `src/test/render-test.sh`, 끼우는 법(셸 호출부는 `script/forge.sh` 자리, CLI 는 `HARNESS_FORGE_FAKE`) |
 | `README.md` | 지원 범위 표의 GitHub 행 "실제 forge 검증" 을 9절의 결과(`자체 검사 전 단계 통과 (gh <버전>)`)로. "계약 위반 6종" → "계약 위반 11종" |
@@ -551,7 +549,7 @@ CLI 가 forge CLI 를 직접 부르지 않는다.
 | UT-16 | `fake-forge.sh` 를 `script/forge.sh` 로 복사 → 자체 검사 실행과 페이크 함수 호출의 환경에 `HARNESS_FORGE_FAKE=<fake-forge.sh 절대 경로>`. 페이크의 `tracker_labels_ensure` 확인은 같은 환경으로 `. ./script/forge.sh` 를 거친다 | 기대값 전부 |
 | UT-79 | 어댑터 파일을 고쳐 보던 두 경우(본문 주석의 낱말, 첫 주석 덩어리 뒤의 표지) → 단위 테스트. 표지 상수와 표지 문자열을 세는 범위에서 `forge/` 어댑터 모듈을 뺀다. 계약 문구 단언의 파일 → `contract.py` | `adapter gitlab` 이 `warn` 인 첫 경우 |
 | UT-81 | `script/forge.sh` 덮어쓰기 → `HARNESS_FORGE_FAKE`. 어댑터 머리글 · 계약 표 · 함수 정의를 grep 하던 줄 → 단위 테스트 | 자체 검사 · 페이크 기대값 |
-| UT-83 | `script/forge.sh` 덮어쓰기 → `fdoc` 의 환경에 `HARNESS_FORGE_FAKE`. "CLI 가 forge CLI 를 직접 부르지 않는다" 의 검사 범위 → 하네스 패키지에서 `forge/` 를 뺀 전부 | 기대값 |
+| UT-83 | `script/forge.sh` 덮어쓰기 → `fdoc` 의 환경에 `HARNESS_FORGE_FAKE`. "CLI 가 forge CLI 를 직접 부르지 않는다" 의 검사 범위 → CLI 패키지에서 `forge/` 를 뺀 전부 | 기대값 |
 | UT-98 | 페이크 덮어쓰기 → `HARNESS_FORGE_FAKE`. 실행 방향 단언 셋 → `script/forge-setup.sh` 가 CLI 를 `--target <하네스 루트> forge-setup` 으로 부르고 그 종료 코드를 돌려준다(고정 사본의 CLI 자리에 둔 스텁이 받은 인수를 남기고 7 로 끝나면 7). CLI 가 없으면 2 와 `harness CLI not found under` | 라벨 · 표준 출력 · help · 한글 검사 기대값 |
 | `test-forge-labels.sh` | 라벨 준비 테스트의 전제(`script/forge/github.sh`) → 하네스 루트의 CLI 와 `script/forge.sh`. `adapter()` 로더 → 샌드박스 하네스 루트(설정의 forge 만 github 로 바꾼 `harness.toml`, 하네스 루트에서 복사한 `script/forge.sh`, 샌드박스 CLI 자리)에서 `. ./script/forge.sh` 뒤 함수를 부른다 — 본문 파일 인수가 셸 계약 그대로 간다. Jira 블록의 전제와 로더 → 같은 방식의 jira 트래커 설정 샌드박스 | `check` 기대값 |
 | `test-forge-setup.sh` | `setup_run` 준비부 → 샌드박스 하네스 루트(라벨 값을 바꾼 `harness.toml`, shim `script/forge-setup.sh`, 샌드박스 CLI 자리). 페이크는 `HARNESS_FORGE_FAKE`. `harness.toml` 전제를 더한다 | `check` 기대값, tracker 를 `script/harness.env` 에서 읽는 줄 |
@@ -568,7 +566,7 @@ CLI 가 forge CLI 를 직접 부르지 않는다.
 
 | 케이스 | 기대 |
 |---|---|
-| `harness forge` 인자 | 명령 이름 앞의 `--target` 과 이름 바로 뒤의 `--target` 이 같은 하네스 루트로 간다 · 함수 이름 뒤의 `--help` · `--target` 은 함수 인수로 간다(페이크 스레드에 그 본문이 남는다) · 함수 이름이 없으면 2 와 usage · 모르는 함수 2 · 인수 개수가 다르면 2 · 본문 자리가 `-` 가 아니면 2 |
+| `harness forge` 인자 | 명령 이름 앞의 `--target D` 와 이름 바로 뒤의 `--target D` 가 각각 하네스 루트 `D` 가 된다 · 함수 이름 뒤의 `--help` · `--target` 은 함수 인수로 간다(페이크 스레드에 그 본문이 남는다) · 함수 이름이 없으면 2 와 usage · 모르는 함수 2 · 인수 개수가 다르면 2 · 본문 자리가 `-` 가 아니면 2 |
 | 본문 전달 | 셸 shim 으로 `review_mr_note_summary 1 <파일>` 을 부르면 페이크에 남은 요약 본문이 그 파일 내용과 같다. `harness forge … review_mr_note_summary 1 -` 에 표준 입력으로 준 본문도 같다 |
 | 출력 그대로 | 페이크 `FAKE_AUTH=fail` 에서 `harness forge tracker_auth` 가 1 과 표준 오류 한 줄 ``run `fake auth login` `` 만 낸다 |
 | shim | 생성된 `script/forge.sh` 가 계약 함수 24개를 하나씩 정의한다. forge 설정을 바꿔 render 해도 내용이 같다. 고정 사본의 CLI 를 치운 리포에서 함수가 2 와 `harness CLI not found under` · `help: harness install --target` 두 줄을 낸다. 같은 리포에서 `script/forge-selftest.sh` 도 2 와 같은 두 줄 |
@@ -580,9 +578,9 @@ CLI 가 forge CLI 를 직접 부르지 않는다.
 
 ### 8-5. Python 단위 테스트
 
-- #206 이 둔 단위 테스트 자리(`src/test/unit/`)와 검증 단계 "Python 단위 테스트" 를 쓴다. 이 명세는 아래 파일을 더하기만 하고
-  `[verify]` 를 고치지 않는다
-- CLI 를 부르지 않는다. 어댑터는 실행기를 바꿔 끼우고, 셸 구현과 표지 읽기는 임시 디렉터리의 셸 파일로 본다
+- 자리 · 실행 명령 · 실행 규칙은 #206 7-5, 검증 단계 "Python 단위 테스트"("CLI 패키지 의존 방향" 바로 뒤)는 #206 6절이 둔다.
+  이 명세는 아래 파일을 더하기만 하고 `[verify]` 를 고치지 않는다
+- CLI 를 하위 프로세스로 띄우지 않는다. 어댑터는 실행기를 바꿔 끼운다. 셸 구현(4절)과 표지 비교는 임시 디렉터리의 셸 파일에 `sh` 를 띄워 본다
 
 | 파일 | 보는 것 |
 |---|---|
@@ -623,14 +621,15 @@ GitHub 어댑터는 이 구현으로 자체 검사 전 단계(`--create-issue` �
 
 - 적용 순서는 #206 → #207 → #208 · #209 · #210 → #211 → #212 → #213 → #215 다. 아래 문안은 #206 · #207 이 고친 문장 위에 더하는
   것이다. 같은 묶음의 #208 · #210 과는 고치는 구절이 겹치지 않는다
-- 단위 테스트 층(`src/test/unit/` · `[verify]` 의 "Python 단위 테스트")의 기본 문장은 #206 9절이 둔다. 이 명세는 그 위에 forge 의 것만 더한다
+- 단위 테스트 층(`src/test/unit/` · `[verify]` 의 "Python 단위 테스트")의 기본 문장은 #206 9절이 둔다 — architecture 의 `src/test/render-test.sh`
+  항목 끝 · "새 코드를 둘 곳" 의 새 회귀 테스트, testing 의 "무엇을 어느 수준으로 검증하나" 새 항목. 이 명세는 그 문장을 다시 쓰지 않고 forge 의 것만 더한다
 
 ### 10-1. `.ai/project/architecture.md`
 
 | 위치 | 반영할 문안 |
 |---|---|
 | "구성 요소" 의 `src/test/render-test.sh` 항목 | "forge 어댑터 자리를 대신하는 페이크(계약 위반 6종을 주입할 수 있다)" → "forge 어댑터 자리를 대신하는 셸 함수 파일 페이크(계약 위반 11종을 주입할 수 있다). 셸 호출부에는 `script/forge.sh` 자리에 덮어 끼우고, CLI 에는 `HARNESS_FORGE_FAKE` 로 끼운다" |
-| "구성 요소" 의 하네스 패키지 항목 | 더한다: `src/harness/forge/` — forge 어댑터 계약(함수 표 · 정규화 dataclass)과 github · gitlab · jira 구현, 자체 검사. `gh` · `glab` · `jira` 를 subprocess 로 감싼다 |
+| "구성 요소" 의 CLI 패키지 항목 | 더한다: `src/harness/forge/` — forge 어댑터 계약(함수 표 · 정규화 dataclass)과 github · gitlab · jira 구현, 자체 검사. `gh` · `glab` · `jira` 를 subprocess 로 감싼다 |
 | "구성 요소" 의 대상 리포에 깔리는 `script/` 항목 | "·forge 어댑터(`forge/`)" → "·forge shim(`forge.sh` 는 생성물이고 계약 함수마다 `harness forge` 를 부른다. `forge-selftest.sh` · `forge-setup.sh` 는 같은 이름의 CLI 명령을 부른다)" |
 | "데이터 흐름" 의 forge | forge: 셸 스크립트 → `script/forge.sh`(shim) → `harness forge <함수>` → `src/harness/forge/` 어댑터(tracker 군 · review 군) → `gh` · `glab` · `jira`. CLI 의 `forge-selftest` · `forge-setup` 은 어댑터를 직접 쓰고, `doctor --remote` 는 `harness forge` 를 하위 프로세스로 띄운다. 호출부는 forge 를 모르고 정규화된 JSON(Python 에서는 정규화 dataclass)을 받는다 |
 | "신뢰 경계" 의 들어오는 입력 | 더한다: 환경 변수 `HARNESS_FORGE_FAKE`(테스트 전용 주입 지점 — 값이 가리키는 셸 파일의 함수가 forge 어댑터를 대신한다. PATH 앞 스텁과 같은 신뢰 수준이고 하네스 · 생성물 · CI 는 설정하지 않는다. 절대 경로의 일반 파일만 받고 값을 출력에 옮기지 않으며, 설정되어 있으면 doctor 가 경고한다) |
@@ -667,7 +666,7 @@ GitHub 어댑터는 이 구현으로 자체 검사 전 단계(`--create-issue` �
 
 - GitHub 의 `review_mr_threads` 는 두 조회의 실패를 종료 코드로 알리지 않는다 — 실패한 조회는 빈 목록이 되고 CLI 의 표준 오류만 남는다.
   실패로 바꾸는 것은 외부 동작 변경이라 이 명세 밖이다
-- 셸 호출부의 계약 함수 호출마다 Python 프로세스가 하나 뜬다. 셸 호출부가 하네스 패키지로 옮겨 가면 없어진다
+- 셸 호출부의 계약 함수 호출마다 Python 프로세스가 하나 뜬다. 셸 호출부가 CLI 패키지로 옮겨 가면 없어진다
 - shim 셋(`script/forge.sh` · `script/forge-selftest.sh` · `script/forge-setup.sh`)과 `test-forge-labels.sh` · `test-forge-setup.sh` 는 #221 이
   다룬다
 - `HARNESS_FORGE_FAKE` 는 명령 가드가 보지 않는다
