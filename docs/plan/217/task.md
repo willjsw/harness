@@ -103,7 +103,7 @@ CI 게이트의 프로젝트 준비 단계(`[ci].setup`)와 preset 정책(`[poli
 | UT-08 | with 형식 | `run` 옆의 `with`, 줄바꿈 값, 규칙 밖 키 | 2, `ci.setup[<번호>].with must be a table of strings next to uses` |
 | UT-09 | GitLab 의 uses | `review_host = "gitlab"` 과 `uses` 항목 | 2, `uses an action, which GitLab does not run` 와 help |
 | UT-10 | `[policy]` 모르는 키 | `[policy]` 에 `strict = true` | 2, `help: the keys are preset_sources, check_min_preset_version` |
-| UT-11 | 허용 출처 형식 | `ssh://…` · 공백이 든 값 · `https://user@host/…` · 문자열 아닌 값 | 2, `policy.preset_sources[<번호>] must be an https:// or oci:// source without credentials`, 심은 자격증명 문자열이 출력에 없다 |
+| UT-11 | 허용 출처 형식 | `ssh://…` · 공백이 든 값 · `https://user@host/…` · 정수 항목 | 2, `policy.preset_sources[<번호>] must be an https:// or oci:// source without credentials`, 심은 자격증명 문자열이 출력에 없다 |
 | UT-12 | 최소 버전 검사 키 | `check_min_preset_version = "yes"` | 2, `policy.check_min_preset_version must be true or false` |
 | UT-13 | 정책 키 잠금 | 조직 preset 이 두 키를 `locked`, 프로젝트가 다른 값 · 같은 값 | 다른 값은 2(#207 잠금 문구), 같은 값은 0 |
 | UT-14 | 개인 레이어 | `harness.local.toml` 에 `[policy]` | #207 의 개인 레이어 거부 |
@@ -246,7 +246,8 @@ CI 게이트를 첫 설치 때만 까는 소유 파일에서 render 가 매번 �
   - `plan()`: 하네스 루트가 리포 루트이거나 git 작업 트리 밖이면(`forge_templates()` 와 같은 `repo_prefix()` 판정) 리뷰 호스트의 게이트 경로
     (`.github/workflows/harness-verify.yml` · `.gitlab/harness-verify.yml`)를 머리말 + T4 로 치환한 본문으로 낸다. 게이트의 `.harness/generated` 줄에는 해시를 붙이지 않는다
   - `ci_dir()` 를 걷는다. `seeded_paths()` 는 소유 파일에 GitLab 루트 `.gitlab-ci.yml`(게이트를 생성하는 루트이고 gitlab 일 때)과 서브프로젝트
-    골격 경로(그 호스트의 게이트와 같은 경로)를 더한다. `harness_paths()` 설명의 "CI 골격" 을 새 부류로 고친다
+    골격 경로(명세 2-1 표의 둘째 행 — github `.github/workflows/harness-verify.yml`, gitlab `.gitlab-ci.yml`)를 더한다. `harness_paths()` 설명의
+    "CI 골격" 을 새 부류로 고친다
 - `src/harness/render/apply.py`(`render_target`): `copy_tree(ci_dir…)` 자리에서 GitLab 루트 원형과 서브프로젝트 골격(소유 머리말 + 생성 게이트와
   같은 템플릿 · 변수로 만든 본문)을 없을 때만 깐다. 이 경로들은 지금의 소유 파일처럼 경로 규칙과 부모 디렉터리 판정만 받는다
 - 템플릿 규칙 거부(T4)는 render 의 사전 판정 자리에서 보고 종료 코드 2 로 아무것도 쓰지 않는다. 서브프로젝트 골격을 깔 때도 같다
