@@ -29,3 +29,4 @@
 | [`79-reject-duplicate-project-name.md`](79-reject-duplicate-project-name.md) | 설치 등록부의 같은 이름 거부 — 기존 등록 판정(재설치·낡은 등록 넘겨받기·거부), 거부 안내문, doctor `registry` 절과 UI 문구, README 안내 |
 | [`61-start-server-background.md`](61-start-server-background.md) | `start-server` 의 빌드 판정(UI 소스 해시↔스탬프)·백그라운드 기동·응답 대기, `ui.pid` 기록과 서버 식별, `stop-server` · `server-status`, `--dev` 포그라운드, 없는 프로젝트 404, 보호 문서 개정 범위 |
 | [`96-machine-local-state-key.md`](96-machine-local-state-key.md) | 기기 단위 상태의 클론 키 — 계산과 공용 모듈, `{clone}` 자리표시와 옛 별칭 `{project}`, 클론 키 등록부와 `harness projects`, 옛 이름 디렉터리 옮기기, doctor `registry` 절, UI 라우트의 키 |
+| [`208-workflow-block-engine.md`](208-workflow-block-engine.md) | 절차 블록 그래프와 결정론 드라이버 — 실행 방식(`execute`), 블록 다섯과 outcome · 출력, 배선(`next`)과 끝 상태 · 암묵 배선, 하위 절차와 확장 지점, 절차 변수와 자리표시, 구조화 출력 스키마(자리 · 문법 · 검증), render 검증, driver 의 `harness run`(역할 러너 · 권한 인자 · 게이트 · 상한 · 종료 코드 · worktree · 지표), 실행 상태와 재개, 절차 문서의 그래프 표시, 커맨드 생성 조건, `harness steps` 키 보존, 보호 문서 개정 범위 |

@@ -91,6 +91,7 @@ include = [".claude/settings.local.json"]
 
 `harness run` 의 종료 코드는 오케스트레이터의 종료 코드다. 정리 결과는 종료 코드를 바꾸지 않는다.
 단 3-4 에서 멈추면 오케스트레이터를 띄우지 않고 그 표의 종료 코드로 끝난다.
+driver 절차는 5 에서 오케스트레이터 대신 드라이버가 돌고, 종료 코드는 드라이버의 것이다(`docs/spec/208-workflow-block-engine.md` 7절).
 
 `--dry-run` 과 함께면 아무것도 만들거나 가져오지 않고, worktree 경로·새로 만들지 여부·실행 디렉터리·띄울 명령을 출력한다.
 
@@ -133,10 +134,11 @@ worktree 경로가 **이 리포의 worktree** 라는 것은 둘 다 성립한다
 
 ### 3-6. 정리 판정
 
-오케스트레이터가 끝난 뒤 worktree 를 본다. 새로 만든 것과 다시 연 것이 같다.
+오케스트레이터(driver 절차는 드라이버)가 끝난 뒤 worktree 를 본다. 새로 만든 것과 다시 연 것이 같다. 위에서부터 처음 맞는 행을 따른다.
 
 | 조건 | 동작 |
 |---|---|
+| 그 절차 · 이슈의 끝나지 않은 driver 실행 상태가 있다 (`docs/spec/208-workflow-block-engine.md` 8절) | 남기고 `kept worktree <경로> — unfinished run (resume with --resume)` |
 | 미커밋 변경이 있다 | 남기고 `kept worktree <경로> — uncommitted changes` |
 | 미push 커밋이 있다 | 남기고 `kept worktree <경로> — unpushed commits` |
 | 둘 다 없다 | `git worktree remove <경로>`(강제 없이). 성공하면 `removed worktree <경로>` |
