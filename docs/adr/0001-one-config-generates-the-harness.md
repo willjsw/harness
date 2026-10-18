@@ -4,7 +4,7 @@ Date: 2026-09-23
 
 ## Status
 
-Accepted
+Superseded by [20. Config is resolved in layers](0020-config-is-resolved-in-layers.md)
 
 ## Context
 
