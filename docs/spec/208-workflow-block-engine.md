@@ -10,7 +10,7 @@
 이슈별 worktree 실행은 `docs/spec/71-issue-worktree-run.md`(이하 71 명세), 클론 키와 등록부는
 `docs/spec/96-machine-local-state-key.md`(이하 96 명세)가 정한다.
 
-결정 기록: 절차는 블록 그래프이고 하네스가 실행한다 (분해에서 작성)
+결정 기록: `docs/adr/0021-workflows-are-block-graphs-run-by-the-harness.md` — 절차는 블록 그래프이고 하네스가 실행한다
 
 정본 위치:
 
