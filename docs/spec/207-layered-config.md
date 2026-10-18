@@ -712,7 +712,9 @@ help: give code-reviewer a different runner on this machine
 
 ## 15. 결정 기록
 
-결정 기록: 설정은 계층으로 해석한다 (분해에서 작성)
+설정을 계층으로 해석하는 결정 — 층 순서와 병합 규칙, 개인 선택을 실행 시점에 해석하는 것, 개인 레이어가 받는 키와 값 범위, 역할 끄기,
+잠금의 표기와 선언 층 — 은 `docs/adr/0020-config-is-resolved-in-layers.md` 가 기록한다. 0001 을 대체하고, 0003 · 0008 은 Decision 의
+해당 문장만 대체한다.
 
 ## 16. 보호 문서 개정 범위
 
