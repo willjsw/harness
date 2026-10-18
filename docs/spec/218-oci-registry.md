@@ -920,8 +920,8 @@ blob · manifest · 태그를 메모리에 둔다. 단위 테스트는 import �
 
 ## 13. 결정 기록
 
-- 결정 기록: 레지스트리는 stdlib OCI 클라이언트로 다루고 인증은 credential helper 에 맡긴다 — 아티팩트 형식(미디어 타입 ·
-  annotation 이름 공간 · 재현 규칙)을 포함한다 (분해에서 작성)
+- `docs/adr/0026-registries-use-a-stdlib-oci-client-and-docker-credential-helpers.md` — 레지스트리는 stdlib OCI 클라이언트로
+  다루고 인증은 credential helper 에 맡긴다. 아티팩트 형식(미디어 타입 · annotation 이름 공간 · 재현 규칙)을 포함한다
 - 받은 tar 의 멤버 판정은 ADR 0017 의 경로 규칙을 적용한 것이다. lock 형식은 #216 의 결정 기록이 다룬다
 
 ## 14. 한계
